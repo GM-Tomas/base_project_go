@@ -1,0 +1,624 @@
+openapi: 3.1.0
+
+# Contrato objetivo de la API (fuente de verdad del DISEÑO).
+# backend/docs/api/openapi.json se genera desde el código; CI compara ambos (plan.md §8.4).
+
+info:
+  title: BASE Wealth API
+  version: 2.0.0
+  description: |
+    API del dashboard patrimonial BASE. Todos los datos están aislados por usuario:
+    la identidad se deriva exclusivamente del claim `sub` del JWT de Supabase Auth.
+    Ningún endpoint acepta un identificador de usuario en body, path o query.
+
+    Errores: RFC 9457 (`application/problem+json`).
+    Importes: número JSON con 2 decimales, siempre en USD.
+    Fechas: ISO-8601 UTC. Sin strings pre-formateados para la UI.
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local
+  - url: https://api.base-wealth.example
+    description: Producción
+
+security:
+  - supabaseJwt: []
+
+tags:
+  - name: Health
+  - name: Holdings
+  - name: Platforms
+  - name: Asset classes
+  - name: Wealth
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [Health]
+      summary: Estado del servicio
+      security: []
+      responses:
+        '200':
+          description: Servicio operativo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /api/v1/holdings:
+    get:
+      tags: [Holdings]
+      summary: Lista las posiciones del usuario
+      parameters:
+        - name: assetClass
+          in: query
+          description: Filtro exacto por clase de activo (case-sensitive)
+          schema: { type: string, maxLength: 60 }
+        - name: platform
+          in: query
+          description: Filtro exacto por plataforma
+          schema: { type: string, maxLength: 120 }
+      responses:
+        '200':
+          description: Posiciones ordenadas por fecha de creación ascendente
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Holding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Holdings]
+      summary: Crea una posición
+      description: |
+        Si `platform` no existe para el usuario, se crea con `type = "Other"`
+        en la misma transacción (CA-02.2). Si `assetClass` es nueva, se acepta
+        como texto libre y pasa a estar disponible en `/asset-classes` (CA-02.3).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateHoldingRequest' }
+      responses:
+        '201':
+          description: Creada
+          headers:
+            Location:
+              schema: { type: string, format: uri-reference }
+              example: /api/v1/holdings/3f2b8c1e-7c2a-4f5d-9a1b-2c3d4e5f6a7b
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Holding' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/holdings/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Holdings]
+      summary: Obtiene una posición
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Holding' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Holdings]
+      summary: Actualiza parcialmente una posición
+      description: Sólo se aplican los campos presentes en el body. Un body `{}` es válido y no modifica nada.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatchHoldingRequest' }
+      responses:
+        '200':
+          description: Actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Holding' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Holdings]
+      summary: Elimina una posición
+      responses:
+        '204': { description: Eliminada }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/v1/platforms:
+    get:
+      tags: [Platforms]
+      summary: Lista las plataformas del usuario
+      description: Incluye las plataformas sin posiciones (saldo 0). Ordenadas por nombre.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Platform' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Platforms]
+      summary: Crea una plataforma
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePlatformRequest' }
+      responses:
+        '201':
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Platform' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Ya existe una plataforma con ese nombre (comparación case-insensitive)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/platforms/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string, maxLength: 120 }
+    patch:
+      tags: [Platforms]
+      summary: Renombra o recategoriza una plataforma
+      description: Renombrar arrastra las posiciones asociadas (FK `ON UPDATE CASCADE`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PatchPlatformRequest' }
+      responses:
+        '200':
+          description: Actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Platform' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: El nombre nuevo ya está en uso
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    delete:
+      tags: [Platforms]
+      summary: Elimina una plataforma
+      responses:
+        '204': { description: Eliminada }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: La plataforma todavía tiene posiciones asociadas
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+              example:
+                type: https://base.wealth/errors/conflict
+                title: Platform in use
+                status: 409
+                detail: "Platform 'Binance' still has 3 holdings"
+                instance: /api/v1/platforms/Binance
+                traceId: 0af7651916cd43dd8448eb211c80319c
+
+  /api/v1/asset-classes:
+    get:
+      tags: [Asset classes]
+      summary: Clases de activo disponibles
+      description: |
+        Unión de las clases por defecto del servidor y de las que el usuario tiene en uso.
+        Reemplaza el cálculo `availableAssetClasses` que hoy vive en `WealthContext`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [defaults, inUse, all]
+                properties:
+                  defaults:
+                    type: array
+                    items: { type: string }
+                    example: [Cash, Fixed Income, Index Fund, Equity, Crypto]
+                  inUse:
+                    type: array
+                    items: { type: string }
+                  all:
+                    description: defaults ∪ inUse, sin duplicados, en orden de presentación
+                    type: array
+                    items: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/wealth/summary:
+    get:
+      tags: [Wealth]
+      summary: Resumen consolidado del patrimonio
+      description: Alimenta el dashboard completo en una sola llamada.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WealthSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/wealth/snapshots:
+    get:
+      tags: [Wealth]
+      summary: Serie histórica de patrimonio neto
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Puntos ordenados por `capturedAt` ascendente
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Snapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Wealth]
+      summary: Captura un snapshot del patrimonio actual
+      description: |
+        Sin body: el importe se calcula en el servidor a partir de las posiciones
+        actuales del usuario, dentro de la misma transacción (CA-06.1, CA-06.2).
+      responses:
+        '201':
+          description: Snapshot creado
+          headers:
+            Location:
+              schema: { type: string, format: uri-reference }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Snapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Ya existe un snapshot para este instante
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/wealth/estimate:
+    get:
+      tags: [Wealth]
+      summary: Proyección de interés compuesto
+      description: |
+        Cálculo puro y sin efectos: idempotente y cacheable
+        (`Cache-Control: private, max-age=30`). El principal es el patrimonio
+        actual del usuario, salvo que se indique `principal`.
+      parameters:
+        - name: contribution
+          in: query
+          required: true
+          description: Aporte mensual en USD
+          schema: { type: number, format: double, minimum: 0, maximum: 1000000000 }
+        - name: yieldPct
+          in: query
+          required: true
+          description: Rendimiento anual esperado, en porcentaje
+          schema: { type: number, format: double, minimum: 0, maximum: 100 }
+        - name: years
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1, maximum: 50 }
+        - name: milestones
+          in: query
+          description: Hasta 5 hitos en USD. Por defecto 150000,250000.
+          schema:
+            type: array
+            maxItems: 5
+            items: { type: number, format: double, minimum: 0 }
+          style: form
+          explode: false
+          example: [150000, 250000]
+        - name: principal
+          in: query
+          description: Sobrescribe el patrimonio actual como punto de partida (simulaciones)
+          schema: { type: number, format: double, minimum: 0 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Projection' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    supabaseJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT emitido por Supabase Auth (`session.access_token`). Se valida contra el
+        JWKS del proyecto; se exige `iss` del proyecto configurado y `aud=authenticated`.
+        El claim `sub` es el identificador del usuario.
+
+  responses:
+    Unauthorized:
+      description: Token ausente, inválido, expirado o con issuer/audience incorrectos
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: |
+        El recurso no existe **o pertenece a otro usuario**. Se responde 404 y no 403
+        de forma deliberada: un 403 confirmaría la existencia de un recurso ajeno (CA-01.4).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationError:
+      description: Cuerpo o parámetros inválidos
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ValidationProblem' }
+
+  schemas:
+    Health:
+      type: object
+      required: [status, service, version, timestamp]
+      properties:
+        status:    { type: string, enum: [UP, DOWN] }
+        service:   { type: string, example: base-wealth-backend }
+        version:   { type: string, example: 2.0.0 }
+        timestamp: { type: string, format: date-time }
+
+    Problem:
+      type: object
+      description: RFC 9457
+      required: [type, title, status]
+      properties:
+        type:     { type: string, format: uri, example: 'https://base.wealth/errors/not-found' }
+        title:    { type: string, example: Holding not found }
+        status:   { type: integer, example: 404 }
+        detail:   { type: string }
+        instance: { type: string, example: /api/v1/holdings/3f2b8c1e }
+        traceId:
+          type: string
+          description: Correlaciona con el log del servidor. En un 500 es la única información devuelta.
+
+    ValidationProblem:
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                required: [field, message]
+                properties:
+                  field:   { type: string, example: value }
+                  message: { type: string, example: must be greater than 0 }
+
+    Money:
+      type: number
+      format: double
+      multipleOf: 0.01
+      minimum: 0
+      description: Importe en USD con exactamente 2 decimales (NUMERIC(20,2) en la base)
+      example: 12345.67
+
+    Percentage:
+      type: number
+      format: double
+      description: Porcentaje con 1 decimal
+      example: 32.4
+
+    Holding:
+      type: object
+      required: [id, name, assetClass, platform, valueUsd, createdAt, updatedAt]
+      properties:
+        id:         { type: string, format: uuid }
+        name:       { type: string, maxLength: 120, example: NVDA }
+        assetClass: { type: string, maxLength: 60,  example: Equity }
+        platform:   { type: string, maxLength: 120, example: Balanz }
+        valueUsd:   { $ref: '#/components/schemas/Money' }
+        createdAt:  { type: string, format: date-time }
+        updatedAt:  { type: string, format: date-time }
+
+    CreateHoldingRequest:
+      type: object
+      required: [name, assetClass, platform, valueUsd]
+      properties:
+        name:       { type: string, minLength: 1, maxLength: 120 }
+        assetClass: { type: string, minLength: 1, maxLength: 60 }
+        platform:   { type: string, minLength: 1, maxLength: 120 }
+        valueUsd:
+          allOf: [ { $ref: '#/components/schemas/Money' } ]
+          exclusiveMinimum: 0
+      example:
+        name: Vanguard S&P 500 ETF
+        assetClass: Index Fund
+        platform: Balanz
+        valueUsd: 5100.00
+
+    PatchHoldingRequest:
+      type: object
+      minProperties: 0
+      properties:
+        name:       { type: string, minLength: 1, maxLength: 120 }
+        assetClass: { type: string, minLength: 1, maxLength: 60 }
+        platform:   { type: string, minLength: 1, maxLength: 120 }
+        valueUsd:
+          allOf: [ { $ref: '#/components/schemas/Money' } ]
+          exclusiveMinimum: 0
+
+    Platform:
+      type: object
+      required: [name, type, createdAt]
+      properties:
+        name:      { type: string, example: Binance }
+        type:      { type: string, example: Exchange }
+        createdAt: { type: string, format: date-time }
+
+    CreatePlatformRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        type: { type: string, minLength: 1, maxLength: 40, default: Other }
+
+    PatchPlatformRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        type: { type: string, minLength: 1, maxLength: 40 }
+
+    WealthSummary:
+      type: object
+      required: [netWorth, holdingsCount, ytd, liquidity, byAssetClass, byPlatform]
+      properties:
+        netWorth:
+          type: object
+          required: [usd, fxRate]
+          properties:
+            usd: { $ref: '#/components/schemas/Money' }
+            ars:
+              description: |
+                null si no hay tipo de cambio disponible — el campo está ausente en el JSON en
+                ese caso (Jackson non_null), no `"ars": null` explícito, por eso no está en required.
+              anyOf: [ { $ref: '#/components/schemas/Money' }, { type: 'null' } ]
+            fxRate:
+              type: object
+              required: [available]
+              properties:
+                available: { type: boolean }
+                value:     { type: number, format: double, example: 1050.0 }
+                asOf:      { type: string, format: date-time }
+                source:    { type: string, enum: [FIXED_CONFIG, EXTERNAL_API], example: FIXED_CONFIG }
+        holdingsCount: { type: integer, example: 10 }
+        ytd:
+          type: object
+          required: [basis, growthPct]
+          properties:
+            basis:
+              type: string
+              enum: [YEAR_START_SNAPSHOT, EARLIEST_SNAPSHOT, NO_BASELINE]
+              description: Con NO_BASELINE, growthPct es 0 (CA-05.7)
+            baselineValueUsd:
+              anyOf: [ { $ref: '#/components/schemas/Money' }, { type: 'null' } ]
+            baselineAt:
+              anyOf: [ { type: string, format: date-time }, { type: 'null' } ]
+            growthPct: { $ref: '#/components/schemas/Percentage' }
+        liquidity:
+          type: object
+          required: [liquidPct, illiquidPct, liquidAssetClasses]
+          properties:
+            liquidPct:   { $ref: '#/components/schemas/Percentage' }
+            illiquidPct: { $ref: '#/components/schemas/Percentage' }
+            liquidAssetClasses:
+              description: Conjunto configurado en el servidor; las clases fuera de él cuentan como ilíquidas
+              type: array
+              items: { type: string }
+              example: [Cash, Equity, Crypto, Index Fund]
+        byAssetClass:
+          type: array
+          description: Ordenado por valor descendente
+          items:
+            type: object
+            required: [assetClass, valueUsd, pct, count]
+            properties:
+              assetClass: { type: string }
+              valueUsd:   { $ref: '#/components/schemas/Money' }
+              pct:        { $ref: '#/components/schemas/Percentage' }
+              count:      { type: integer }
+        byPlatform:
+          type: array
+          description: Incluye plataformas con valueUsd 0. Ordenado por valor descendente, luego por nombre.
+          items:
+            type: object
+            required: [name, type, valueUsd, pct, count]
+            properties:
+              name:     { type: string }
+              type:     { type: string }
+              valueUsd: { $ref: '#/components/schemas/Money' }
+              pct:      { $ref: '#/components/schemas/Percentage' }
+              count:    { type: integer }
+
+    Snapshot:
+      type: object
+      required: [id, capturedAt, totalValueUsd]
+      properties:
+        id:            { type: string, format: uuid }
+        capturedAt:    { type: string, format: date-time }
+        totalValueUsd: { $ref: '#/components/schemas/Money' }
+        changePctFromPrevious:
+          description: null en el primer punto de la serie
+          anyOf: [ { $ref: '#/components/schemas/Percentage' }, { type: 'null' } ]
+
+    Projection:
+      type: object
+      required: [principalUsd, monthlyContributionUsd, annualYieldPct, years, series, milestones]
+      properties:
+        principalUsd:           { $ref: '#/components/schemas/Money' }
+        monthlyContributionUsd: { $ref: '#/components/schemas/Money' }
+        annualYieldPct:         { type: number, format: double }
+        years:                  { type: integer }
+        series:
+          type: array
+          description: years + 1 puntos. El año 0 equivale al principal (CA-07.1).
+          items:
+            type: object
+            required: [year, futureValueUsd, totalContributedUsd, interestEarnedUsd]
+            properties:
+              year:                { type: integer, minimum: 0 }
+              futureValueUsd:      { $ref: '#/components/schemas/Money' }
+              totalContributedUsd: { $ref: '#/components/schemas/Money' }
+              interestEarnedUsd:   { $ref: '#/components/schemas/Money' }
+        milestones:
+          type: array
+          items:
+            type: object
+            required: [amountUsd, status]
+            properties:
+              amountUsd: { $ref: '#/components/schemas/Money' }
+              status:
+                type: string
+                enum: [ACHIEVED, REACHABLE, OUT_OF_HORIZON]
+              monthsRequired:
+                description: 0 si ACHIEVED, null si OUT_OF_HORIZON
+                anyOf: [ { type: integer, minimum: 0 }, { type: 'null' } ]
+              targetMonth:
+                description: 'YYYY-MM. null si ACHIEVED u OUT_OF_HORIZON. El nombre del mes lo formatea la vista.'
+                anyOf: [ { type: string, pattern: '^\d{4}-\d{2}$' }, { type: 'null' } ]
+      example:
+        principalUsd: 84250.00
+        monthlyContributionUsd: 900.00
+        annualYieldPct: 9.0
+        years: 12
+        series:
+          - { year: 0, futureValueUsd: 84250.00, totalContributedUsd: 84250.00, interestEarnedUsd: 0.00 }
+          - { year: 1, futureValueUsd: 103381.53, totalContributedUsd: 95050.00, interestEarnedUsd: 8331.53 }
+        milestones:
+          - { amountUsd: 150000.00, status: REACHABLE,     monthsRequired: 44, targetMonth: '2030-04' }
+          - { amountUsd: 250000.00, status: REACHABLE,     monthsRequired: 92, targetMonth: '2034-04' }

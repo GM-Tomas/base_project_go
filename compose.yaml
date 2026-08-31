@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: base_wealth
+      POSTGRES_USER: base_wealth
+      POSTGRES_PASSWORD: base_wealth
+    ports:
+      - "5432:5432"
+    volumes:
+      - base_wealth_go_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U base_wealth -d base_wealth"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  base_wealth_go_pgdata:
