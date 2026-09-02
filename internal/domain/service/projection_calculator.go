@@ -67,9 +67,11 @@ func CalculateMilestones(params model.ProjectionParams, now time.Time) []model.M
 			})
 		} else {
 			m := *monthsRequired
-			// Compute YearMonth after adding months
-			targetDate := now.UTC().AddDate(0, m, 0)
-			targetMonthStr := fmt.Sprintf("%04d-%02d", targetDate.Year(), targetDate.Month())
+			// Compute YearMonth after adding m months (pure year-month arithmetic, matching Java's YearMonth.plusMonths)
+			totalMonths := int(now.UTC().Month()) - 1 + m
+			targetYear := now.UTC().Year() + totalMonths/12
+			targetMonth := (totalMonths % 12) + 1
+			targetMonthStr := fmt.Sprintf("%04d-%02d", targetYear, targetMonth)
 
 			milestones = append(milestones, model.Milestone{
 				Amount:         amount,
