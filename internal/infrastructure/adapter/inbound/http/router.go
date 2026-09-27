@@ -16,10 +16,15 @@ type RouterParams struct {
 	PlatformHandler   *PlatformHandler
 	AssetClassHandler *AssetClassHandler
 	WealthHandler     *WealthHandler
+	SwaggerHandler    *SwaggerHandler
 }
 
 func NewRouter(params RouterParams) http.Handler {
 	r := chi.NewRouter()
+
+	if params.SwaggerHandler == nil {
+		params.SwaggerHandler = NewSwaggerHandler()
+	}
 
 	// Global Middlewares
 	r.Use(middleware.RequestIDMiddleware)
@@ -27,6 +32,15 @@ func NewRouter(params RouterParams) http.Handler {
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(middleware.CorsMiddleware(params.AllowedOrigins))
+
+	// Documentation & Swagger UI (Public)
+	r.Get("/swagger", params.SwaggerHandler.ServeSwaggerUI)
+	r.Get("/swagger/*", params.SwaggerHandler.ServeSwaggerUI)
+	r.Get("/docs", params.SwaggerHandler.ServeSwaggerUI)
+	r.Get("/docs/*", params.SwaggerHandler.ServeSwaggerUI)
+	r.Get("/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
+	r.Get("/api/v1/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
+	r.Get("/docs/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public route

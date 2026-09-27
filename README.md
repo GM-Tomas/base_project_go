@@ -25,6 +25,7 @@ internal/
 │   ├── adapter/
 │   │   ├── inbound/                      # Adaptadores HTTP (Chi Router, Handlers y Middlewares)
 │   │   └── outbound/                     # Adaptadores de Persistencia (PostgreSQL con pgx)
+│   ├── app/                              # Bootstrapper compartido (local & serverless Vercel)
 │   └── config/                           # Configuración y variables de entorno
 └── errors/                               # Errores tipados de la aplicación
 ```
@@ -41,17 +42,62 @@ docker compose up -d
 # Ejecutar la API
 go run ./cmd/api
 ```
-La API estará disponible en `http://localhost:8080`.
+- API REST: `http://localhost:8080`
+- **Swagger UI Interactivo**: `http://localhost:8080/swagger` o `http://localhost:8080/docs`
+- **Especificación OpenAPI 3.1 JSON**: `http://localhost:8080/api/v1/openapi.json`
 
 ### 2. Ejecutar la Suite de Tests Automatizados
 ```powershell
-go test -v -race ./...
+go test -v ./...
 ```
 
 ### 3. Compilar el Binario
 ```powershell
 go build -o bin/api.exe ./cmd/api
 ```
+
+---
+
+## 📖 Documentación OpenAPI y Guía para Frontend / Agentes de IA
+
+En la carpeta [`docs/`](docs/) encontrarás:
+1. **[`docs/openapi.yaml`](docs/openapi.yaml)** y **[`docs/openapi.json`](docs/openapi.json)**: Especificación formal OpenAPI 3.1.0 completa con esquemas de validación, ejemplos y formato de errores RFC 9457.
+2. **[`docs/FRONTEND_AGENT_GUIDE.md`](docs/FRONTEND_AGENT_GUIDE.md)**: Guía exhaustiva diseñada para que cualquier Agente de IA o desarrollador frontend conecte el cliente Next.js (`base_project_fe`) sin ambigüedades (incluye reglas de negocio, flujos de autenticación con Supabase, tipos TypeScript y hooks de TanStack Query listos para usar).
+
+---
+
+## ☁️ Despliegue en Vercel (Serverless Go)
+
+El proyecto incluye soporte nativo listo para desplegar en **Vercel Serverless Functions**:
+- **`api/index.go`**: Punto de entrada serverless estándar de Vercel (`func Handler(w http.ResponseWriter, r *http.Request)`).
+- **`vercel.json`**: Configuración de enrutamiento que redirige todas las rutas hacia la función serverless de Go.
+
+Para desplegar en Vercel con la CLI:
+```bash
+vercel
+```
+O simplemente conecta el repositorio de GitHub [GM-Tomas/base_project_go](https://github.com/GM-Tomas/base_project_go) en tu panel de Vercel. Configura las variables de entorno (`SUPABASE_URL`, `DATABASE_URL`, etc.) en el dashboard del proyecto en Vercel.
+
+---
+
+## 🗄️ Persistencia: ¿KVS, PostgreSQL o MongoDB?
+
+### 1. ¿Funciona con un Key-Value Store (KVS)?
+**No.** En las primeras plantillas de prueba existía una tabla `kv_store`, pero fue explícitamente eliminada porque una aplicación de gestión patrimonial requiere:
+- Claves foráneas e integridad referencial (`holdings` vinculados a `platforms`).
+- Precisión decimal fija para saldos financieros (`NUMERIC(20,2)`).
+- Row Level Security (RLS) en Supabase para aislamiento multi-tenant estricto.
+- Unicidad insensible a mayúsculas (`lower(name)`).
+- Agregaciones (`SUM`, `COUNT`, `LEFT JOIN` para incluir plataformas con saldo cero).
+
+### 2. ¿Se puede conectar con MongoDB?
+**¡Sí!** Gracias a la **Arquitectura Hexagonal**, el dominio y la lógica de aplicación dependen únicamente de interfaces (puertos outbound en `internal/domain/port/outbound/`):
+- `HoldingRepository`
+- `PlatformRepository`
+- `SnapshotRepository`
+- `WealthAggregationPort`
+
+Para usar MongoDB en lugar de PostgreSQL, solo se requiere implementar un adaptador que satisfaga estas 4 interfaces contra colecciones de MongoDB (`holdings`, `platforms`, `snapshots`), sin tocar una sola línea de código del dominio o los controladores.
 
 ---
 
@@ -73,6 +119,8 @@ Authorization: Bearer <session.access_token>
 
 | Método | Endpoint | Descripción | Auth Requerida |
 |---|---|---|---|
+| `GET` | `/swagger` o `/docs` | Interfaz interactiva de Swagger UI | No |
+| `GET` | `/api/v1/openapi.json` | Especificación OpenAPI 3.1 en formato JSON | No |
 | `GET` | `/api/v1/health` | Estado operativo del servicio | No |
 | `GET` | `/api/v1/holdings` | Lista posiciones del usuario (filtro opcional `assetClass`, `platform`) | Sí |
 | `POST` | `/api/v1/holdings` | Crea una posición (alta implícita de plataforma) | Sí |
@@ -88,26 +136,3 @@ Authorization: Bearer <session.access_token>
 | `GET` | `/api/v1/wealth/estimate` | Proyección de interés compuesto e hitos (`Cache-Control: private, max-age=30`) | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | Serie histórica de snapshots con variación porcentual | Sí |
 | `POST` | `/api/v1/wealth/snapshots` | Captura un snapshot instantáneo en el servidor (`409` si ya existe en el segundo) | Sí |
-
----
-
-## 💾 Persistencia y Migraciones
-
-Las migraciones SQL están en `db/migrations/` con soporte para PostgreSQL nativo y Supabase:
-- `000002_wealth_tables.up.sql`: Crea tablas `platforms`, `holdings` y `net_worth_snapshots` con Row Level Security (RLS) y restricciones de integridad.
-- `000003_drop_kv_store.up.sql`: Limpieza de tablas previas.
-- `000004_tasks_indexes.up.sql`: Índices optimizados.
-
-Para cargar datos de ejemplo en desarrollo:
-```powershell
-psql "$SUPABASE_DB_URL" -v dev_user_id="'<tu-user-id-uuid>'" -f db/seed/seed-dev.sql
-```
-
----
-
-## 🧪 Pruebas Automatizadas
-
-La suite de tests cubre:
-- **Dominio**: Operaciones monetarias exactas con `shopspring/decimal`, fórmulas de interés compuesto (golden test cases con tolerancia `0.01`), desgloses de liquidez, proyecciones e hitos.
-- **Servicios de Aplicación**: Lógica de orquestación, validación de reglas de negocio y manejo de errores.
-- **Handlers HTTP & Middlewares**: Códigos de estado (`200`, `201`, `204`, `400`, `401`, `404`, `409`), cabeceras (`Location`, `Cache-Control`, `X-Request-Id`), y respuestas `application/problem+json`.
