@@ -6,9 +6,11 @@ import (
 	"net/http"
 
 	appService "github.com/GM-Tomas/base_project_go/internal/application/service"
+	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	appHttp "github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http/middleware"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/outbound/persistence"
+	mongopersistence "github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/outbound/persistence/mongo"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/config"
 )
 
@@ -18,22 +20,47 @@ type App struct {
 }
 
 func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
-	// Initialize Database Pool
-	var cleanup func() = func() {}
-	db, err := persistence.NewDB(ctx, cfg.DatabaseURL)
-	if err != nil {
-		log.Printf("WARNING: Database connection could not be established immediately (%v). Running with deferred connection...", err)
-	} else {
-		cleanup = func() {
-			db.Close()
-		}
-	}
+	var (
+		holdingRepo      outbound.HoldingRepository
+		platformRepo     outbound.PlatformRepository
+		snapshotRepo     outbound.SnapshotRepository
+		wealthAggAdapter outbound.WealthAggregationPort
+		cleanup          func() = func() {}
+	)
 
-	// Adapters & Repositories
-	holdingRepo := persistence.NewPostgresHoldingRepository(db)
-	platformRepo := persistence.NewPostgresPlatformRepository(db)
-	snapshotRepo := persistence.NewPostgresSnapshotRepository(db)
-	wealthAggAdapter := persistence.NewPostgresWealthAggregationAdapter(db)
+	if cfg.DBType == "mongodb" {
+		log.Printf("Connecting to MongoDB (database: %s)...", cfg.MongoDBName)
+		mongoDB, err := mongopersistence.NewMongoDB(ctx, cfg.MongoDBURI, cfg.MongoDBName)
+		if err != nil {
+			log.Printf("WARNING: MongoDB connection could not be established immediately (%v). Running with deferred connection...", err)
+		} else {
+			cleanup = func() {
+				_ = mongoDB.Close(context.Background())
+			}
+			log.Println("MongoDB connection established successfully.")
+		}
+
+		holdingRepo = mongopersistence.NewMongoHoldingRepository(mongoDB)
+		platformRepo = mongopersistence.NewMongoPlatformRepository(mongoDB)
+		snapshotRepo = mongopersistence.NewMongoSnapshotRepository(mongoDB)
+		wealthAggAdapter = mongopersistence.NewMongoWealthAggregationAdapter(mongoDB)
+	} else {
+		log.Println("Connecting to PostgreSQL...")
+		db, err := persistence.NewDB(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Printf("WARNING: PostgreSQL connection could not be established immediately (%v). Running with deferred connection...", err)
+		} else {
+			cleanup = func() {
+				db.Close()
+			}
+			log.Println("PostgreSQL connection pool established successfully.")
+		}
+
+		holdingRepo = persistence.NewPostgresHoldingRepository(db)
+		platformRepo = persistence.NewPostgresPlatformRepository(db)
+		snapshotRepo = persistence.NewPostgresSnapshotRepository(db)
+		wealthAggAdapter = persistence.NewPostgresWealthAggregationAdapter(db)
+	}
 
 	// Application Services
 	holdingService := appService.NewHoldingService(holdingRepo, platformRepo, appService.RealClock)

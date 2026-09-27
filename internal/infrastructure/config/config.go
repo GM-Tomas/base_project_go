@@ -9,9 +9,12 @@ import (
 type Config struct {
 	Port                string
 	SupabaseURL         string
+	DBType              string // "postgres" or "mongodb"
 	DatabaseURL         string
 	DatabaseUser        string
 	DatabasePassword    string
+	MongoDBURI          string
+	MongoDBName         string
 	AllowedOrigins      []string
 	DefaultFxUsdArs     float64
 	DefaultAssetClasses []string
@@ -71,6 +74,18 @@ func LoadConfig() Config {
 		}
 	}
 
+	mongoURI := getEnv("MONGODB_URI", "")
+	mongoDBName := getEnv("MONGODB_DATABASE", "base_wealth")
+
+	dbType := strings.ToLower(getEnv("DB_TYPE", ""))
+	if dbType == "" {
+		if mongoURI != "" {
+			dbType = "mongodb"
+		} else {
+			dbType = "postgres"
+		}
+	}
+
 	dbURL := getEnv("SUPABASE_DB_URL", getEnv("DATABASE_URL", "postgres://base_wealth:base_wealth@localhost:5432/base_wealth?sslmode=disable"))
 	dbUser := getEnv("SUPABASE_DB_USER", "")
 	dbPassword := getEnv("SUPABASE_DB_PASSWORD", "")
@@ -78,9 +93,12 @@ func LoadConfig() Config {
 	return Config{
 		Port:                port,
 		SupabaseURL:         supabaseURL,
+		DBType:              dbType,
 		DatabaseURL:         dbURL,
 		DatabaseUser:        dbUser,
 		DatabasePassword:    dbPassword,
+		MongoDBURI:          mongoURI,
+		MongoDBName:         mongoDBName,
 		AllowedOrigins:      allowedOrigins,
 		DefaultFxUsdArs:     fxRate,
 		DefaultAssetClasses: defaultClasses,

@@ -1,0 +1,107 @@
+package mongo
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+)
+
+type MongoDB struct {
+	Client    *mongo.Client
+	Database  *mongo.Database
+	Holdings  *mongo.Collection
+	Platforms *mongo.Collection
+	Snapshots *mongo.Collection
+}
+
+func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error) {
+	if dbName == "" {
+		dbName = "base_wealth"
+	}
+
+	clientOpts := options.Client().ApplyURI(uri)
+	client, err := mongo.Connect(clientOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ping database with timeout
+	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer pingCancel()
+
+	if err := client.Ping(pingCtx, nil); err != nil {
+		log.Printf("MongoDB ping warning: %v (running with deferred connection)", err)
+	}
+
+	database := client.Database(dbName)
+	holdingsColl := database.Collection("holdings")
+	platformsColl := database.Collection("platforms")
+	snapshotsColl := database.Collection("net_worth_snapshots")
+
+	db := &MongoDB{
+		Client:    client,
+		Database:  database,
+		Holdings:  holdingsColl,
+		Platforms: platformsColl,
+		Snapshots: snapshotsColl,
+	}
+
+	// Ensure Indexes asynchronously or in background
+	go func() {
+		idxCtx, idxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer idxCancel()
+		db.ensureIndexes(idxCtx)
+	}()
+
+	return db, nil
+}
+
+func (db *MongoDB) Close(ctx context.Context) error {
+	return db.Client.Disconnect(ctx)
+}
+
+func (db *MongoDB) ensureIndexes(ctx context.Context) {
+	// Unique Platform index: user_id + lower_name
+	_, err := db.Platforms.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "user_id", Value: 1},
+			{Key: "lower_name", Value: 1},
+		},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		log.Printf("Warning creating platforms index: %v", err)
+	}
+
+	// Unique Snapshot index: user_id + captured_at
+	_, err = db.Snapshots.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "user_id", Value: 1},
+			{Key: "captured_at", Value: 1},
+		},
+		Options: options.Index().SetUnique(true),
+	})
+	if err != nil {
+		log.Printf("Warning creating snapshots index: %v", err)
+	}
+
+	// Holdings index: user_id + platform_name & user_id + asset_class
+	_, _ = db.Holdings.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "user_id", Value: 1},
+				{Key: "platform_name", Value: 1},
+			},
+		},
+		{
+			Keys: bson.D{
+				{Key: "user_id", Value: 1},
+				{Key: "asset_class", Value: 1},
+			},
+		},
+	})
+}
