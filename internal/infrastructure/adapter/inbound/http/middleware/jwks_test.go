@@ -77,15 +77,6 @@ func keySet(t *testing.T, kid string) jwk.Set {
 
 func answer(f *fakeJWKS, o fetchOutcome) { go func() { f.outcomes <- o }() }
 
-func waitIdle(t *testing.T, c *jwksCache) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return c.inflight == nil
-	}, 5*time.Second, time.Millisecond)
-}
-
 func TestJWKSCache_OneFetchServesEveryoneAndOutlivesHangUps(t *testing.T) {
 	c, f, _ := newTestJWKSCache(time.Hour)
 	keys := keySet(t, "a")
