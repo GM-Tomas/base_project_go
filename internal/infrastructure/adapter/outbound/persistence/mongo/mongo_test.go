@@ -329,14 +329,18 @@ func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 	ctx := context.Background()
 	user := newUser()
 
-	// Lowercasing alone keeps these apart ("straße" vs "strasse", final sigma "ς" vs "σ"). The type an
-	// earlier version stored under one lowercased spelling applies to the whole platform.
+	// Lowercasing alone keeps these apart ("straße" vs "strasse", final sigma "ς" vs "σ", a precomposed
+	// "é" vs "e" and a combining accent). The type an earlier version stored under one lowercased spelling
+	// applies to the whole platform.
+	const cafeComposed, cafeDecomposed = "Caf\u00e9", "Cafe\u0301"
 	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "lower_name": "strasse", "type": "Bank"})
 	for _, h := range []model.Holding{
 		holding(user, "a", "Cash", "Straße", 1, at(1)),
 		holding(user, "b", "Cash", "STRASSE", 2, at(2)),
 		holding(user, "c", "Cash", "ΟΔΟΣ", 3, at(3)),
 		holding(user, "d", "Cash", "οδος", 4, at(4)),
+		holding(user, "e", "Cash", cafeComposed, 5, at(5)),
+		holding(user, "f", "Cash", cafeDecomposed, 6, at(6)),
 	} {
 		_, err := holdings.Save(ctx, h)
 		require.NoError(t, err)
@@ -345,13 +349,16 @@ func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 	platforms, err := repo.FindAll(ctx, user)
 	require.NoError(t, err)
 	assert.Equal(t, []model.Platform{
+		{UserId: user, Name: model.MustPlatformName(cafeComposed), Type: model.PlatformTypeOther, CreatedAt: at(5)},
 		{UserId: user, Name: model.MustPlatformName("Straße"), Type: model.MustPlatformType("Bank"), CreatedAt: at(1)},
 		{UserId: user, Name: model.MustPlatformName("ΟΔΟΣ"), Type: model.PlatformTypeOther, CreatedAt: at(3)},
 	}, platforms)
 
-	name, err := repo.Canonical(ctx, user, model.MustPlatformName("strasse"))
-	require.NoError(t, err)
-	assert.Equal(t, "Straße", name.Value())
+	for asked, want := range map[string]string{"strasse": "Straße", "ὁδός": "ὁδός", "οδος": "ΟΔΟΣ", "CAFE\u0301": cafeComposed} {
+		name, err := repo.Canonical(ctx, user, model.MustPlatformName(asked))
+		require.NoError(t, err)
+		assert.Equal(t, want, name.Value(), asked)
+	}
 
 	byPlatform, err := agg.ByPlatform(ctx, user)
 	require.NoError(t, err)
@@ -359,7 +366,7 @@ func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 	for _, p := range byPlatform {
 		rows = append(rows, fmt.Sprintf("%s/%s/%s/%d", p.Name.Value(), p.Type.Value(), p.Value.String(), p.Count))
 	}
-	assert.Equal(t, []string{"ΟΔΟΣ/Other/7.00/2", "Straße/Bank/3.00/2"}, rows)
+	assert.Equal(t, []string{cafeComposed + "/Other/11.00/2", "ΟΔΟΣ/Other/7.00/2", "Straße/Bank/3.00/2"}, rows)
 
 	list, err := holdings.FindAll(ctx, user)
 	require.NoError(t, err)
@@ -367,7 +374,7 @@ func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 	for _, h := range list {
 		spelled = append(spelled, h.Name+":"+h.Platform.Value())
 	}
-	assert.Equal(t, []string{"a:Straße", "b:Straße", "c:ΟΔΟΣ", "d:ΟΔΟΣ"}, spelled)
+	assert.Equal(t, []string{"a:Straße", "b:Straße", "c:ΟΔΟΣ", "d:ΟΔΟΣ", "e:" + cafeComposed, "f:" + cafeComposed}, spelled)
 }
 
 func TestPlatformRepository_KeepsTypesEarlierVersionsStoredAndSortsAlphabetically(t *testing.T) {

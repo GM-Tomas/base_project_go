@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -61,12 +62,32 @@ func (r *MongoPlatformRepository) Canonical(
 	userId model.UserId,
 	name model.PlatformName,
 ) (model.PlatformName, error) {
-	groups, err := platformGroups(ctx, r.holdingsColl, userId)
+	cursor, err := r.holdingsColl.Find(ctx,
+		bson.M{"user_id": userId.UUID().String()},
+		options.Find().SetProjection(bson.M{"platform_name": 1}).SetSort(holdingsOldestFirst),
+	)
 	if err != nil {
 		return model.PlatformName{}, err
 	}
-	if g, ok := groups[platformKey(name)]; ok {
-		return g.name, nil
+	defer cursor.Close(ctx)
+
+	want := platformKey(name)
+	spellings := platformSpellings{}
+	for cursor.Next(ctx) {
+		var doc holdingDoc
+		if err := cursor.Decode(&doc); err != nil {
+			return model.PlatformName{}, err
+		}
+		stored, ok := storedPlatformName(doc)
+		if !ok {
+			continue
+		}
+		if spelled, key := spellings.spell(stored); key == want {
+			return spelled, nil
+		}
+	}
+	if err := cursor.Err(); err != nil {
+		return model.PlatformName{}, err
 	}
 	return name, nil
 }
@@ -81,9 +102,32 @@ type platformGroup struct {
 	count     int
 }
 
-// platformKey is what makes two platform names the same platform: they match under Unicode case folding
-// ("Binance" and "binance", "Straße" and "STRASSE").
-func platformKey(name model.PlatformName) string { return cases.Fold().String(name.Value()) }
+// platformKey is what makes two platform names the same platform: Unicode's canonical caseless match
+// ("Binance" and "binance", "Straße" and "STRASSE", "Café" typed with a precomposed "é" or with "e" and
+// a combining accent).
+func platformKey(name model.PlatformName) string {
+	folder := folders.Get().(*cases.Caser)
+	defer folders.Put(folder)
+	return norm.NFD.String(folder.String(norm.NFD.String(name.Value())))
+}
+
+// folders reuses case folders, which aren't safe for concurrent use, across the many platformKey calls a
+// listing makes.
+var folders = sync.Pool{New: func() any {
+	folder := cases.Fold()
+	return &folder
+}}
+
+// holdingsOldestFirst is the order the spelling rule is defined in (see platformSpellings).
+var holdingsOldestFirst = bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}
+
+// storedPlatformName reads a holding's platform name like the domain reads it (trimmed, inner whitespace
+// collapsed), as GET /holdings does. A name the domain rejects can only have been written outside the
+// API, and already makes GET /holdings fail; the platform views leave its holding out so they keep working.
+func storedPlatformName(doc holdingDoc) (model.PlatformName, bool) {
+	name, err := model.NewPlatformName(doc.PlatformName)
+	return name, err == nil
+}
 
 // platformSpellings holds the one spelling rule: a platform is spelled as on its earliest holding, by
 // (created_at, _id), whatever case later ones use. Feed it holdings in that order.
@@ -111,7 +155,9 @@ func sortName(name model.PlatformName) string {
 	if err != nil {
 		stripped = name.Value()
 	}
-	return cases.Fold().String(stripped)
+	folder := folders.Get().(*cases.Caser)
+	defer folders.Put(folder)
+	return folder.String(stripped)
 }
 
 // platformsWithTypes reads the user's platforms and the types earlier versions stored at the same time:
@@ -153,7 +199,7 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 		bson.M{"user_id": userId.UUID().String()},
 		options.Find().
 			SetProjection(bson.M{"platform_name": 1, "created_at": 1, "value_usd": 1}).
-			SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}),
+			SetSort(holdingsOldestFirst),
 	)
 	if err != nil {
 		return nil, err
@@ -166,11 +212,8 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 	groups := make(map[string]*platformGroup)
 	spellings := platformSpellings{}
 	for _, doc := range docs {
-		// Read like the domain reads it (trimmed, inner whitespace collapsed), as GET /holdings does. A name
-		// the domain rejects can only have been written outside the API, and already makes GET /holdings
-		// fail; its holding is left out here so the platform views keep working.
-		stored, err := model.NewPlatformName(doc.PlatformName)
-		if err != nil {
+		stored, ok := storedPlatformName(doc)
+		if !ok {
 			continue
 		}
 		name, key := spellings.spell(stored)
@@ -224,8 +267,9 @@ func legacyPlatformTypes(ctx context.Context, platforms *mongo.Collection, userI
 			continue
 		}
 		// Stored lowercased; keyed again like holdings are (folding a lowercased name gives the same key).
-		if _, taken := types[platformKey(name)]; !taken {
-			types[platformKey(name)] = pt
+		key := platformKey(name)
+		if _, taken := types[key]; !taken {
+			types[key] = pt
 		}
 	}
 	return types, nil

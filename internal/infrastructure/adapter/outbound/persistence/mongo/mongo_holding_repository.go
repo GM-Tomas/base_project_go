@@ -39,7 +39,7 @@ func (r *MongoHoldingRepository) FindAll(
 	ctx context.Context,
 	userId model.UserId,
 ) ([]model.Holding, error) {
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
+	opts := options.Find().SetSort(holdingsOldestFirst)
 	cursor, err := r.coll.Find(ctx, bson.M{"user_id": userId.UUID().String()}, opts)
 	if err != nil {
 		return nil, err
