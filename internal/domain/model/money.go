@@ -13,7 +13,7 @@ var (
 	ZeroMoney        = Money{amount: decimal.NewFromInt(0).Truncate(2)}
 )
 
-// Money represents a non-negative USD amount, always scale 2 (NUMERIC(20,2)).
+// Money represents a non-negative USD amount, always scale 2.
 type Money struct {
 	amount decimal.Decimal
 }

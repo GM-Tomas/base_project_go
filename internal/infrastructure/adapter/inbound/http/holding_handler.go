@@ -13,7 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// Keeps sums well inside the NUMERIC(20,2) column instead of surfacing a DB overflow as a 500.
+// Upper bound for a single holding: rejects absurd input (e.g. 1e30) at the API boundary.
 const maxHoldingValueUsd = 1e15
 
 type HoldingHandler struct {

@@ -24,7 +24,7 @@ internal/
 ├── infrastructure/                       # CAPA DE INFRAESTRUCTURA (Detalles de IO y adaptadores)
 │   ├── adapter/
 │   │   ├── inbound/                      # Adaptadores HTTP (Chi Router, Handlers y Middlewares)
-│   │   └── outbound/                     # Adaptadores de Persistencia (PostgreSQL con pgx, MongoDB)
+│   │   └── outbound/                     # Adaptador de Persistencia (MongoDB)
 │   ├── app/                              # Bootstrapper compartido (local & serverless Vercel)
 │   └── config/                           # Configuración y variables de entorno
 └── errors/                               # Errores tipados de la aplicación
@@ -36,7 +36,7 @@ internal/
 
 ### 1. Ejecutar la API en modo Desarrollo
 ```powershell
-# Iniciar Postgres con Docker Compose
+# Iniciar MongoDB con Docker Compose
 docker compose up -d
 
 # Ejecutar la API
@@ -77,24 +77,24 @@ y se sirve en `/api/v1/openapi.json` y `/swagger`.
 
 | Variable | Requerida | Valor |
 |---|---|---|
-| `SUPABASE_URL` | Sí | `https://<ref>.supabase.co` — el **mismo** proyecto que usa el frontend. De acá se derivan JWKS e issuer. |
-| `DATABASE_URL` (o `SUPABASE_DB_URL`) | Sí (Postgres) | Connection string del **Session pooler** de Supabase (`postgres://postgres.<ref>:<pwd>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require`). Sin `sslmode=require` pgx usa `prefer`, que acepta caer a texto plano. La conexión directa es solo IPv6 (Vercel no la alcanza); el Session pooler además es compatible con los prepared statements que usa pgx por defecto. |
-| `MONGODB_URI` | Sí (Mongo) | Si está presente se usa MongoDB en lugar de Postgres (`DB_TYPE` lo fuerza explícitamente). |
+| `MONGODB_URI` | Sí | Connection string de MongoDB (Atlas: `mongodb+srv://...`). En Atlas, habilitar el acceso desde Vercel en *Network Access* (`0.0.0.0/0`: Vercel no tiene IPs fijas). Default local: `mongodb://localhost:27017`. |
+| `MONGODB_DATABASE` | No | Default `base_wealth`. |
+| `SUPABASE_URL` | Sí | `https://<ref>.supabase.co`: el **mismo** proyecto que usa el frontend para el login. Solo se usa para validar los JWT (JWKS e issuer). |
 | `FRONTEND_ORIGIN` | Recomendada en producción | Orígenes CORS separados por coma. Default: `localhost:3000` y `https://*.vercel.app` (cualquier sitio de Vercel). En producción: la URL exacta del frontend. |
 
-El proyecto de Supabase debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
+Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
 valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request da `401`.
 
-Antes del primer deploy, aplicar [`db/migrations/000002_wealth_tables.up.sql`](db/migrations/000002_wealth_tables.up.sql)
-en el SQL Editor de Supabase.
+Los índices de MongoDB (plataforma única por usuario, un snapshot por segundo) se crean solos al arrancar.
 
 ---
 
-## 🗄️ Persistencia: PostgreSQL o MongoDB
+## 🗄️ Persistencia: MongoDB
 
-Ambos adaptadores implementan los mismos puertos outbound (`internal/domain/port/outbound/`):
-`HoldingRepository`, `PlatformRepository`, `SnapshotRepository` y `WealthAggregationPort`. La elección es
-solo de configuración (ver tabla anterior); dominio y handlers no cambian.
+El adaptador `internal/infrastructure/adapter/outbound/persistence/mongo/` implementa los puertos outbound
+(`HoldingRepository`, `PlatformRepository`, `SnapshotRepository`, `WealthAggregationPort`) sobre las
+colecciones `holdings`, `platforms` y `net_worth_snapshots`. Los montos se guardan como decimales en texto
+(escala 2) para no perder precisión.
 
 ---
 

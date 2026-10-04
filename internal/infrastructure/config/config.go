@@ -5,10 +5,9 @@ import (
 	"strings"
 )
 
+// Supabase is only the identity provider (JWT issuer); all data lives in MongoDB.
 type Config struct {
 	Port                string
-	DBType              string // "postgres" or "mongodb"
-	DatabaseURL         string
 	MongoDBURI          string
 	MongoDBName         string
 	AllowedOrigins      []string
@@ -22,21 +21,9 @@ type Config struct {
 func LoadConfig() Config {
 	supabaseURL := strings.TrimRight(getEnv("SUPABASE_URL", "https://vffsdgqqyqcbmkehnpxx.supabase.co"), "/")
 
-	mongoURI := getEnv("MONGODB_URI", "")
-	dbType := strings.ToLower(getEnv("DB_TYPE", ""))
-	if dbType == "" {
-		if mongoURI != "" {
-			dbType = "mongodb"
-		} else {
-			dbType = "postgres"
-		}
-	}
-
 	return Config{
 		Port:        getEnv("PORT", "8080"),
-		DBType:      dbType,
-		DatabaseURL: getEnv("SUPABASE_DB_URL", getEnv("DATABASE_URL", "postgres://base_wealth:base_wealth@localhost:5432/base_wealth?sslmode=disable")),
-		MongoDBURI:  mongoURI,
+		MongoDBURI:  getEnv("MONGODB_URI", "mongodb://localhost:27017"), // local default matches compose.yaml
 		MongoDBName: getEnv("MONGODB_DATABASE", "base_wealth"),
 		// Preview deployments of the frontend live under *.vercel.app; set FRONTEND_ORIGIN to lock it down.
 		AllowedOrigins:      splitList(getEnv("FRONTEND_ORIGIN", "http://localhost:3000,http://127.0.0.1:3000,https://*.vercel.app")),
