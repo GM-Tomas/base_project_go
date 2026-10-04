@@ -129,5 +129,5 @@ func (s *HoldingService) DeleteHolding(
 		return appErrors.NewResourceNotFoundError(fmt.Sprintf("Holding %s not found", id.String()))
 	}
 	// There is no platform management in the UI: a platform lives exactly as long as a holding uses it.
-	return s.platformRepo.DeleteUnused(ctx, userId)
+	return s.platformRepo.DeleteUnused(ctx, userId, s.clock())
 }

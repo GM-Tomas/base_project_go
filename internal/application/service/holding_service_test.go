@@ -113,7 +113,7 @@ func (m *mockPlatformRepo) EnsureExists(ctx context.Context, userId model.UserId
 	return name, nil
 }
 
-func (m *mockPlatformRepo) DeleteUnused(ctx context.Context, userId model.UserId) error {
+func (m *mockPlatformRepo) DeleteUnused(ctx context.Context, userId model.UserId, now time.Time) error {
 	used := map[string]bool{}
 	for _, h := range m.holdings.holdings {
 		used[h.Platform.Value()] = true

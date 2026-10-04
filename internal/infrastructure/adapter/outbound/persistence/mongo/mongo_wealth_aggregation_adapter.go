@@ -125,22 +125,16 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 	ctx context.Context,
 	userId model.UserId,
 ) ([]outbound.PlatformAggregate, error) {
-	// 1. Fetch all platforms of this user (including those with 0 holdings)
-	pFilter := bson.M{"user_id": userId.UUID().String()}
-	pCursor, err := a.platformsColl.Find(ctx, pFilter)
+	uid := userId.UUID().String()
+
+	// Same rule as PlatformRepository.FindAll: the platforms are the ones the holdings use, so the breakdown
+	// always adds up to the net worth; a platform's doc only adds its type.
+	docs, err := platformDocsByName(ctx, a.platformsColl, uid)
 	if err != nil {
 		return nil, err
 	}
-	defer pCursor.Close(ctx)
 
-	var pDocs []platformDoc
-	if err := pCursor.All(ctx, &pDocs); err != nil {
-		return nil, err
-	}
-
-	// 2. Fetch all holdings of this user
-	hFilter := bson.M{"user_id": userId.UUID().String()}
-	hCursor, err := a.holdingsColl.Find(ctx, hFilter)
+	hCursor, err := a.holdingsColl.Find(ctx, bson.M{"user_id": uid})
 	if err != nil {
 		return nil, err
 	}
@@ -175,43 +169,19 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 		ps.count++
 	}
 
-	var list []outbound.PlatformAggregate
-	for _, pDoc := range pDocs {
-		pn, err := model.NewPlatformName(pDoc.Name)
-		if err != nil {
-			continue
-		}
-		pt, err := model.NewPlatformType(pDoc.Type)
-		if err != nil {
-			continue
-		}
-
-		total := model.ZeroMoney
-		count := 0
-		if ps, found := statsByPlatform[pDoc.Name]; found {
-			total = ps.total
-			count = ps.count
-			delete(statsByPlatform, pDoc.Name)
-		}
-
-		list = append(list, outbound.PlatformAggregate{
-			Name:  pn,
-			Type:  pt,
-			Value: total,
-			Count: count,
-		})
-	}
-
-	// Holdings whose platform doc is gone (see DeleteUnused) still count, so the breakdown always adds
-	// up to the net worth.
+	list := make([]outbound.PlatformAggregate, 0, len(statsByPlatform))
 	for name, ps := range statsByPlatform {
 		pn, err := model.NewPlatformName(name)
 		if err != nil {
 			continue
 		}
+		pt := model.PlatformTypeOther
+		if doc, ok := docs[name]; ok {
+			pt = platformType(doc)
+		}
 		list = append(list, outbound.PlatformAggregate{
 			Name:  pn,
-			Type:  model.PlatformTypeOther,
+			Type:  pt,
 			Value: ps.total,
 			Count: ps.count,
 		})

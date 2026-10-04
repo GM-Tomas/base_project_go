@@ -2,7 +2,6 @@ package mongo
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -15,13 +14,21 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+// platformGracePeriod keeps DeleteUnused off a platform that a create used this recently: the create may
+// have ensured it without its holding having landed yet. Far longer than a create takes (each Mongo
+// operation is capped at operationTimeout) and than any clock skew between instances.
+const platformGracePeriod = time.Minute
+
+// platformDoc registers the user's spelling of a platform. A holding names its platform with that spelling;
+// the doc adds the type and when it was first used.
 type platformDoc struct {
-	ID        string    `bson:"_id"`
-	UserID    string    `bson:"user_id"`
-	Name      string    `bson:"name"`
-	LowerName string    `bson:"lower_name"`
-	Type      string    `bson:"type"`
-	CreatedAt time.Time `bson:"created_at"`
+	ID         string    `bson:"_id"`
+	UserID     string    `bson:"user_id"`
+	Name       string    `bson:"name"`
+	LowerName  string    `bson:"lower_name"`
+	Type       string    `bson:"type"`
+	CreatedAt  time.Time `bson:"created_at"`
+	LastUsedAt time.Time `bson:"last_used_at"` // absent on docs written before it existed
 }
 
 type MongoPlatformRepository struct {
@@ -38,187 +45,121 @@ func NewMongoPlatformRepository(db *MongoDB) *MongoPlatformRepository {
 
 var _ outbound.PlatformRepository = (*MongoPlatformRepository)(nil)
 
+// FindAll lists the platforms the user's holdings use, sorted by name: a platform lives exactly as long as
+// a holding uses it. A doc briefly outliving its last holding (see DeleteUnused) is therefore not listed,
+// and a holding whose doc is somehow gone still lists its platform, as type Other.
 func (r *MongoPlatformRepository) FindAll(
 	ctx context.Context,
 	userId model.UserId,
 ) ([]model.Platform, error) {
-	filter := bson.M{"user_id": userId.UUID().String()}
-	opts := options.Find().SetSort(bson.D{{Key: "name", Value: 1}})
-
-	cursor, err := r.platformsColl.Find(ctx, filter, opts)
+	uid := userId.UUID().String()
+	cursor, err := r.holdingsColl.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"user_id": uid}}},
+		{{Key: "$group", Value: bson.M{"_id": "$platform_name", "first": bson.M{"$min": "$created_at"}}}},
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer cursor.Close(ctx)
-
-	var docs []platformDoc
-	if err := cursor.All(ctx, &docs); err != nil {
+	var used []struct {
+		Name  string    `bson:"_id"`
+		First time.Time `bson:"first"`
+	}
+	if err := cursor.All(ctx, &used); err != nil {
 		return nil, err
 	}
 
-	platforms := make([]model.Platform, 0, len(docs))
-	listed := make(map[string]bool, len(docs))
-	for _, doc := range docs {
-		p, err := mapDocToPlatform(doc)
+	docs, err := platformDocsByName(ctx, r.platformsColl, uid)
+	if err != nil {
+		return nil, err
+	}
+
+	platforms := make([]model.Platform, 0, len(used))
+	for _, u := range used {
+		name, err := model.NewPlatformName(u.Name)
 		if err != nil {
-			return nil, err
-		}
-		platforms = append(platforms, p)
-		listed[p.Name.Value()] = true
-	}
-
-	// A holding can outlive its platform doc (see DeleteUnused). List its platform anyway, as ByPlatform
-	// does, so every view agrees on the user's platforms; adding to it again re-registers the doc.
-	inUse, err := r.namesInUse(ctx, userId)
-	if err != nil {
-		return nil, err
-	}
-	orphans := false
-	for _, name := range inUse {
-		pn, err := model.NewPlatformName(name)
-		if err != nil || listed[name] {
 			continue
 		}
-		platforms = append(platforms, model.Platform{UserId: userId, Name: pn, Type: model.PlatformTypeOther})
-		listed[name] = true
-		orphans = true
+		p := model.Platform{UserId: userId, Name: name, Type: model.PlatformTypeOther, CreatedAt: u.First}
+		if doc, ok := docs[u.Name]; ok {
+			p.Type = platformType(doc)
+			p.CreatedAt = doc.CreatedAt
+		}
+		platforms = append(platforms, p)
 	}
-	if orphans {
-		sort.Slice(platforms, func(i, j int) bool { return platforms[i].Name.Value() < platforms[j].Name.Value() })
-	}
-
+	sort.Slice(platforms, func(i, j int) bool { return platforms[i].Name.Value() < platforms[j].Name.Value() })
 	return platforms, nil
 }
 
-// namesInUse is every platform name the user's holdings reference.
-func (r *MongoPlatformRepository) namesInUse(ctx context.Context, userId model.UserId) ([]string, error) {
-	var names []string
-	err := r.holdingsColl.Distinct(ctx, "platform_name", bson.M{"user_id": userId.UUID().String()}).Decode(&names)
-	return names, err
-}
-
-func (r *MongoPlatformRepository) findByName(
-	ctx context.Context,
-	userId model.UserId,
-	name model.PlatformName,
-) (*model.Platform, error) {
-	filter := bson.M{
-		"user_id":    userId.UUID().String(),
-		"lower_name": strings.ToLower(name.Value()),
-	}
-
-	var doc platformDoc
-	err := r.platformsColl.FindOne(ctx, filter).Decode(&doc)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	p, err := mapDocToPlatform(doc)
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
-}
-
+// EnsureExists returns the user's spelling of the platform (matched case-insensitively), registering it if
+// it's new, in one atomic upsert: concurrent creates of the same platform get the same doc. Every call also
+// stamps last_used_at, which keeps DeleteUnused off it while the caller's holding is on its way.
 func (r *MongoPlatformRepository) EnsureExists(
 	ctx context.Context,
 	userId model.UserId,
 	name model.PlatformName,
 	now time.Time,
 ) (model.PlatformName, error) {
-	existing, err := r.findByName(ctx, userId, name)
+	var doc platformDoc
+	err := r.platformsColl.FindOneAndUpdate(ctx,
+		bson.M{"user_id": userId.UUID().String(), "lower_name": strings.ToLower(name.Value())},
+		bson.M{
+			"$set": bson.M{"last_used_at": now},
+			"$setOnInsert": bson.M{
+				"_id":        uuid.NewString(),
+				"name":       name.Value(),
+				"type":       model.PlatformTypeOther.Value(),
+				"created_at": now,
+			},
+		},
+		options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After),
+	).Decode(&doc)
 	if err != nil {
 		return model.PlatformName{}, err
 	}
-	if existing != nil {
-		return existing.Name, nil
-	}
-
-	// No doc, but a holding may still use this platform under its own spelling (its doc lost to the
-	// DeleteUnused race): register that spelling rather than split the platform in two.
-	inUse, err := r.namesInUse(ctx, userId)
-	if err != nil {
-		return model.PlatformName{}, err
-	}
-	for _, used := range inUse {
-		if strings.ToLower(used) == strings.ToLower(name.Value()) {
-			if pn, err := model.NewPlatformName(used); err == nil {
-				name = pn
-			}
-			break
-		}
-	}
-
-	newPlatform := model.Platform{
-		UserId:    userId,
-		Name:      name,
-		Type:      model.PlatformTypeOther,
-		CreatedAt: now,
-	}
-
-	err = r.insert(ctx, newPlatform)
-	if err != nil {
-		// If duplicate concurrent insert occurred, return existing
-		if mongo.IsDuplicateKeyError(err) {
-			found, findErr := r.findByName(ctx, userId, name)
-			if findErr == nil && found != nil {
-				return found.Name, nil
-			}
-		}
-		return model.PlatformName{}, err
-	}
-
-	return name, nil
+	return model.NewPlatformName(doc.Name)
 }
 
-// insert returns the raw driver error so EnsureExists can recognise a concurrent duplicate insert.
-func (r *MongoPlatformRepository) insert(ctx context.Context, platform model.Platform) error {
-	_, err := r.platformsColl.InsertOne(ctx, platformDoc{
-		ID:        uuid.New().String(),
-		UserID:    platform.UserId.UUID().String(),
-		Name:      platform.Name.Value(),
-		LowerName: strings.ToLower(platform.Name.Value()),
-		Type:      platform.Type.Value(),
-		CreatedAt: platform.CreatedAt,
+// DeleteUnused removes the user's platform docs that no holding uses anymore, sparing any a create used in
+// the last platformGracePeriod: deleting the doc under a create whose holding hasn't landed yet would leave
+// that holding without its platform.
+func (r *MongoPlatformRepository) DeleteUnused(ctx context.Context, userId model.UserId, now time.Time) error {
+	uid := userId.UUID().String()
+	inUse := []string{}
+	if err := r.holdingsColl.Distinct(ctx, "platform_name", bson.M{"user_id": uid}).Decode(&inUse); err != nil {
+		return err
+	}
+	_, err := r.platformsColl.DeleteMany(ctx, bson.M{
+		"user_id": uid,
+		"name":    bson.M{"$nin": inUse},
+		"$or": bson.A{
+			bson.M{"last_used_at": bson.M{"$lt": now.Add(-platformGracePeriod)}},
+			bson.M{"last_used_at": bson.M{"$exists": false}},
+		},
 	})
 	return err
 }
 
-func (r *MongoPlatformRepository) DeleteUnused(ctx context.Context, userId model.UserId) error {
-	inUse, err := r.namesInUse(ctx, userId)
+func platformDocsByName(ctx context.Context, coll *mongo.Collection, uid string) (map[string]platformDoc, error) {
+	cursor, err := coll.Find(ctx, bson.M{"user_id": uid})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	// Not atomic with a concurrent create on the same platform by the same user (other users' data is never
-	// involved), and closing that would take a transaction: the holding can end up without its platform doc.
-	// That's harmless here: FindAll and ByPlatform still list the platform, and EnsureExists re-registers it.
-	_, err = r.platformsColl.DeleteMany(ctx, bson.M{"user_id": userId.UUID().String(), "name": bson.M{"$nin": inUse}})
-	return err
+	var docs []platformDoc
+	if err := cursor.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	byName := make(map[string]platformDoc, len(docs))
+	for _, doc := range docs {
+		byName[doc.Name] = doc
+	}
+	return byName, nil
 }
 
-func mapDocToPlatform(doc platformDoc) (model.Platform, error) {
-	userId, err := uuid.Parse(doc.UserID)
-	if err != nil {
-		return model.Platform{}, err
-	}
-
-	pn, err := model.NewPlatformName(doc.Name)
-	if err != nil {
-		return model.Platform{}, err
-	}
-
+// platformType is the doc's type, or Other when it doesn't hold a valid one.
+func platformType(doc platformDoc) model.PlatformType {
 	pt, err := model.NewPlatformType(doc.Type)
 	if err != nil {
-		return model.Platform{}, err
+		return model.PlatformTypeOther
 	}
-
-	return model.Platform{
-		UserId:    model.NewUserId(userId),
-		Name:      pn,
-		Type:      pt,
-		CreatedAt: doc.CreatedAt,
-	}, nil
+	return pt
 }
