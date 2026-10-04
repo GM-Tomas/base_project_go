@@ -105,8 +105,9 @@ Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe f
 valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request con token da `503`.
 
 Los índices de MongoDB (un snapshot por segundo y por usuario, listado de holdings por usuario) se crean solos al arrancar.
-Al actualizar una base existente, el índice `user_id_1_platform_name_1` de `holdings` que creaban versiones anteriores
-ya no lo usa ninguna consulta y se puede borrar: `db.holdings.dropIndex("user_id_1_platform_name_1")`.
+Al actualizar una base existente, dos índices de `holdings` que crearon versiones anteriores ya no los usa ninguna
+consulta y se pueden borrar: `db.holdings.dropIndex("user_id_1_platform_name_1")` y, si algún build previo de esta
+versión llegó a crearlo, `db.holdings.dropIndex("user_id_1_created_at_1")`.
 
 ---
 

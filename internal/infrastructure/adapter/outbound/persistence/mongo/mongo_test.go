@@ -761,6 +761,69 @@ func TestWealthAggregation_Errors(t *testing.T) {
 	assert.Error(t, err, "holdings decode")
 }
 
+// Every holdings read goes oldest first (the spelling rule depends on it). The index must serve that
+// order, or Mongo sorts in memory on every listing, platform view and create.
+func TestEnsureIndexes_HoldingsOldestFirstNeedsNoSort(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	_, err := NewMongoHoldingRepository(db).Save(ctx, holding(newUser(), "a", "Cash", "Bank", 1, at(1)))
+	require.NoError(t, err)
+
+	var explained bson.M
+	err = db.Database.RunCommand(ctx, bson.D{
+		{Key: "explain", Value: bson.D{
+			{Key: "find", Value: db.Holdings.Name()},
+			{Key: "filter", Value: bson.M{"user_id": newUser().String()}},
+			{Key: "sort", Value: holdingsOldestFirst},
+		}},
+		{Key: "verbosity", Value: "queryPlanner"},
+	}).Decode(&explained)
+	require.NoError(t, err)
+
+	// Every stage of the winning plan, whatever its shape (the classic and slot-based engines nest it
+	// differently).
+	var stages []string
+	var walk func(any)
+	walk = func(node any) {
+		switch n := node.(type) {
+		case bson.D:
+			for _, e := range n {
+				if name, ok := e.Value.(string); ok && e.Key == "stage" {
+					stages = append(stages, name)
+				}
+				walk(e.Value)
+			}
+		case bson.M:
+			for k, v := range n {
+				if name, ok := v.(string); ok && k == "stage" {
+					stages = append(stages, name)
+				}
+				walk(v)
+			}
+		case bson.A:
+			for _, v := range n {
+				walk(v)
+			}
+		}
+	}
+	field := func(doc any, key string) any {
+		switch d := doc.(type) {
+		case bson.D:
+			for _, e := range d {
+				if e.Key == key {
+					return e.Value
+				}
+			}
+		case bson.M:
+			return d[key]
+		}
+		return nil
+	}
+	walk(field(explained["queryPlanner"], "winningPlan")) // not the rejected plans
+	assert.Contains(t, stages, "IXSCAN")
+	assert.NotContains(t, stages, "SORT", "plan: %v", stages)
+}
+
 func TestEnsureIndexes_CoversEveryPerUserQuery(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
