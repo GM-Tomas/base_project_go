@@ -1,7 +1,10 @@
 package mongo
 
 import (
+	"cmp"
 	"context"
+	"maps"
+	"slices"
 	"sort"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -128,24 +131,19 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 		return nil, err
 	}
 
+	// By value, largest first, then alphabetically.
+	byValue := func(x, y *platformGroup) int {
+		return cmp.Or(y.total.Amount().Cmp(x.total.Amount()), byName(x, y))
+	}
 	list := make([]outbound.PlatformAggregate, 0, len(groups))
-	for key, g := range groups {
+	for _, g := range slices.SortedFunc(maps.Values(groups), byValue) {
 		list = append(list, outbound.PlatformAggregate{
 			Name:  g.name,
-			Type:  typeOf(types, key),
+			Type:  typeOf(types, g.key),
 			Value: g.total,
 			Count: g.count,
 		})
 	}
-
-	// Sort descending by value, then alphabetically by platform name
-	sort.Slice(list, func(i, j int) bool {
-		cmp := list[i].Value.Amount().Cmp(list[j].Value.Amount())
-		if cmp != 0 {
-			return cmp > 0
-		}
-		return lessPlatformName(list[i].Name, list[j].Name)
-	})
 
 	return list, nil
 }

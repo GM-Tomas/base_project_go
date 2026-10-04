@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -320,6 +321,55 @@ func TestPlatformRepository_CaseVariantsAreOnePlatform(t *testing.T) {
 	}
 }
 
+func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
+	db := testDB(t)
+	repo := NewMongoPlatformRepository(db)
+	agg := NewMongoWealthAggregationAdapter(db)
+	holdings := NewMongoHoldingRepository(db)
+	ctx := context.Background()
+	user := newUser()
+
+	// Lowercasing alone keeps these apart ("straße" vs "strasse", final sigma "ς" vs "σ"). The type an
+	// earlier version stored under one lowercased spelling applies to the whole platform.
+	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "lower_name": "strasse", "type": "Bank"})
+	for _, h := range []model.Holding{
+		holding(user, "a", "Cash", "Straße", 1, at(1)),
+		holding(user, "b", "Cash", "STRASSE", 2, at(2)),
+		holding(user, "c", "Cash", "ΟΔΟΣ", 3, at(3)),
+		holding(user, "d", "Cash", "οδος", 4, at(4)),
+	} {
+		_, err := holdings.Save(ctx, h)
+		require.NoError(t, err)
+	}
+
+	platforms, err := repo.FindAll(ctx, user)
+	require.NoError(t, err)
+	assert.Equal(t, []model.Platform{
+		{UserId: user, Name: model.MustPlatformName("Straße"), Type: model.MustPlatformType("Bank"), CreatedAt: at(1)},
+		{UserId: user, Name: model.MustPlatformName("ΟΔΟΣ"), Type: model.PlatformTypeOther, CreatedAt: at(3)},
+	}, platforms)
+
+	name, err := repo.Canonical(ctx, user, model.MustPlatformName("strasse"))
+	require.NoError(t, err)
+	assert.Equal(t, "Straße", name.Value())
+
+	byPlatform, err := agg.ByPlatform(ctx, user)
+	require.NoError(t, err)
+	var rows []string
+	for _, p := range byPlatform {
+		rows = append(rows, fmt.Sprintf("%s/%s/%s/%d", p.Name.Value(), p.Type.Value(), p.Value.String(), p.Count))
+	}
+	assert.Equal(t, []string{"ΟΔΟΣ/Other/7.00/2", "Straße/Bank/3.00/2"}, rows)
+
+	list, err := holdings.FindAll(ctx, user)
+	require.NoError(t, err)
+	var spelled []string
+	for _, h := range list {
+		spelled = append(spelled, h.Name+":"+h.Platform.Value())
+	}
+	assert.Equal(t, []string{"a:Straße", "b:Straße", "c:ΟΔΟΣ", "d:ΟΔΟΣ"}, spelled)
+}
+
 func TestPlatformRepository_KeepsTypesEarlierVersionsStoredAndSortsAlphabetically(t *testing.T) {
 	db := testDB(t)
 	repo := NewMongoPlatformRepository(db)
@@ -432,7 +482,8 @@ func TestPlatformRepository_Errors(t *testing.T) {
 	bad := newUser()
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": bad.String(), "platform_name": 5})
 	_, err = repo.FindAll(ctx, bad)
-	assert.Error(t, err)
+	assert.ErrorContains(t, err, "platform_name")
+	assert.NotErrorIs(t, err, context.Canceled, "the error itself, not the cancellation of the other read it caused")
 	_, err = repo.Canonical(ctx, bad, model.MustPlatformName("X"))
 	assert.Error(t, err)
 }

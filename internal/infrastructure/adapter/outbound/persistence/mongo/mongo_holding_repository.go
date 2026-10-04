@@ -52,20 +52,14 @@ func (r *MongoHoldingRepository) FindAll(
 	}
 
 	holdings := make([]model.Holding, 0, len(docs))
-	spellings := make(map[string]model.PlatformName)
+	spellings := platformSpellings{}
 	for _, doc := range docs {
 		h, err := mapDocToHolding(doc)
 		if err != nil {
 			return nil, err
 		}
-		// Every holding names its platform as the platform list does: as on its earliest holding (see
-		// platformGroups), so clients can match platforms exactly.
-		key := platformKey(h.Platform) // h.Platform went through NewPlatformName, as in platformOf
-		if spelled, ok := spellings[key]; ok {
-			h.Platform = spelled
-		} else {
-			spellings[key] = h.Platform
-		}
+		// Every holding names its platform as the platform views do, so clients can match platforms exactly.
+		h.Platform, _ = spellings.spell(h.Platform)
 		holdings = append(holdings, h)
 	}
 
