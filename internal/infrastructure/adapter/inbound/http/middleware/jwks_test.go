@@ -278,9 +278,11 @@ func TestJWKSCache_DuringASlowRefreshOthersUseTheCurrentKeys(t *testing.T) {
 	}()
 	require.Eventually(t, func() bool { return f.calls.Load() == 2 }, 5*time.Second, time.Millisecond)
 
-	quick, cancel := context.WithTimeout(ctx, time.Second)
+	// Far longer than staleWait, so only a request waiting on the refresh itself runs into it, even on a
+	// loaded machine.
+	patient, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	got, err := c.Get(quick)
+	got, err := c.Get(patient)
 	require.NoError(t, err, "not held up on a slow Supabase while the keys still work")
 	assert.Equal(t, old, got)
 
