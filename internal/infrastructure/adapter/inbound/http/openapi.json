@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "BASE Wealth Management API (Go Backend)",
-    "description": "REST API construida en **Go 1.25** siguiendo los principios de **Arquitectura Hexagonal (Ports & Adapters)** y **Domain-Driven Design (DDD)**.\nExpone la gestión integral de activos financieros, posiciones de inversión (holdings), plataformas/entidades, cálculo de patrimonio neto en USD, variaciones de rendimiento YTD, desglose de liquidez, serie histórica de snapshots y motor de proyecciones financieras con interés compuesto.\n\n### Seguridad y Autenticación\nTodos los endpoints bajo `/api/v1/**` (excepto `/api/v1/health`) requieren un token Bearer JWT emitido por **Supabase Auth**.\nEl backend extrae la identidad del usuario a partir del claim `sub` del JWT y aplica aislamiento multi-tenant estricto.\n\n### Formato de Errores\nTodos los errores siguen el estándar **RFC 9457 / RFC 7807** (`application/problem+json`) incluyendo identificador de traza `traceId` y validación granular por campo.\n",
+    "description": "REST API construida en **Go 1.26** siguiendo los principios de **Arquitectura Hexagonal (Ports & Adapters)** y **Domain-Driven Design (DDD)**.\nExpone la gestión integral de activos financieros, posiciones de inversión (holdings), plataformas/entidades, cálculo de patrimonio neto en USD, variaciones de rendimiento YTD, desglose de liquidez, serie histórica de snapshots y motor de proyecciones financieras con interés compuesto.\n\n### Seguridad y Autenticación\nTodos los endpoints bajo `/api/v1/**` (excepto `/api/v1/health`) requieren un token Bearer JWT emitido por **Supabase Auth**.\nEl backend extrae la identidad del usuario a partir del claim `sub` del JWT y aplica aislamiento multi-tenant estricto: cada usuario solo ve y modifica sus propios holdings, plataformas, clases de activo y snapshots. Ningún endpoint acepta un identificador de usuario en body, path o query (si se envía, se ignora), y un recurso de otro usuario responde `404` igual que uno inexistente.\n\nCuotas por usuario: hasta 1000 holdings y 5000 snapshots (`409` con `type` `.../limit-exceeded` al superarlas).\n\nSi las claves públicas (JWKS) de Supabase no se pueden obtener, la API responde `503` (no `401`): el token puede ser válido.\n\n### Formato de Errores\nTodos los errores siguen el estándar **RFC 9457 / RFC 7807** (`application/problem+json`) incluyendo identificador de traza `traceId` y validación granular por campo.\n",
     "version": "1.0.0",
     "contact": {
       "name": "BASE Wealth Team"
@@ -174,6 +174,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       }
@@ -248,6 +251,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       }
@@ -284,6 +290,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       },
@@ -323,7 +332,7 @@
             "$ref": "#/components/responses/UnauthorizedError"
           },
           "409": {
-            "description": "Ya existe un snapshot para este segundo",
+            "description": "Ya existe un snapshot para este segundo (`type` `.../conflict`), o se alcanzó el máximo de snapshots por usuario, 5000 (`type` `.../limit-exceeded`)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -342,6 +351,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       }
@@ -378,6 +390,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       },
@@ -429,8 +444,29 @@
           "401": {
             "$ref": "#/components/responses/UnauthorizedError"
           },
+          "409": {
+            "description": "Se alcanzó el máximo de holdings por usuario (1000)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "https://base.wealth/errors/limit-exceeded",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "You can track up to 1000 holdings. Remove one to add another.",
+                  "instance": "/api/v1/holdings",
+                  "traceId": "0d4b2f61-8e3a-4c7e-9a1f-6b5c3d2e1f00"
+                }
+              }
+            }
+          },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       }
@@ -473,6 +509,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       }
@@ -509,6 +548,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       }
@@ -564,6 +606,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
           }
         }
       }
@@ -1255,6 +1300,24 @@
               "detail": "An unexpected error occurred. Quote the traceId when reporting it.",
               "instance": "/api/v1/wealth/summary",
               "traceId": "c28b3a77-3e19-4b21-8eb1-7b0b6e159fa9"
+            }
+          }
+        }
+      },
+      "AuthUnavailableError": {
+        "description": "No se pudieron obtener las claves públicas (JWKS) de Supabase para verificar el token. Reintentar más tarde; no implica que la sesión sea inválida.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetail"
+            },
+            "example": {
+              "type": "https://base.wealth/errors/auth-unavailable",
+              "title": "Service Unavailable",
+              "status": 503,
+              "detail": "Your sign-in can't be verified right now. Please try again shortly.",
+              "instance": "/api/v1/wealth/summary",
+              "traceId": "3f0e8a2c-5b7d-4e41-9c55-2b8f7d1e6a90"
             }
           }
         }

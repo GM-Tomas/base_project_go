@@ -39,12 +39,13 @@ internal/
 # MongoDB local (mongodb://localhost:27017, el default de MONGODB_URI)
 docker compose up -d
 
-# AUTH_DEV_USER_ID apaga la autenticación: todo request (con o sin token) actúa como ese usuario.
+# AUTH_DEV_USER_ID: los requests SIN token actúan como ese usuario. Los que traen token se verifican igual que en producción.
 $env:AUTH_DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 go run ./cmd/api
 ```
-Swagger y el "Skip login (dev)" del frontend funcionan sin token. Sin `AUTH_DEV_USER_ID` la API exige JWT reales de Supabase.
-En Vercel se ignora siempre (la variable `VERCEL` la desactiva).
+Swagger y el "Skip login (dev)" del frontend funcionan sin token (como ese usuario de dev). Si iniciás sesión en el frontend con
+cuentas reales de Supabase, cada una ve sus propios datos también en local; un token inválido da `401`, nunca "cae" al usuario de dev.
+Sin `AUTH_DEV_USER_ID` la API exige JWT reales de Supabase. En Vercel se ignora siempre (la variable `VERCEL` la desactiva).
 - API REST: `http://localhost:8080`
 - **Swagger UI Interactivo**: `http://localhost:8080/swagger` o `http://localhost:8080/docs`
 - **Especificación OpenAPI 3.1 JSON**: `http://localhost:8080/api/v1/openapi.json`
@@ -101,7 +102,7 @@ después de cambiar `DOCS_PASSWORD` hay que redeployar. En local sigue abierta s
 Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
 valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request da `401`.
 
-Los índices de MongoDB (plataforma única por usuario, un snapshot por segundo) se crean solos al arrancar.
+Los índices de MongoDB (plataforma única por usuario, un snapshot por segundo y por usuario, listado de holdings por usuario) se crean solos al arrancar.
 
 ---
 
@@ -122,9 +123,37 @@ Todo endpoint bajo `/api/v1/**` excepto `/api/v1/health` exige un token JWT Bear
 Authorization: Bearer <session.access_token>
 ```
 
-- La validación se realiza contra el endpoint JWKS del proyecto de Supabase (`SUPABASE_URL`), verificando `issuer`, expiración y audiencia `authenticated`.
-- La identidad del usuario (`sub` del JWT) es la **única fuente** del `userId` en el backend. Ningún endpoint acepta un identificador de usuario en body, path o query (aislamiento estricto multi-tenant).
+- La validación se realiza contra el endpoint JWKS del proyecto de Supabase (`SUPABASE_URL`), verificando firma, `issuer`, expiración y audiencia `authenticated`. Las sesiones anónimas se rechazan.
+- Si el JWKS no se puede obtener (Supabase caído o inalcanzable), la API responde `503`, no `401`: el token puede ser válido y el frontend solo cierra la sesión ante un `401`.
+- La identidad del usuario (`sub` del JWT) es la **única fuente** del `userId` en el backend. Ningún endpoint acepta un identificador de usuario en body, path o query (aislamiento estricto multi-tenant; si se envía, se ignora).
 - Respuestas de error estructuradas conforme a la especificación **RFC 9457 / RFC 7807** (`application/problem+json`) con identificador de traza `traceId` / `X-Request-Id`.
+
+---
+
+## 👥 Multi-usuario: cada cuenta ve solo sus datos
+
+La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Supabase y ve y modifica **solo sus datos**.
+
+- **Cómo se aísla:** cada documento de MongoDB (`holdings`, `platforms`, `net_worth_snapshots`) guarda el `user_id` (el `sub` del JWT)
+  y **toda** lectura, escritura y borrado filtra por él, incluidos los agregados del resumen y la proyección. Los índices únicos
+  también son por usuario: dos cuentas pueden tener una plataforma "Binance" o un snapshot en el mismo segundo sin chocar.
+- **Recursos ajenos:** borrar un holding de otra cuenta (aunque se conozca su id) responde `404`, igual que uno inexistente,
+  y un upsert con un id ajeno falla en vez de sobrescribirlo.
+- **Agregar usuarios:** en Supabase, *Authentication → Users → Add user* (email + contraseña). Los sign-ups públicos están
+  desactivados a propósito: solo entra quien vos des de alta. No hay que tocar nada en la API: la primera vez que un usuario
+  nuevo inicia sesión ve su dashboard vacío.
+- **Cuotas por usuario** (todas las cuentas comparten la base): hasta **1000 holdings** y **5000 snapshots** por cuenta.
+  Al superarlas la API responde `409` con `type` `.../limit-exceeded`.
+- **Borrar los datos de una cuenta** (p. ej. al eliminar al usuario en Supabase): sus datos en MongoDB no se borran solos.
+  ```js
+  // mongosh, con el id (UUID) del usuario de Supabase
+  const uid = "<uuid>";
+  ["holdings", "platforms", "net_worth_snapshots"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
+  ```
+- **Tests:** `internal/infrastructure/app/multiuser_test.go` levanta la API completa (router, auth, servicios y MongoDB real)
+  con un JWKS de prueba y verifica con dos usuarios que ninguno ve ni modifica holdings, plataformas, clases de activo,
+  snapshots, resumen o proyección del otro, que un `userId` en el body o la query se ignora, y que en modo dev las cuentas
+  reales siguen separadas.
 
 ---
 
@@ -136,10 +165,10 @@ Authorization: Bearer <session.access_token>
 | `GET` | `/swagger`, `/api/v1/openapi.json` | — (documentación) | Basic auth si hay `DOCS_PASSWORD`; en Vercel, `404` sin ella |
 | `GET` | `/api/v1/wealth/summary` | Dashboard, Platforms (net worth, YTD, liquidez, desgloses) | Sí |
 | `GET` | `/api/v1/holdings` | Assets, drill-down de Platforms, contador | Sí |
-| `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva) | Sí |
+| `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva; `409` al superar 1000 holdings) | Sí |
 | `DELETE` | `/api/v1/holdings/{id}` | Assets (borra también la plataforma si quedó vacía) | Sí |
 | `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts" | Sí |
 | `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets | Sí |
 | `GET` | `/api/v1/wealth/estimate?contribution&yieldPct&years` | Estimate (hitos fijos 150k/250k) | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | History | Sí |
-| `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (`409` si ya hay uno en ese segundo) | Sí |
+| `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (`409` si ya hay uno en ese segundo o al superar 5000) | Sí |
