@@ -16,7 +16,7 @@ type Config struct {
 	AuthAudience        string
 	JWKSetURI           string
 	AuthIssuer          string
-	DevUserID           string // non-empty disables JWT validation; never honored on Vercel
+	DevUserID           string // non-empty: requests WITHOUT a token act as this user (tokens are still verified); never honored on Vercel
 	DocsPassword        string // non-empty puts Swagger/OpenAPI behind basic auth (user "docs")
 	HideDocs            bool   // on Vercel without DOCS_PASSWORD the docs aren't served at all
 }

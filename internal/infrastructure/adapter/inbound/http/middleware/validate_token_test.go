@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,13 +143,60 @@ func TestDevValidator_StillVerifiesTokensThatAreSent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, sub, got.UUID(), "a signed-in account is itself, not the dev user")
 
-	for _, token := range []string{"", "anything", "not.a.jwt"} {
+	for _, token := range []string{"anything", "not.a.jwt"} {
 		_, err := v.ValidateToken(context.Background(), token)
 		assert.Error(t, err, "a bad token is never upgraded to the dev user")
 	}
 
+	// Only a request with no Authorization header at all (the empty token) is the dev user.
+	got, err = v.ValidateToken(context.Background(), "")
+	require.NoError(t, err)
+	assert.Equal(t, devUser, got)
+
 	_, err = middleware.DevValidator{UserId: devUser}.ValidateToken(context.Background(), "anything")
 	assert.Error(t, err, "no token validator fails closed")
+}
+
+func TestValidateToken_NoTokenIsRejectedWithoutFetchingKeys(t *testing.T) {
+	var hits atomic.Int32
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	defer jwks.Close()
+	v, err := middleware.NewSupabaseJWTValidator(context.Background(), jwks.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+
+	_, err = v.ValidateToken(context.Background(), "")
+	assert.ErrorIs(t, err, middleware.ErrMissingToken)
+	assert.Zero(t, hits.Load(), "an anonymous request must not cost a JWKS fetch (nor turn into a 503 when Supabase is down)")
+}
+
+func TestValidateToken_ClientHangingUpIsNotAnAuthOutage(t *testing.T) {
+	priv, _ := newKey(t)
+	jwksDown := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer jwksDown.Close()
+	v, err := middleware.NewSupabaseJWTValidator(context.Background(), jwksDown.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+	token := sign(t, priv, nil)
+
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = v.ValidateToken(gone, token)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
+
+	// The middleware writes nothing for a client that's gone (no fake 503 in logs and metrics).
+	req := httptest.NewRequest("GET", "/api/v1/holdings", nil).WithContext(gone)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	called := false
+	middleware.AuthMiddleware(v)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(rec, req)
+	assert.False(t, called)
+	assert.Zero(t, rec.Body.Len())
+
+	// A live client against an unreachable JWKS is the real outage.
+	_, err = v.ValidateToken(context.Background(), token)
+	assert.ErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
 }
 
 func TestAuthMiddleware_DevModeKeepsAccountsApart(t *testing.T) {

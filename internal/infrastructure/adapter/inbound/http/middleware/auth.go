@@ -14,13 +14,18 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
 
+// JWTValidator resolves the caller from a bearer token. A request without an Authorization header at all
+// is validated as the empty token, which only dev mode accepts.
 type JWTValidator interface {
 	ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error)
 }
 
-// ErrSigningKeysUnavailable means the JWKS couldn't be fetched. The token may well be valid, so it's
-// answered with 503 (our problem) rather than 401, which makes the frontend sign the user out.
-var ErrSigningKeysUnavailable = errors.New("signing keys unavailable")
+var (
+	ErrMissingToken = errors.New("missing access token")
+	// ErrSigningKeysUnavailable means the JWKS couldn't be fetched. The token may well be valid, so it's
+	// answered with 503 (our problem) rather than 401, which makes the frontend sign the user out.
+	ErrSigningKeysUnavailable = errors.New("signing keys unavailable")
+)
 
 type SupabaseJWTValidator struct {
 	keys     func(ctx context.Context) (jwk.Set, error)
@@ -63,6 +68,9 @@ type DevValidator struct {
 }
 
 func (v DevValidator) ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error) {
+	if tokenStr == "" {
+		return v.UserId, nil
+	}
 	if v.Tokens == nil {
 		return model.UserId{}, errors.New("dev mode has no token validator")
 	}
@@ -70,10 +78,18 @@ func (v DevValidator) ValidateToken(ctx context.Context, tokenStr string) (model
 }
 
 func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error) {
+	if tokenStr == "" {
+		return model.UserId{}, ErrMissingToken
+	}
+
 	// No keys means no verification is possible: reject, never fall back to an unverified parse.
 	keySet, err := v.keys(ctx)
 	if err != nil {
-		return model.UserId{}, fmt.Errorf("%w: fetching JWKS: %v", ErrSigningKeysUnavailable, err)
+		// A caller that hung up says nothing about the keys.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return model.UserId{}, ctxErr
+		}
+		return model.UserId{}, fmt.Errorf("%w: fetching JWKS: %w", ErrSigningKeysUnavailable, err)
 	}
 
 	tok, err := jwt.Parse([]byte(tokenStr),
@@ -107,43 +123,36 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				// Dev mode only: no token at all is the fixed local user ("Skip login", Swagger).
-				if dev, ok := validator.(DevValidator); ok {
-					next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), dev.UserId)))
+			var tokenStr string
+			if authHeader := r.Header.Get("Authorization"); authHeader != "" {
+				parts := strings.SplitN(authHeader, " ", 2)
+				if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+					WriteUnauthorized(w, r, "Missing or invalid access token")
 					return
 				}
-				WriteUnauthorized(w, r, "Missing or invalid access token")
-				return
-			}
-
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-				WriteUnauthorized(w, r, "Missing or invalid access token")
-				return
-			}
-
-			tokenStr := strings.TrimSpace(parts[1])
-			if tokenStr == "" {
-				WriteUnauthorized(w, r, "Missing or invalid access token")
-				return
+				tokenStr = strings.TrimSpace(parts[1])
+				if tokenStr == "" {
+					WriteUnauthorized(w, r, "Missing or invalid access token")
+					return
+				}
 			}
 
 			userId, err := validator.ValidateToken(r.Context(), tokenStr)
-			if err != nil {
-				log.Printf("auth: rejected token [traceId=%s]: %v", GetTraceID(r.Context()), err)
-				if errors.Is(err, ErrSigningKeysUnavailable) {
-					WriteProblem(w, r, http.StatusServiceUnavailable, "auth-unavailable", "Service Unavailable",
-						"Your sign-in can't be verified right now. Please try again shortly.", nil)
-					return
-				}
+			switch {
+			case err == nil:
+				next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), userId)))
+			case r.Context().Err() != nil:
+				// The client hung up mid-verification: there's no one left to answer.
+			case errors.Is(err, ErrMissingToken):
 				WriteUnauthorized(w, r, "Missing or invalid access token")
-				return
+			case errors.Is(err, ErrSigningKeysUnavailable):
+				log.Printf("auth: can't verify token [traceId=%s]: %v", GetTraceID(r.Context()), err)
+				WriteProblem(w, r, http.StatusServiceUnavailable, "auth-unavailable", "Service Unavailable",
+					"Your sign-in can't be verified right now. Please try again shortly.", nil)
+			default:
+				log.Printf("auth: rejected token [traceId=%s]: %v", GetTraceID(r.Context()), err)
+				WriteUnauthorized(w, r, "Missing or invalid access token")
 			}
-
-			ctx := WithUser(r.Context(), userId)
-			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

@@ -46,6 +46,8 @@ go run ./cmd/api
 Swagger y el "Skip login (dev)" del frontend funcionan sin token (como ese usuario de dev). Si iniciás sesión en el frontend con
 cuentas reales de Supabase, cada una ve sus propios datos también en local; un token inválido da `401`, nunca "cae" al usuario de dev.
 Sin `AUTH_DEV_USER_ID` la API exige JWT reales de Supabase. En Vercel se ignora siempre (la variable `VERCEL` la desactiva).
+Si antes de este cambio cargaste datos en local con la sesión iniciada, quedaron guardados bajo el usuario de dev: se ven con
+"Skip login (dev)".
 - API REST: `http://localhost:8080`
 - **Swagger UI Interactivo**: `http://localhost:8080/swagger` o `http://localhost:8080/docs`
 - **Especificación OpenAPI 3.1 JSON**: `http://localhost:8080/api/v1/openapi.json`
