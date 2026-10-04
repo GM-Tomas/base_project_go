@@ -174,7 +174,9 @@ func mapDocToHolding(doc holdingDoc) (model.Holding, error) {
 		return model.Holding{}, err
 	}
 
-	// Like NewHolding stores names now; one stored outside the API that it would reject is shown as stored.
+	// The name as NewHolding stores names now. Unlike the asset class and platform, which the views group
+	// by and a holding was never read without, names were never validated on read: one NewHolding would
+	// reject (only writable outside the API) is still shown as stored, not turned into an error.
 	name, err := model.NormalizeLabel(doc.Name, model.MaxHoldingNameLength, "Holding name")
 	if err != nil {
 		name = doc.Name
