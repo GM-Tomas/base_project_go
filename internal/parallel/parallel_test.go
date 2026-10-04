@@ -70,15 +70,11 @@ func TestRun_APanicAfterAnotherErrorIsLogged(t *testing.T) {
 	log.SetOutput(&logs)
 	defer log.SetOutput(os.Stderr)
 	timeout := errors.New("timeout")
-	failed := make(chan struct{})
 
 	err := parallel.Run(context.Background(),
-		func(context.Context) error {
-			defer close(failed)
-			return timeout
-		},
-		func(context.Context) error {
-			<-failed
+		func(context.Context) error { return timeout },
+		func(ctx context.Context) error {
+			<-ctx.Done() // canceled only once the timeout is Run's error
 			panic("corrupt data")
 		},
 	)
