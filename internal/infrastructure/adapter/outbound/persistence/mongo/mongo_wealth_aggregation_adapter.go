@@ -27,12 +27,26 @@ var _ outbound.WealthAggregationPort = (*MongoWealthAggregationAdapter)(nil)
 // readableValue is a holding's amount, if it can be read: the totals (net worth, the breakdowns) count
 // only those. Another amount can only have been written outside the API, and makes GET /holdings fail.
 func readableValue(doc holdingDoc) (model.Money, bool) {
-	amount, err := decimal.NewFromString(doc.ValueUSD)
+	number, err := decimal.NewFromString(doc.ValueUSD)
 	if err != nil {
 		return model.Money{}, false
 	}
-	value, err := model.NewMoney(amount)
+	value, err := model.NewMoney(number)
 	return value, err == nil
+}
+
+// amount is a holding's amount, read once for every total it counts in.
+type amount struct {
+	value    model.Money
+	readable bool // see readableValue
+}
+
+func amountsOf(docs []holdingDoc) []amount {
+	amounts := make([]amount, len(docs))
+	for i, doc := range docs {
+		amounts[i].value, amounts[i].readable = readableValue(doc)
+	}
+	return amounts
 }
 
 func (a *MongoWealthAggregationAdapter) NetWorth(
@@ -43,7 +57,7 @@ func (a *MongoWealthAggregationAdapter) NetWorth(
 	if err != nil {
 		return model.ZeroMoney, err
 	}
-	return netWorthOf(docs), nil
+	return netWorthOf(amountsOf(docs)), nil
 }
 
 // Breakdown reads the user's holdings once, alongside the platform types earlier versions stored, for
@@ -53,28 +67,29 @@ func (a *MongoWealthAggregationAdapter) Breakdown(
 	userId model.UserId,
 ) (outbound.WealthBreakdown, error) {
 	docs, types, err := holdingsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId,
-		"asset_class", "platform_name", "created_at", "value_usd")
+		"asset_class", "platform_name", "value_usd")
 	if err != nil {
 		return outbound.WealthBreakdown{}, err
 	}
+	amounts := amountsOf(docs)
 	return outbound.WealthBreakdown{
-		NetWorth:     netWorthOf(docs),
-		ByAssetClass: classBreakdown(docs),
-		ByPlatform:   platformBreakdown(groupPlatforms(docs, true), types),
+		NetWorth:     netWorthOf(amounts),
+		ByAssetClass: classBreakdown(docs, amounts),
+		ByPlatform:   platformBreakdown(groupPlatforms(docs, amounts), types),
 	}, nil
 }
 
-func netWorthOf(docs []holdingDoc) model.Money {
+func netWorthOf(amounts []amount) model.Money {
 	total := model.ZeroMoney
-	for _, doc := range docs {
-		if value, ok := readableValue(doc); ok {
-			total = total.Plus(value)
+	for _, a := range amounts {
+		if a.readable {
+			total = total.Plus(a.value)
 		}
 	}
 	return total
 }
 
-func classBreakdown(docs []holdingDoc) []outbound.AssetClassAggregate {
+func classBreakdown(docs []holdingDoc, amounts []amount) []outbound.AssetClassAggregate {
 	type classAccumulator struct {
 		total model.Money
 		count int
@@ -83,9 +98,8 @@ func classBreakdown(docs []holdingDoc) []outbound.AssetClassAggregate {
 	// Keyed by the class as the domain reads it, so stored spellings it reads as one (different Unicode
 	// forms, say) are one class, as in GET /holdings.
 	accMap := make(map[model.AssetClass]*classAccumulator)
-	for _, doc := range docs {
-		m, ok := readableValue(doc)
-		if !ok {
+	for i, doc := range docs {
+		if !amounts[i].readable {
 			continue
 		}
 		ac, err := model.NewAssetClass(doc.AssetClass)
@@ -98,7 +112,7 @@ func classBreakdown(docs []holdingDoc) []outbound.AssetClassAggregate {
 			acc = &classAccumulator{total: model.ZeroMoney, count: 0}
 			accMap[ac] = acc
 		}
-		acc.total = acc.total.Plus(m)
+		acc.total = acc.total.Plus(amounts[i].value)
 		acc.count++
 	}
 

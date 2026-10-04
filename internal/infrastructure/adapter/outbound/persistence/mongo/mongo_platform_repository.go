@@ -40,7 +40,7 @@ func (r *MongoPlatformRepository) FindAll(ctx context.Context, userId model.User
 	if err != nil {
 		return nil, err
 	}
-	groups := groupPlatforms(docs, false)
+	groups := groupPlatforms(docs, nil)
 	platforms := make([]model.Platform, 0, len(groups))
 	for _, g := range slices.SortedFunc(maps.Values(groups), byName) {
 		platforms = append(platforms, model.Platform{
@@ -93,9 +93,9 @@ type platformGroup struct {
 	key       string
 	name      model.PlatformName // as platformSpellings spells it
 	sortName  string             // see byName
-	firstUsed time.Time
-	total     model.Money // see readableValue
-	count     int         // holdings with a readable amount
+	firstUsed time.Time          // when read with created_at (FindAll)
+	total     model.Money        // see readableValue
+	count     int                // holdings with a readable amount
 }
 
 // platformKey is what makes two platform names the same platform: Unicode's canonical caseless match
@@ -210,12 +210,12 @@ func readHoldings(ctx context.Context, holdings *mongo.Collection, userId model.
 // second reply).
 const holdingsPerReply = int32(model.MaxHoldingsPerUser + 1)
 
-// groupPlatforms groups holdings, read oldest first, by platform, keyed by platformKey. Only withTotals
-// are their amounts totalled (the docs then carry value_usd; total and count stay zero otherwise).
-func groupPlatforms(docs []holdingDoc, withTotals bool) map[string]*platformGroup {
+// groupPlatforms groups holdings, read oldest first, by platform, keyed by platformKey. Given the
+// holdings' amounts, it totals them too (total and count stay zero with nil).
+func groupPlatforms(docs []holdingDoc, amounts []amount) map[string]*platformGroup {
 	groups := make(map[string]*platformGroup)
 	spellings := platformSpellings{}
-	for _, doc := range docs {
+	for i, doc := range docs {
 		stored, ok := storedPlatformName(doc)
 		if !ok {
 			continue
@@ -226,11 +226,8 @@ func groupPlatforms(docs []holdingDoc, withTotals bool) map[string]*platformGrou
 			g = &platformGroup{key: key, name: name, sortName: sortName(name.Value()), firstUsed: doc.CreatedAt, total: model.ZeroMoney}
 			groups[key] = g
 		}
-		if !withTotals {
-			continue
-		}
-		if value, ok := readableValue(doc); ok {
-			g.total = g.total.Plus(value)
+		if amounts != nil && amounts[i].readable {
+			g.total = g.total.Plus(amounts[i].value)
 			g.count++
 		}
 	}

@@ -249,6 +249,30 @@ func TestPlatformRepository_APlatformWithoutReadableAmountsIsListedButNotBrokenD
 	assert.Equal(t, "Bank", byPlatform[0].Name.Value())
 }
 
+func TestWealthAggregation_AnUnreadableAmountStillSpellsItsPlatform(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	user := newUser()
+	insertRaw(t, db, "holdings", bson.M{
+		"_id": uuid.NewString(), "user_id": user.String(), "name": "k", "asset_class": "Crypto",
+		"platform_name": "Kraken", "value_usd": "abc", "created_at": at(1), "updated_at": at(1),
+	})
+	_, err := NewMongoHoldingRepository(db).Save(ctx, holding(user, "a", "Crypto", "KRAKEN", 5, at(2)))
+	require.NoError(t, err)
+
+	platforms, err := NewMongoPlatformRepository(db).FindAll(ctx, user)
+	require.NoError(t, err)
+	require.Len(t, platforms, 1)
+	assert.Equal(t, "Kraken", platforms[0].Name.Value())
+
+	// Spelled as in the list, by the earliest holding, though only the later one's amount counts.
+	byPlatform := breakdown(t, db, ctx, user).ByPlatform
+	require.Len(t, byPlatform, 1)
+	assert.Equal(t, "Kraken", byPlatform[0].Name.Value())
+	assert.Equal(t, "5.00", byPlatform[0].Value.String())
+	assert.Equal(t, 1, byPlatform[0].Count)
+}
+
 func TestWealthAggregation_ByAssetClassBreaksTiesLikeAPerson(t *testing.T) {
 	db := testDB(t)
 	holdings := NewMongoHoldingRepository(db)
