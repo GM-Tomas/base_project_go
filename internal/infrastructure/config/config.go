@@ -19,6 +19,9 @@ type Config struct {
 	DevUserID           string // non-empty: requests WITHOUT a token act as this user (tokens are still verified); never honored on Vercel
 	DocsPassword        string // non-empty puts Swagger/OpenAPI behind basic auth (user "docs")
 	HideDocs            bool   // on Vercel without DOCS_PASSWORD the docs aren't served at all
+	// Preview is a Vercel preview deployment. The project's MONGODB_URI reaches previews too, so a preview
+	// never connects to the database (see app.BuildApp); app previews run on demo data in the browser.
+	Preview bool
 }
 
 func LoadConfig() Config {
@@ -38,6 +41,7 @@ func LoadConfig() Config {
 		DevUserID:           devUserID(),
 		DocsPassword:        os.Getenv("DOCS_PASSWORD"),
 		HideDocs:            os.Getenv("VERCEL") != "" && os.Getenv("DOCS_PASSWORD") == "",
+		Preview:             os.Getenv("VERCEL_ENV") == "preview",
 	}
 }
 

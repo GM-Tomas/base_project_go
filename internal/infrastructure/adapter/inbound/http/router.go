@@ -19,6 +19,9 @@ type RouterParams struct {
 	SwaggerHandler    *SwaggerHandler
 	DocsPassword      string // non-empty = docs behind basic auth (user "docs")
 	HideDocs          bool
+	// NoData answers every API route but health with 503: a Vercel preview, which has no database (see
+	// config.Config.Preview). Only HealthHandler is needed then.
+	NoData bool
 }
 
 func NewRouter(params RouterParams) http.Handler {
@@ -62,6 +65,14 @@ func NewRouter(params RouterParams) http.Handler {
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public route
 		r.Get("/health", params.HealthHandler.CheckHealth)
+
+		if params.NoData {
+			r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
+				middleware.WriteProblem(w, r, http.StatusServiceUnavailable, "preview-without-data", "Service Unavailable",
+					"Preview deployments have no database: previews of the app run on demo data instead.", nil)
+			})
+			return
+		}
 
 		// Protected routes
 		r.Group(func(r chi.Router) {

@@ -36,6 +36,26 @@ func TestBuildApp_FailsWhenMongoIsUnreachable(t *testing.T) {
 	assert.ErrorContains(t, err, "connecting to MongoDB")
 }
 
+func TestBuildApp_PreviewNeverConnectsToTheDatabase(t *testing.T) {
+	cfg := config.LoadConfig()
+	cfg.Preview = true
+	cfg.MongoDBURI = "mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=100" // would fail if it tried
+
+	a, err := app.BuildApp(context.Background(), cfg)
+	require.NoError(t, err)
+	defer a.Cleanup()
+
+	for _, path := range []string{"/api/v1/holdings", "/api/v1/wealth/summary", "/api/v1/anything"} {
+		rec := httptest.NewRecorder()
+		a.Handler.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		assert.Equal(t, http.StatusServiceUnavailable, rec.Code, path)
+		assert.Contains(t, rec.Body.String(), "preview-without-data", path)
+	}
+	rec := httptest.NewRecorder()
+	a.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/health", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestBuildApp_DevUserServesProtectedRoutesWithoutToken(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.DevUserID = uuid.NewString()

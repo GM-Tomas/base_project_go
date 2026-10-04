@@ -101,6 +101,11 @@ después de cambiar `DOCS_PASSWORD` hay que redeployar. En local sigue abierta s
 | `DOCS_PASSWORD` | No | Protege `/docs`, `/swagger` y `openapi.json` con basic auth (usuario `docs`). En Vercel, sin ella esas rutas dan `404`. |
 | `FRONTEND_ORIGIN` | Opcional | Orígenes CORS separados por coma. Default: `localhost:3000` y `https://base-project-fe.vercel.app`. Nunca `https://*.vercel.app`: cualquiera puede desplegar ahí. |
 
+**Deploys de preview** (`VERCEL_ENV=preview`, cada rama o PR): la API **nunca se conecta a MongoDB**, aunque
+`MONGODB_URI` le llegue (hoy en Vercel apunta a Preview y Production; se puede destildar Preview). Responde `503`
+(`.../preview-without-data`) en toda ruta de `/api/v1` salvo `/health`. Los previews del frontend corren con datos de
+demo en el navegador, así que no la necesitan. Solo producción usa la base real.
+
 Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
 valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request con token da `503`.
 

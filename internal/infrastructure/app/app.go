@@ -20,6 +20,21 @@ type App struct {
 }
 
 func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
+	if cfg.Preview {
+		// MONGODB_URI is production's: a preview never connects, whatever reaches it.
+		log.Println("Vercel preview: not connecting to MongoDB; API routes answer 503.")
+		return &App{
+			Handler: appHttp.NewRouter(appHttp.RouterParams{
+				AllowedOrigins: cfg.AllowedOrigins,
+				HealthHandler:  appHttp.NewHealthHandler(),
+				DocsPassword:   cfg.DocsPassword,
+				HideDocs:       cfg.HideDocs,
+				NoData:         true,
+			}),
+			Cleanup: func() {},
+		}, nil
+	}
+
 	// A failed connection is returned, not swallowed: cmd/api (also the Vercel entrypoint) exits on it.
 	log.Printf("Connecting to MongoDB (database: %s)...", cfg.MongoDBName)
 	mongoDB, err := mongopersistence.NewMongoDB(ctx, cfg.MongoDBURI, cfg.MongoDBName)

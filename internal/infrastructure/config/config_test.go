@@ -15,3 +15,12 @@ func TestDevUserIDIgnoredOnVercel(t *testing.T) {
 		t.Fatalf("dev auth must be off on Vercel, got %q", got)
 	}
 }
+
+func TestPreviewOnlyOnVercelPreviews(t *testing.T) {
+	for env, preview := range map[string]bool{"preview": true, "production": false, "development": false, "": false} {
+		t.Setenv("VERCEL_ENV", env)
+		if got := LoadConfig().Preview; got != preview {
+			t.Errorf("VERCEL_ENV=%q: Preview = %v, want %v", env, got, preview)
+		}
+	}
+}
