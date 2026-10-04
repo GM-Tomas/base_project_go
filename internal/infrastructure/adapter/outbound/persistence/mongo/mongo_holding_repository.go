@@ -174,10 +174,16 @@ func mapDocToHolding(doc holdingDoc) (model.Holding, error) {
 		return model.Holding{}, err
 	}
 
+	// Like NewHolding stores names now; one stored outside the API that it would reject is shown as stored.
+	name, err := model.NormalizeLabel(doc.Name, model.MaxHoldingNameLength, "Holding name")
+	if err != nil {
+		name = doc.Name
+	}
+
 	return model.Holding{
 		Id:         model.HoldingIdFromUUID(id),
 		UserId:     model.NewUserId(userId),
-		Name:       doc.Name,
+		Name:       name,
 		AssetClass: ac,
 		Platform:   pn,
 		Value:      m,

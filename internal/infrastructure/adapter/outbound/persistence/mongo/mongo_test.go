@@ -177,6 +177,24 @@ func TestHoldingRepository_AssetClassesInUseSkipsInvalid(t *testing.T) {
 	assert.Equal(t, []model.AssetClass{model.MustAssetClass("Equity")}, classes)
 }
 
+func TestHoldingRepository_ReadsNamesLikeNewHoldingStoresThem(t *testing.T) {
+	db := testDB(t)
+	user := newUser()
+	for name, created := range map[string]time.Time{" Cafe\u0301   bar ": at(1), "": at(2)} {
+		insertRaw(t, db, "holdings", bson.M{
+			"_id": uuid.NewString(), "user_id": user.String(), "name": name, "asset_class": "Cash",
+			"platform_name": "Bank", "value_usd": "1.00", "created_at": created, "updated_at": created,
+		})
+	}
+
+	list, err := NewMongoHoldingRepository(db).FindAll(context.Background(), user)
+
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.Equal(t, "Caf\u00e9 bar", list[0].Name)
+	assert.Equal(t, "", list[1].Name, "a name the domain rejects is shown as stored")
+}
+
 func TestHoldingRepository_AssetClassesInUseListsEachClassOnce(t *testing.T) {
 	db := testDB(t)
 	user := newUser()
@@ -770,6 +788,6 @@ func TestEnsureIndexes_CoversEveryPerUserQuery(t *testing.T) {
 		return out
 	}
 
-	assert.ElementsMatch(t, []string{"_id", "user_id+created_at", "user_id+platform_name", "user_id+asset_class"}, keysOf("holdings"))
+	assert.ElementsMatch(t, []string{"_id", "user_id+created_at", "user_id+asset_class"}, keysOf("holdings"))
 	assert.ElementsMatch(t, []string{"_id", "user_id+captured_at unique"}, keysOf("net_worth_snapshots"))
 }

@@ -16,16 +16,21 @@ var (
 	ErrLabelTooLong         = errors.New("exceeds max length")
 )
 
-// NormalizeLabel puts a label in Unicode NFC (so "é" typed precomposed or as "e" plus a combining accent
-// is the same label, of the same length), trims it, collapses internal whitespace, and validates length.
+// NormalizeLabel trims, collapses internal whitespace, validates length, and puts the label in Unicode
+// NFC, so "é" typed precomposed or as "e" plus a combining accent is the same label, of the same length.
+// NFC also decomposes a few letters (some Indic letters with a nukta, Hebrew presentation forms), making
+// them longer: a label NFC would push past the limit is kept as given if that fits, so every label that
+// ever passed still does.
 func NormalizeLabel(raw string, maxLength int, fieldName string) (string, error) {
-	trimmed := strings.TrimSpace(norm.NFC.String(raw))
-	normalized := internalWhitespaceRegex.ReplaceAllString(trimmed, " ")
-	if normalized == "" {
+	label := internalWhitespaceRegex.ReplaceAllString(strings.TrimSpace(raw), " ")
+	if label == "" {
 		return "", fmt.Errorf("%s %w", fieldName, ErrBlankLabel)
 	}
-	if utf8.RuneCountInString(normalized) > maxLength {
-		return "", fmt.Errorf("%s %w (%d > %d)", fieldName, ErrLabelTooLong, utf8.RuneCountInString(normalized), maxLength)
+	if nfc := norm.NFC.String(label); utf8.RuneCountInString(nfc) <= maxLength {
+		return nfc, nil
 	}
-	return normalized, nil
+	if n := utf8.RuneCountInString(label); n > maxLength {
+		return "", fmt.Errorf("%s %w (%d > %d)", fieldName, ErrLabelTooLong, n, maxLength)
+	}
+	return label, nil
 }

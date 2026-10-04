@@ -24,6 +24,22 @@ func TestLabels_NormalizesUnicodeForm(t *testing.T) {
 	pn, err := model.NewPlatformName(strings.Repeat("e\u0301", model.MaxPlatformNameLength))
 	require.NoError(t, err, "the length counts the label as shown, not how it was typed")
 	assert.Equal(t, strings.Repeat("\u00e9", model.MaxPlatformNameLength), pn.Value())
+
+	// NFC writes "क़" (U+0958) as two code points. Short labels take the NFC form like any other...
+	pn, err = model.NewPlatformName(strings.Repeat("\u0958", 10))
+	require.NoError(t, err)
+	assert.Equal(t, strings.Repeat("\u0915\u093c", 10), pn.Value())
+	// ...but one that fits only as given stays as given: it was valid before NFC, and stays readable.
+	full := strings.Repeat("\u0958", model.MaxPlatformNameLength)
+	pn, err = model.NewPlatformName(full)
+	require.NoError(t, err)
+	assert.Equal(t, full, pn.Value())
+	again, err := model.NewPlatformName(pn.Value())
+	require.NoError(t, err)
+	assert.Equal(t, pn, again)
+
+	_, err = model.NewPlatformName(full + "\u0958")
+	assert.ErrorIs(t, err, model.ErrLabelTooLong)
 }
 
 func TestLabels_RejectsBlank(t *testing.T) {

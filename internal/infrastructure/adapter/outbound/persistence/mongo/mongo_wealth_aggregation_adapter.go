@@ -77,8 +77,13 @@ func (a *MongoWealthAggregationAdapter) ByAssetClass(
 	}
 
 	// Keyed by the class as the domain reads it, so stored spellings it reads as one (different Unicode
-	// forms, say) are one class, as in GET /holdings.
+	// forms, say) are one class, as in GET /holdings. Each stored spelling is read once.
 	accMap := make(map[model.AssetClass]*classAccumulator)
+	type readClass struct {
+		class model.AssetClass
+		ok    bool
+	}
+	classes := make(map[string]readClass)
 	for _, doc := range docs {
 		valDec, err := decimal.NewFromString(doc.ValueUSD)
 		if err != nil {
@@ -88,10 +93,16 @@ func (a *MongoWealthAggregationAdapter) ByAssetClass(
 		if err != nil {
 			continue
 		}
-		ac, err := model.NewAssetClass(doc.AssetClass)
-		if err != nil {
+		rc, seen := classes[doc.AssetClass]
+		if !seen {
+			class, err := model.NewAssetClass(doc.AssetClass)
+			rc = readClass{class, err == nil}
+			classes[doc.AssetClass] = rc
+		}
+		if !rc.ok {
 			continue
 		}
+		ac := rc.class
 
 		acc, exists := accMap[ac]
 		if !exists {

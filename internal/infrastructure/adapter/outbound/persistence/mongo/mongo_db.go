@@ -77,18 +77,14 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 		log.Printf("Warning creating snapshots index: %v", err)
 	}
 
-	// Holdings: the user's list and platforms (both by creation) plus the per-platform / per-class lookups.
+	// Holdings: the user's list and platforms (both read oldest first) and the asset classes in use.
+	// (Earlier versions also created user_id_1_platform_name_1; nothing queries by platform name now, so
+	// it can be dropped.)
 	_, err = db.Holdings.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
 			Keys: bson.D{
 				{Key: "user_id", Value: 1},
 				{Key: "created_at", Value: 1},
-			},
-		},
-		{
-			Keys: bson.D{
-				{Key: "user_id", Value: 1},
-				{Key: "platform_name", Value: 1},
 			},
 		},
 		{
