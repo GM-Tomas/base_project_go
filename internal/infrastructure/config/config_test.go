@@ -25,8 +25,9 @@ func TestPreviewOnlyOnVercelPreviews(t *testing.T) {
 		{"1", "preview", "", true},         // older deployments without VERCEL_TARGET_ENV
 		{"1", "preview", "staging", false}, // a custom environment has its own database
 		{"1", "production", "production", false},
+		{"1", "development", "development", false}, // vercel dev
 		{"1", "", "", false},
-		{"", "preview", "preview", false}, // a local run with a pulled preview .env is still local
+		{"", "preview", "preview", false}, // not a Vercel deployment (a pulled .env sets VERCEL too)
 	} {
 		t.Setenv("VERCEL", c.vercel)
 		t.Setenv("VERCEL_ENV", c.env)

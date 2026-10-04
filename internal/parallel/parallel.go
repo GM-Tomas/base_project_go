@@ -4,6 +4,7 @@ package parallel
 import (
 	"context"
 	"fmt"
+	"log"
 	"runtime/debug"
 	"sync"
 )
@@ -11,8 +12,9 @@ import (
 // Run calls every fn at once and waits for all of them. The context they get is canceled as soon as one
 // fails, and that first error is the one returned. That much is errgroup.WithContext; the difference is a
 // panic: errgroup lets it crash the process, Run returns it as an error carrying the stack (on one line, so
-// the request's traceId log line holds all of it), so it fails the request as a panic in the request's own
-// goroutine would. A panic with an error value wraps that error.
+// the request's traceId log line holds all of it), so it fails the request with a 500 as a panic in the
+// request's own goroutine would. It never wraps the panic's value: a domain error in it mustn't turn into
+// a 4xx whose detail is the stack. A panic that loses the race to an earlier error is logged here instead.
 func Run(ctx context.Context, fns ...func(context.Context) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -26,11 +28,17 @@ func Run(ctx context.Context, fns ...func(context.Context) error) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := call(ctx, fn); err != nil {
-				once.Do(func() {
-					first = err
-					cancel()
-				})
+			panicked, err := call(ctx, fn)
+			if err == nil {
+				return
+			}
+			kept := false
+			once.Do(func() {
+				first, kept = err, true
+				cancel()
+			})
+			if panicked && !kept {
+				log.Print(err)
 			}
 		}()
 	}
@@ -38,15 +46,11 @@ func Run(ctx context.Context, fns ...func(context.Context) error) error {
 	return first
 }
 
-func call(ctx context.Context, fn func(context.Context) error) (err error) {
+func call(ctx context.Context, fn func(context.Context) error) (panicked bool, err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			if e, ok := p.(error); ok {
-				err = fmt.Errorf("panic: %w (stack: %q)", e, debug.Stack())
-			} else {
-				err = fmt.Errorf("panic: %v (stack: %q)", p, debug.Stack())
-			}
+			panicked, err = true, fmt.Errorf("panic: %v (stack: %q)", p, debug.Stack())
 		}
 	}()
-	return fn(ctx)
+	return false, fn(ctx)
 }
