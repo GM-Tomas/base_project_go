@@ -38,6 +38,19 @@ func NewResourceInUseError(msg string) error {
 	return ResourceInUseError{Message: msg}
 }
 
+// LimitExceededError is a per-user quota hit: one account can't grow without bound and starve the others.
+type LimitExceededError struct {
+	Message string
+}
+
+func (e LimitExceededError) Error() string {
+	return e.Message
+}
+
+func NewLimitExceededError(msg string) error {
+	return LimitExceededError{Message: msg}
+}
+
 type ValidationError struct {
 	Field   string
 	Message string

@@ -30,6 +30,11 @@ func (m *mockHoldingRepo) FindAll(ctx context.Context, userId model.UserId) ([]m
 	return list, nil
 }
 
+func (m *mockHoldingRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	all, _ := m.FindAll(ctx, userId)
+	return int64(len(all)), nil
+}
+
 func (m *mockHoldingRepo) Save(ctx context.Context, holding model.Holding) (model.Holding, error) {
 	m.holdings[holding.Id.String()] = holding
 	return holding, nil
@@ -105,6 +110,16 @@ func newMockSnapshotRepo() *mockSnapshotRepo {
 
 func (m *mockSnapshotRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.NetWorthSnapshot, error) {
 	return m.snapshots, nil
+}
+
+func (m *mockSnapshotRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	var n int64
+	for _, s := range m.snapshots {
+		if s.UserId == userId {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *mockSnapshotRepo) Save(ctx context.Context, snapshot model.NetWorthSnapshot) (model.NetWorthSnapshot, error) {

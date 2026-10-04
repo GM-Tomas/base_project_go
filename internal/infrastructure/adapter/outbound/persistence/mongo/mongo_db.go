@@ -10,6 +10,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+const operationTimeout = 10 * time.Second
+
 type MongoDB struct {
 	Client    *mongo.Client
 	Database  *mongo.Database
@@ -23,7 +25,8 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 		dbName = "base_wealth"
 	}
 
-	clientOpts := options.Client().ApplyURI(uri)
+	// Bounds every operation: a stuck database fails the request instead of holding it open.
+	clientOpts := options.Client().ApplyURI(uri).SetTimeout(operationTimeout)
 	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, err
@@ -89,8 +92,14 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 		log.Printf("Warning creating snapshots index: %v", err)
 	}
 
-	// Holdings index: user_id + platform_name & user_id + asset_class
-	_, _ = db.Holdings.Indexes().CreateMany(ctx, []mongo.IndexModel{
+	// Holdings: the user's list (sorted by creation) plus the per-platform / per-class lookups.
+	_, err = db.Holdings.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys: bson.D{
+				{Key: "user_id", Value: 1},
+				{Key: "created_at", Value: 1},
+			},
+		},
 		{
 			Keys: bson.D{
 				{Key: "user_id", Value: 1},
@@ -104,4 +113,7 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 			},
 		},
 	})
+	if err != nil {
+		log.Printf("Warning creating holdings indexes: %v", err)
+	}
 }

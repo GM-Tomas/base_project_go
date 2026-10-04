@@ -51,6 +51,15 @@ func (s *SnapshotService) CreateSnapshot(
 		)
 	}
 
+	count, err := s.snapshotRepo.Count(ctx, userId)
+	if err != nil {
+		return model.NetWorthSnapshot{}, err
+	}
+	if count >= model.MaxSnapshotsPerUser {
+		return model.NetWorthSnapshot{}, appErrors.NewLimitExceededError(fmt.Sprintf(
+			"You've reached the limit of %d snapshots.", model.MaxSnapshotsPerUser))
+	}
+
 	netWorth, err := s.wealthAggregationPort.NetWorth(ctx, userId)
 	if err != nil {
 		return model.NetWorthSnapshot{}, err

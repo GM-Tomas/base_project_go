@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/application/service"
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
+	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +19,7 @@ import (
 type mockHoldingRepo struct {
 	holdings     map[string]model.Holding
 	assetClasses []model.AssetClass
+	countErr     error
 }
 
 func newMockHoldingRepo() *mockHoldingRepo {
@@ -33,6 +36,14 @@ func (m *mockHoldingRepo) FindAll(ctx context.Context, userId model.UserId) ([]m
 		}
 	}
 	return list, nil
+}
+
+func (m *mockHoldingRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	if m.countErr != nil {
+		return 0, m.countErr
+	}
+	all, _ := m.FindAll(ctx, userId)
+	return int64(len(all)), nil
 }
 
 func (m *mockHoldingRepo) Save(ctx context.Context, holding model.Holding) (model.Holding, error) {
@@ -142,4 +153,53 @@ func TestHoldingService_Lifecycle(t *testing.T) {
 
 	// 4. Delete again -> not found
 	assert.Error(t, svc.DeleteHolding(ctx, userId, aapl.Id))
+}
+
+func TestHoldingService_RejectedCreateLeavesNoPlatformBehind(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	platformRepo := newMockPlatformRepo(holdingRepo)
+	svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(time.Now()))
+	userId := model.NewUserId(uuid.New())
+
+	for name, cmd := range map[string]inbound.CreateHoldingCommand{
+		"name too long":        {Name: strings.Repeat("x", model.MaxHoldingNameLength+1), AssetClass: "Cash", Platform: "Brand New", ValueUsd: 1},
+		"asset class too long": {Name: "x", AssetClass: strings.Repeat("x", model.MaxAssetClassLength+1), Platform: "Brand New", ValueUsd: 1},
+		"negative value":       {Name: "x", AssetClass: "Cash", Platform: "Brand New", ValueUsd: -1},
+		"blank platform":       {Name: "x", AssetClass: "Cash", Platform: "  ", ValueUsd: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd.UserId = userId
+			_, err := svc.CreateHolding(context.Background(), cmd)
+			assert.Error(t, err)
+			assert.Empty(t, platformRepo.platforms)
+			assert.Empty(t, holdingRepo.holdings)
+		})
+	}
+}
+
+func TestHoldingService_CapsHoldingsPerUser(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	platformRepo := newMockPlatformRepo(holdingRepo)
+	svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(time.Now()))
+	full, other := model.NewUserId(uuid.New()), model.NewUserId(uuid.New())
+
+	for i := 0; i < model.MaxHoldingsPerUser; i++ {
+		h := model.Holding{Id: model.NewHoldingId(), UserId: full, Platform: model.MustPlatformName("Bank")}
+		holdingRepo.holdings[h.Id.String()] = h
+	}
+	cmd := func(u model.UserId) inbound.CreateHoldingCommand {
+		return inbound.CreateHoldingCommand{UserId: u, Name: "One more", AssetClass: "Cash", Platform: "New Bank", ValueUsd: 1}
+	}
+
+	_, err := svc.CreateHolding(context.Background(), cmd(full))
+	assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
+	assert.Empty(t, platformRepo.platforms, "no platform for a refused holding")
+
+	// The cap is per account: everyone else is unaffected.
+	_, err = svc.CreateHolding(context.Background(), cmd(other))
+	assert.NoError(t, err)
+
+	holdingRepo.countErr = errors.New("db down")
+	_, err = svc.CreateHolding(context.Background(), cmd(other))
+	assert.EqualError(t, err, "db down")
 }

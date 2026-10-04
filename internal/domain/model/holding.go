@@ -4,7 +4,11 @@ import (
 	"time"
 )
 
-const MaxHoldingNameLength = 120
+const (
+	MaxHoldingNameLength = 120
+	// Every account shares one database: no single user may grow it without bound.
+	MaxHoldingsPerUser = 1000
+)
 
 // Holding represents an asset position owned by a user.
 type Holding struct {

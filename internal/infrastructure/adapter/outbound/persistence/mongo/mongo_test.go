@@ -130,6 +130,37 @@ func TestHoldingRepository(t *testing.T) {
 	got, err = repo.FindAll(ctx, user)
 	require.NoError(t, err)
 	assert.Equal(t, []model.Holding{second}, got)
+
+	n, err := repo.Count(ctx, user)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+	n, err = repo.Count(ctx, other)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+}
+
+func TestHoldingRepository_SaveNeverOverwritesAnotherUsersHolding(t *testing.T) {
+	db := testDB(t)
+	repo := NewMongoHoldingRepository(db)
+	ctx := context.Background()
+	owner, intruder := newUser(), newUser()
+
+	original := holding(owner, "BTC", "Crypto", "Binance", 100, at(1))
+	_, err := repo.Save(ctx, original)
+	require.NoError(t, err)
+
+	hijack := original
+	hijack.UserId = intruder
+	hijack.Value = model.MustMoneyFromFloat(1)
+	_, err = repo.Save(ctx, hijack)
+	assert.Error(t, err, "same id, different owner: the upsert's insert hits the duplicate _id")
+
+	got, err := repo.FindAll(ctx, owner)
+	require.NoError(t, err)
+	assert.Equal(t, []model.Holding{original}, got)
+	got, err = repo.FindAll(ctx, intruder)
+	require.NoError(t, err)
+	assert.Empty(t, got)
 }
 
 func TestHoldingRepository_AssetClassesInUseSkipsInvalid(t *testing.T) {
@@ -157,6 +188,8 @@ func TestHoldingRepository_Errors(t *testing.T) {
 	_, err = repo.DeleteById(cancelled(), user, model.NewHoldingId())
 	assert.Error(t, err)
 	_, err = repo.AssetClassesInUse(cancelled(), user)
+	assert.Error(t, err)
+	_, err = repo.Count(cancelled(), user)
 	assert.Error(t, err)
 
 	// A doc the domain can't accept surfaces as an error, not a zero-value holding.
@@ -342,6 +375,17 @@ func TestSnapshotRepository(t *testing.T) {
 
 	_, err = repo.Save(ctx, snap(user, at(2), 999))
 	assert.ErrorAs(t, err, &appErrors.DuplicateResourceError{})
+
+	// The unique index is per user: another account may snapshot the very same second.
+	_, err = repo.Save(ctx, snap(other, at(2), 7))
+	require.NoError(t, err)
+
+	n, err := repo.Count(ctx, user)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), n)
+	n, err = repo.Count(ctx, other)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
 }
 
 func TestSnapshotRepository_Errors(t *testing.T) {
@@ -359,6 +403,8 @@ func TestSnapshotRepository_Errors(t *testing.T) {
 	_, err = repo.FindFirstOfYear(cancelled(), user, 2026)
 	assert.Error(t, err)
 	_, err = repo.FindEarliest(cancelled(), user)
+	assert.Error(t, err)
+	_, err = repo.Count(cancelled(), user)
 	assert.Error(t, err)
 
 	insertRaw(t, db, "net_worth_snapshots", bson.M{"_id": "x", "user_id": user.String(), "captured_at": at(1), "total_value_usd": "1"})
@@ -493,4 +539,64 @@ func TestWealthAggregation_Errors(t *testing.T) {
 	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": bad.String(), "created_at": "yesterday"})
 	_, err = agg.ByPlatform(context.Background(), bad)
 	assert.Error(t, err, "platforms decode")
+}
+
+func TestWealthAggregation_CountsHoldingsWhosePlatformDocIsGone(t *testing.T) {
+	db := testDB(t)
+	agg := NewMongoWealthAggregationAdapter(db)
+	holdings := NewMongoHoldingRepository(db)
+	platforms := NewMongoPlatformRepository(db)
+	ctx := context.Background()
+	user := newUser()
+
+	_, err := platforms.EnsureExists(ctx, user, model.MustPlatformName("IBKR"), at(1))
+	require.NoError(t, err)
+	for _, h := range []model.Holding{
+		holding(user, "a", "Equity", "IBKR", 100, at(1)),
+		// What a create racing a delete's DeleteUnused can leave behind: no "Lost" platform doc.
+		holding(user, "b", "Cash", "Lost", 40, at(1)),
+	} {
+		_, err := holdings.Save(ctx, h)
+		require.NoError(t, err)
+	}
+
+	byPlatform, err := agg.ByPlatform(ctx, user)
+	require.NoError(t, err)
+	require.Len(t, byPlatform, 2)
+	assert.Equal(t, "Lost", byPlatform[1].Name.Value())
+	assert.Equal(t, model.PlatformTypeOther, byPlatform[1].Type)
+	assert.Equal(t, "40.00", byPlatform[1].Value.String())
+	assert.Equal(t, 1, byPlatform[1].Count)
+}
+
+func TestEnsureIndexes_CoversEveryPerUserQuery(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	keysOf := func(coll string) []string {
+		cursor, err := db.Database.Collection(coll).Indexes().List(ctx)
+		require.NoError(t, err)
+		var specs []struct {
+			Key    bson.D `bson:"key"`
+			Unique bool   `bson:"unique"`
+		}
+		require.NoError(t, cursor.All(ctx, &specs))
+		var out []string
+		for _, spec := range specs {
+			var fields []string
+			for _, k := range spec.Key {
+				fields = append(fields, k.Key)
+			}
+			name := strings.Join(fields, "+")
+			if spec.Unique {
+				name += " unique"
+			}
+			out = append(out, name)
+		}
+		return out
+	}
+
+	assert.ElementsMatch(t, []string{"_id", "user_id+created_at", "user_id+platform_name", "user_id+asset_class"}, keysOf("holdings"))
+	assert.ElementsMatch(t, []string{"_id", "user_id+lower_name unique"}, keysOf("platforms"))
+	assert.ElementsMatch(t, []string{"_id", "user_id+captured_at unique"}, keysOf("net_worth_snapshots"))
 }

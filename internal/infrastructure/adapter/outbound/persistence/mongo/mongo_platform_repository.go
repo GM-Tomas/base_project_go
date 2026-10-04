@@ -148,7 +148,8 @@ func (r *MongoPlatformRepository) DeleteUnused(ctx context.Context, userId model
 	if err := r.holdingsColl.Distinct(ctx, "platform_name", bson.M{"user_id": uid}).Decode(&inUse); err != nil {
 		return err
 	}
-	// ponytail: not atomic with a concurrent holding insert; fine for a single-user dashboard.
+	// Not atomic with a concurrent create on the same platform by the same user (other users' data is
+	// never involved): the holding can end up without its platform doc. ByPlatform still counts it.
 	_, err := r.platformsColl.DeleteMany(ctx, bson.M{"user_id": uid, "name": bson.M{"$nin": inUse}})
 	return err
 }

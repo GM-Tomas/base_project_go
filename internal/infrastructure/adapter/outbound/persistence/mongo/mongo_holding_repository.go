@@ -62,6 +62,10 @@ func (r *MongoHoldingRepository) FindAll(
 	return holdings, nil
 }
 
+func (r *MongoHoldingRepository) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	return r.coll.CountDocuments(ctx, bson.M{"user_id": userId.UUID().String()})
+}
+
 func (r *MongoHoldingRepository) Save(
 	ctx context.Context,
 	holding model.Holding,
@@ -77,8 +81,10 @@ func (r *MongoHoldingRepository) Save(
 		UpdatedAt:    holding.UpdatedAt,
 	}
 
+	// The owner is part of the filter: an id that belongs to someone else matches nothing, and the
+	// upsert's insert then fails on the duplicate _id instead of overwriting their holding.
 	opts := options.Replace().SetUpsert(true)
-	_, err := r.coll.ReplaceOne(ctx, bson.M{"_id": doc.ID}, doc, opts)
+	_, err := r.coll.ReplaceOne(ctx, bson.M{"_id": doc.ID, "user_id": doc.UserID}, doc, opts)
 	if err != nil {
 		return model.Holding{}, err
 	}

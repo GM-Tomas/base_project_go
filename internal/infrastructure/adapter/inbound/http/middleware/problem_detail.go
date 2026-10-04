@@ -64,6 +64,8 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 		WriteProblem(w, r, http.StatusConflict, "conflict", "Conflict", e.Message, nil)
 	case appErrors.ResourceInUseError:
 		WriteProblem(w, r, http.StatusConflict, "conflict", "Conflict", e.Message, nil)
+	case appErrors.LimitExceededError:
+		WriteProblem(w, r, http.StatusConflict, "limit-exceeded", "Conflict", e.Message, nil)
 	case appErrors.ValidationErrors:
 		fieldErrs := make([]FieldError, len(e.Errors))
 		messages := make([]string, len(e.Errors))

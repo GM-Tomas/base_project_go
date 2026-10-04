@@ -174,3 +174,20 @@ func TestRouter_OnlyExposesWhatTheFrontendUses(t *testing.T) {
 		assert.Contains(t, []int{http.StatusNotFound, http.StatusMethodNotAllowed}, rec.Code, tc.method+" "+tc.path)
 	}
 }
+
+func TestHoldingHandler_PerUserCapIsAConflict(t *testing.T) {
+	userId := model.NewUserId(uuid.New())
+	router, holdingRepo, _, _, _ := setupTestRouter(userId)
+	for i := 0; i < model.MaxHoldingsPerUser; i++ {
+		h := model.Holding{Id: model.NewHoldingId(), UserId: userId, Platform: model.MustPlatformName("Bank")}
+		holdingRepo.holdings[h.Id.String()] = h
+	}
+
+	rec := do(t, router, "POST", "/api/v1/holdings", dto.CreateHoldingRequest{Name: "x", AssetClass: "Cash", Platform: "Bank", ValueUsd: 1})
+
+	assert.Equal(t, http.StatusConflict, rec.Code)
+	var prob middleware.ProblemDetail
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&prob))
+	assert.Equal(t, middleware.ProblemBaseURI+"/limit-exceeded", prob.Type)
+	assert.Contains(t, prob.Detail, "1000 holdings")
+}

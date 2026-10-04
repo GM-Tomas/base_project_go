@@ -191,6 +191,7 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 		if ps, found := statsByPlatform[pDoc.Name]; found {
 			total = ps.total
 			count = ps.count
+			delete(statsByPlatform, pDoc.Name)
 		}
 
 		list = append(list, outbound.PlatformAggregate{
@@ -198,6 +199,21 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 			Type:  pt,
 			Value: total,
 			Count: count,
+		})
+	}
+
+	// Holdings whose platform doc is gone (see DeleteUnused) still count, so the breakdown always adds
+	// up to the net worth.
+	for name, ps := range statsByPlatform {
+		pn, err := model.NewPlatformName(name)
+		if err != nil {
+			continue
+		}
+		list = append(list, outbound.PlatformAggregate{
+			Name:  pn,
+			Type:  model.PlatformTypeOther,
+			Value: ps.total,
+			Count: ps.count,
 		})
 	}
 

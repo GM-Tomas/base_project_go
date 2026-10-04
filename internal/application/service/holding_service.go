@@ -53,12 +53,9 @@ func (s *HoldingService) CreateHolding(
 ) (model.Holding, error) {
 	now := s.clock()
 
-	rawPlatform, err := model.NewPlatformName(command.Platform)
-	if err != nil {
-		return model.Holding{}, err
-	}
-
-	platformName, err := s.platformRepo.EnsureExists(ctx, command.UserId, rawPlatform, now)
+	// Validate everything before touching storage: a rejected request (e.g. a name that's too long)
+	// used to leave its brand-new platform behind, showing up as an empty $0 account.
+	platform, err := model.NewPlatformName(command.Platform)
 	if err != nil {
 		return model.Holding{}, err
 	}
@@ -77,10 +74,25 @@ func (s *HoldingService) CreateHolding(
 		command.UserId,
 		command.Name,
 		ac,
-		platformName,
+		platform,
 		moneyVal,
 		now,
 	)
+	if err != nil {
+		return model.Holding{}, err
+	}
+
+	count, err := s.holdingRepo.Count(ctx, command.UserId)
+	if err != nil {
+		return model.Holding{}, err
+	}
+	if count >= model.MaxHoldingsPerUser {
+		return model.Holding{}, appErrors.NewLimitExceededError(fmt.Sprintf(
+			"You can track up to %d holdings. Remove one to add another.", model.MaxHoldingsPerUser))
+	}
+
+	// The user's existing spelling of the platform wins (matched case-insensitively), else it's created.
+	holding.Platform, err = s.platformRepo.EnsureExists(ctx, command.UserId, platform, now)
 	if err != nil {
 		return model.Holding{}, err
 	}

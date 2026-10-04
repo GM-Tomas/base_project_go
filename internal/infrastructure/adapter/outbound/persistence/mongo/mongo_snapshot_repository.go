@@ -60,6 +60,10 @@ func (r *MongoSnapshotRepository) FindAll(
 	return snapshots, nil
 }
 
+func (r *MongoSnapshotRepository) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	return r.coll.CountDocuments(ctx, bson.M{"user_id": userId.UUID().String()})
+}
+
 func (r *MongoSnapshotRepository) Save(
 	ctx context.Context,
 	snapshot model.NetWorthSnapshot,

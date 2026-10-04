@@ -2,12 +2,14 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/application/service"
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
+	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +19,7 @@ type mockSnapshotRepo struct {
 	snapshots   []model.NetWorthSnapshot
 	firstOfYear *model.NetWorthSnapshot
 	earliest    *model.NetWorthSnapshot
+	countErr    error
 }
 
 func newMockSnapshotRepo() *mockSnapshotRepo {
@@ -25,6 +28,19 @@ func newMockSnapshotRepo() *mockSnapshotRepo {
 
 func (m *mockSnapshotRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.NetWorthSnapshot, error) {
 	return m.snapshots, nil
+}
+
+func (m *mockSnapshotRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	if m.countErr != nil {
+		return 0, m.countErr
+	}
+	var n int64
+	for _, s := range m.snapshots {
+		if s.UserId == userId {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (m *mockSnapshotRepo) Save(ctx context.Context, snapshot model.NetWorthSnapshot) (model.NetWorthSnapshot, error) {
@@ -93,4 +109,26 @@ func TestSnapshotService_CreateAndGet(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, snaps, 1)
 	assert.Nil(t, snaps[0].ChangePctFromPrevious)
+}
+
+func TestSnapshotService_CapsSnapshotsPerUser(t *testing.T) {
+	snapshotRepo := newMockSnapshotRepo()
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
+	full, other := model.NewUserId(uuid.New()), model.NewUserId(uuid.New())
+
+	for i := 0; i < model.MaxSnapshotsPerUser; i++ {
+		snapshotRepo.snapshots = append(snapshotRepo.snapshots,
+			model.NewNetWorthSnapshot(model.NewSnapshotId(), full, now.Add(-time.Duration(i+1)*time.Hour), model.ZeroMoney))
+	}
+
+	_, err := svc.CreateSnapshot(context.Background(), full)
+	assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
+
+	_, err = svc.CreateSnapshot(context.Background(), other)
+	assert.NoError(t, err, "the cap is per account")
+
+	snapshotRepo.countErr = errors.New("db down")
+	_, err = svc.CreateSnapshot(context.Background(), model.NewUserId(uuid.New()))
+	assert.EqualError(t, err, "db down")
 }

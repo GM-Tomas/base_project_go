@@ -48,6 +48,7 @@ func TestHandleError_MapsErrorsToStatus(t *testing.T) {
 		{"not found", appErrors.NewResourceNotFoundError("Holding x not found"), http.StatusNotFound, "not-found", "Holding x not found"},
 		{"duplicate", appErrors.NewDuplicateResourceError("Snapshot exists"), http.StatusConflict, "conflict", "Snapshot exists"},
 		{"in use", appErrors.NewResourceInUseError("Platform in use"), http.StatusConflict, "conflict", "Platform in use"},
+		{"limit exceeded", appErrors.NewLimitExceededError("Too many holdings"), http.StatusConflict, "limit-exceeded", "Too many holdings"},
 		{"blank label", fmt.Errorf("Holding name %w", model.ErrBlankLabel), http.StatusBadRequest, "bad-request", "Holding name must not be blank"},
 		{"label too long", fmt.Errorf("x %w", model.ErrLabelTooLong), http.StatusBadRequest, "bad-request", "x exceeds max length"},
 		{"negative money", model.ErrNegativeMoney, http.StatusBadRequest, "bad-request", model.ErrNegativeMoney.Error()},

@@ -4,6 +4,9 @@ import (
 	"time"
 )
 
+// MaxSnapshotsPerUser caps one account's history (over 13 years of daily snapshots).
+const MaxSnapshotsPerUser = 5000
+
 // NetWorthSnapshot represents a snapshot of net worth at a specific point in time.
 type NetWorthSnapshot struct {
 	Id         SnapshotId
