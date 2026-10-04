@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	appHttp "github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http/middleware"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -173,6 +175,22 @@ func TestRouter_OnlyExposesWhatTheFrontendUses(t *testing.T) {
 		rec := do(t, router, tc.method, tc.path, nil)
 		assert.Contains(t, []int{http.StatusNotFound, http.StatusMethodNotAllowed}, rec.Code, tc.method+" "+tc.path)
 	}
+}
+
+func TestRouter_AccessLogIPCannotBeSpoofedWithTrueClientIP(t *testing.T) {
+	var buf bytes.Buffer
+	defaultLogger := chimiddleware.DefaultLogger
+	chimiddleware.DefaultLogger = chimiddleware.RequestLogger(&chimiddleware.DefaultLogFormatter{Logger: log.New(&buf, "", 0), NoColor: true})
+	defer func() { chimiddleware.DefaultLogger = defaultLogger }()
+	router, _, _, _, _ := setupTestRouter(model.NewUserId(uuid.New()))
+
+	req := httptest.NewRequest("GET", "/api/v1/health", nil)
+	req.Header.Set("True-Client-IP", "6.6.6.6")
+	req.Header.Set("X-Forwarded-For", "203.0.113.7")
+	router.ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Contains(t, buf.String(), "from 203.0.113.7")
+	assert.NotContains(t, buf.String(), "6.6.6.6")
 }
 
 func TestHoldingHandler_PerUserCapIsAConflict(t *testing.T) {

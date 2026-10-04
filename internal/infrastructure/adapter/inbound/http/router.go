@@ -30,7 +30,9 @@ func NewRouter(params RouterParams) http.Handler {
 
 	// Global Middlewares
 	r.Use(middleware.RequestIDMiddleware)
-	r.Use(chimiddleware.RealIP)
+	// Client IP for the access log: the right-most X-Forwarded-For entry, which Vercel overwrites on
+	// every request. (chi's RealIP, used before, trusted a client-sent True-Client-IP first.)
+	r.Use(chimiddleware.ClientIPFromXFFTrustedProxies(1))
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(middleware.CorsMiddleware(params.AllowedOrigins))
