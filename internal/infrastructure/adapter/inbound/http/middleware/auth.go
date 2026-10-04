@@ -25,9 +25,9 @@ const statusClientClosedRequest = 499
 
 var (
 	ErrMissingToken = errors.New("missing access token")
-	// ErrSigningKeysUnavailable means there are no keys to verify with: the JWKS couldn't be fetched, nor
-	// was it before. The token may well be valid, so it's answered with 503 (our problem) rather than 401,
-	// which makes the frontend sign the user out.
+	// ErrSigningKeysUnavailable means there are no usable keys to verify with: the JWKS couldn't be
+	// fetched, at all or for too long (see jwksCache). The token may well be valid, so it's answered with
+	// 503 (our problem) rather than 401, which makes the frontend sign the user out.
 	ErrSigningKeysUnavailable = errors.New("signing keys unavailable")
 )
 

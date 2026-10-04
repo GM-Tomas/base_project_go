@@ -102,7 +102,7 @@ después de cambiar `DOCS_PASSWORD` hay que redeployar. En local sigue abierta s
 | `FRONTEND_ORIGIN` | Opcional | Orígenes CORS separados por coma. Default: `localhost:3000` y `https://base-project-fe.vercel.app`. Nunca `https://*.vercel.app`: cualquiera puede desplegar ahí. |
 
 Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
-valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request da `401`.
+valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request con token da `503`.
 
 Los índices de MongoDB (un snapshot por segundo y por usuario, listado de holdings por usuario) se crean solos al arrancar.
 
@@ -133,11 +133,13 @@ Authorization: Bearer <session.access_token>
 
 - La validación se realiza contra el endpoint JWKS del proyecto de Supabase (`SUPABASE_URL`), verificando firma, `issuer`, expiración y audiencia `authenticated`. Las sesiones anónimas se rechazan.
 - La API guarda el JWKS en memoria y lo vuelve a pedir cuando tiene más de 10 minutos, lo que Supabase recomienda
-  (su edge lo cachea otros 10). Si Supabase no responde, sigue usando las últimas claves que obtuvo; si todavía no
-  tiene ninguna, responde `503`, no `401`: el token puede ser válido y el frontend solo cierra la sesión ante un `401`.
+  (su edge lo cachea otros 10). Si Supabase no responde, sigue con las claves que tiene hasta que cumplen 20 minutos;
+  pasado eso, o si todavía no tiene ninguna, responde `503`, no `401`: el token puede ser válido y el frontend solo
+  cierra la sesión ante un `401`.
 - Un token firmado con una clave que la API todavía no conoce da `401`. Para **rotar claves** en Supabase
   (Authentication → JWT Keys): crear la nueva como *standby*, esperar al menos 20 minutos (así toda instancia de la
-  API ya la tiene) y recién entonces rotar. Revocar una clave también tarda hasta 20 minutos en llegar a la API.
+  API ya la tiene) y recién entonces rotar. Revocar una clave también tarda hasta 20 minutos en llegar a la API
+  (30 si Supabase no respondía justo al renovar las claves).
 - La identidad del usuario (`sub` del JWT) es la **única fuente** del `userId` en el backend. Ningún endpoint acepta un identificador de usuario en body, path o query (aislamiento estricto multi-tenant; si se envía, se ignora).
 - Respuestas de error estructuradas conforme a la especificación **RFC 9457 / RFC 7807** (`application/problem+json`) con identificador de traza `traceId` / `X-Request-Id`.
 

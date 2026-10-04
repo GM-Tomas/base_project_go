@@ -13,24 +13,34 @@ import (
 )
 
 const (
-	// jwksMaxAge is how long a fetched key set is trusted before it's fetched again. Supabase's edge caches
+	// jwksMaxAge is how long a fetched key set is used before it's fetched again. Supabase's edge caches
 	// the endpoint for another 10 minutes, and its docs ask apps not to keep the keys longer than that, so
 	// rotations and revocations reach the API within their 20-minute window (see the README).
 	jwksMaxAge = 10 * time.Minute
+	// jwksMaxStale is how long keys are used at most, when fetching them again keeps failing: past it,
+	// requests get a 503 until a fetch works, rather than keys that may have been revoked meanwhile.
+	jwksMaxStale = 20 * time.Minute
+	// jwksStaleWait is how long a request waits for the new keys another request is fetching when the
+	// current ones are past jwksMaxAge but still usable.
+	jwksStaleWait = time.Second
 	// jwksRetryAfter spaces out the attempts while Supabase can't be reached.
 	jwksRetryAfter   = 5 * time.Second
-	jwksFetchTimeout = 10 * time.Second
+	jwksFetchTimeout = 5 * time.Second
 	jwksMaxBytes     = 1 << 20 // a real JWKS is a few KB
 )
 
-// jwksCache keeps the Supabase signing keys in memory. Once they're older than maxAge they are fetched
-// again, by one fetch that every request needing keys at the time waits on. Nothing a client sends (an
-// unknown key id, say) can trigger a fetch. If one fails, the keys from the last fetch that worked stay in
-// use, and later attempts, at most one per retryAfter, run in the background while those keys are served.
-// Without any keys (a cold start while Supabase is down) requests fail until an attempt works.
+// jwksCache keeps the Supabase signing keys in memory. Keys older than maxAge are fetched again by the
+// next request that needs them, for everyone; nothing a client sends (an unknown key id, say) can
+// trigger a fetch. Every fetch runs in a request, never in a background goroutine, which a serverless host
+// freezes once the responses are sent. While a fetch is under way, requests that have no usable keys wait
+// for it; the others use the current keys, after waiting up to staleWait for the new ones (unless the last
+// attempt failed: Supabase isn't answering, so no point). Keys stay usable until maxStale, so a failed
+// fetch costs nothing until then; past it, or before the first fetch works, requests fail.
 type jwksCache struct {
 	fetch      func(ctx context.Context) (jwk.Set, error)
 	maxAge     time.Duration
+	maxStale   time.Duration
+	staleWait  time.Duration
 	retryAfter time.Duration
 	now        func() time.Time
 
@@ -43,51 +53,67 @@ type jwksCache struct {
 }
 
 func newJWKSCache(fetch func(ctx context.Context) (jwk.Set, error)) *jwksCache {
-	return &jwksCache{fetch: fetch, maxAge: jwksMaxAge, retryAfter: jwksRetryAfter, now: time.Now}
+	return &jwksCache{
+		fetch:      fetch,
+		maxAge:     jwksMaxAge,
+		maxStale:   jwksMaxStale,
+		staleWait:  jwksStaleWait,
+		retryAfter: jwksRetryAfter,
+		now:        time.Now,
+	}
 }
 
 func (c *jwksCache) Get(ctx context.Context) (jwk.Set, error) {
 	c.mu.Lock()
 	now := c.now()
-	retryDue := c.failedAt.IsZero() || now.Sub(c.failedAt) >= c.retryAfter
-	switch {
-	case c.set != nil && now.Sub(c.fetchedAt) < c.maxAge:
-		// Fresh keys: the usual case.
-	case c.set != nil && !c.failedAt.IsZero():
-		// Supabase didn't answer last time: keep using the keys we have rather than wait on it again. The
-		// next attempt runs in the background; if the host freezes it, these keys still work meanwhile.
-		if c.inflight == nil && retryDue {
-			done := c.beginFetchLocked()
-			go c.runFetch(done)
-		}
-	case c.inflight != nil:
-		done := c.inflight
+	if c.set != nil && now.Sub(c.fetchedAt) < c.maxAge {
+		set := c.set
 		c.mu.Unlock()
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		return c.current()
-	case !retryDue:
-		// No keys, and the last attempt failed moments ago.
-		err := c.lastErr
-		c.mu.Unlock()
-		return nil, err
-	default:
+		return set, nil
+	}
+	usable := c.usableLocked(now)
+	failing := !c.failedAt.IsZero()
+	if c.inflight == nil && (!failing || now.Sub(c.failedAt) >= c.retryAfter) {
 		done := c.beginFetchLocked()
 		c.mu.Unlock()
-		// Run by this request, for everyone waiting on it: detached from its cancellation (its client may
-		// hang up), but not left to a background goroutine, which a serverless host can freeze mid-fetch.
+		// Fetched by this request, for everyone: detached from its cancellation, since its client may hang up.
 		c.runFetch(done)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		return c.current()
 	}
-	set := c.set
+	done := c.inflight
 	c.mu.Unlock()
-	return set, nil
+
+	switch {
+	case done == nil, usable && failing:
+		// The last attempt failed (moments ago, or is being retried): answer with the keys there are, if
+		// they're still usable, rather than wait on Supabase.
+	case usable:
+		// Another request is fetching: wait a moment for the new keys (a key just rotated in may need
+		// them), but not on a slow Supabase while the current keys still work.
+		timer := time.NewTimer(c.staleWait)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	default:
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return c.current()
+}
+
+// usableLocked reports whether there are keys young enough to verify tokens with.
+func (c *jwksCache) usableLocked(now time.Time) bool {
+	return c.set != nil && now.Sub(c.fetchedAt) < c.maxStale
 }
 
 func (c *jwksCache) beginFetchLocked() chan struct{} {
@@ -121,14 +147,17 @@ func (c *jwksCache) runFetch(done chan struct{}) {
 	set, err = c.fetch(ctx)
 }
 
-// current returns the keys after a fetch: new ones, or if it failed, the ones from before (if any).
+// current returns the newest keys if they're still usable, or why there are none.
 func (c *jwksCache) current() (jwk.Set, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.set == nil {
+	if c.usableLocked(c.now()) {
+		return c.set, nil
+	}
+	if c.lastErr != nil {
 		return nil, c.lastErr
 	}
-	return c.set, nil
+	return nil, errors.New("no usable JWKS")
 }
 
 // fetchJWKS returns a fetch of the key set at url.
@@ -150,6 +179,15 @@ func fetchJWKS(client *http.Client, url string) func(ctx context.Context) (jwk.S
 		if err != nil {
 			return nil, err
 		}
-		return jwk.Parse(body)
+		set, err := jwk.Parse(body)
+		if err != nil {
+			return nil, err
+		}
+		// Not a usable answer (a project still on the legacy HS256 secret, or Supabase misbehaving): keep
+		// the keys from before, if any, rather than reject every token with them.
+		if set.Len() == 0 {
+			return nil, fmt.Errorf("GET %s: no keys", url)
+		}
+		return set, nil
 	}
 }

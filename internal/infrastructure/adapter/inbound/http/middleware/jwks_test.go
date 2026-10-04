@@ -54,11 +54,14 @@ func (f *fakeJWKS) fetch(ctx context.Context) (jwk.Set, error) {
 	}
 }
 
-func newTestJWKSCache() (*jwksCache, *fakeJWKS, *fakeClock) {
+// newTestJWKSCache waits on other requests' refreshes for as long as given, so a test sees whether a
+// request waited (a short ctx deadline on it) or not.
+func newTestJWKSCache(staleWait time.Duration) (*jwksCache, *fakeJWKS, *fakeClock) {
 	f := &fakeJWKS{outcomes: make(chan fetchOutcome)}
 	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	c := newJWKSCache(f.fetch)
 	c.now = clock.Now
+	c.staleWait = staleWait
 	return c, f, clock
 }
 
@@ -84,7 +87,7 @@ func waitIdle(t *testing.T, c *jwksCache) {
 }
 
 func TestJWKSCache_OneFetchServesEveryoneAndOutlivesHangUps(t *testing.T) {
-	c, f, _ := newTestJWKSCache()
+	c, f, _ := newTestJWKSCache(time.Hour)
 	keys := keySet(t, "a")
 
 	// The first request starts the fetch, and its client hangs up: the fetch still completes.
@@ -119,7 +122,7 @@ func TestJWKSCache_OneFetchServesEveryoneAndOutlivesHangUps(t *testing.T) {
 // Regression: the previous cache (jwk.Cache) kept a failed first fetch as "fetched, no keys", so every
 // request got a 503 until its next scheduled refresh, 15 to 30 minutes later.
 func TestJWKSCache_AFailedFirstFetchIsRetriedSoon(t *testing.T) {
-	c, f, clock := newTestJWKSCache()
+	c, f, clock := newTestJWKSCache(time.Hour)
 	ctx := context.Background()
 
 	answer(f, fetchOutcome{err: errors.New("supabase is down")})
@@ -140,7 +143,7 @@ func TestJWKSCache_AFailedFirstFetchIsRetriedSoon(t *testing.T) {
 }
 
 func TestJWKSCache_RefetchesKeysOlderThanMaxAge(t *testing.T) {
-	c, f, clock := newTestJWKSCache()
+	c, f, clock := newTestJWKSCache(time.Hour)
 	ctx := context.Background()
 	before, after := keySet(t, "before"), keySet(t, "after")
 
@@ -164,7 +167,7 @@ func TestJWKSCache_RefetchesKeysOlderThanMaxAge(t *testing.T) {
 }
 
 func TestJWKSCache_KeepsTheLastKeysWhileSupabaseIsDown(t *testing.T) {
-	c, f, clock := newTestJWKSCache()
+	c, f, clock := newTestJWKSCache(time.Hour)
 	ctx := context.Background()
 	old, fresh := keySet(t, "old"), keySet(t, "fresh")
 
@@ -175,15 +178,21 @@ func TestJWKSCache_KeepsTheLastKeysWhileSupabaseIsDown(t *testing.T) {
 	clock.Advance(jwksMaxAge)
 	answer(f, fetchOutcome{err: errors.New("supabase is down")})
 	got, err := c.Get(ctx)
-	require.NoError(t, err, "a failed refresh isn't an outage while there are keys")
+	require.NoError(t, err, "a failed refresh isn't an outage while the keys are usable")
 	assert.Equal(t, old, got)
 
 	got, _ = c.Get(ctx)
 	assert.Equal(t, old, got)
 	assert.EqualValues(t, 2, f.calls.Load(), "no new attempt before retryAfter")
 
-	// The next attempt runs in the background: requests don't wait on a Supabase that isn't answering.
+	// The next request tries again; meanwhile the others don't wait on a Supabase that isn't answering.
 	clock.Advance(jwksRetryAfter)
+	retried := make(chan jwk.Set)
+	go func() {
+		set, _ := c.Get(ctx)
+		retried <- set
+	}()
+	require.Eventually(t, func() bool { return f.calls.Load() == 3 }, 5*time.Second, time.Millisecond)
 	for range 3 {
 		quick, cancel := context.WithTimeout(ctx, time.Second)
 		got, err = c.Get(quick)
@@ -191,13 +200,101 @@ func TestJWKSCache_KeepsTheLastKeysWhileSupabaseIsDown(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, old, got)
 	}
-	require.Eventually(t, func() bool { return f.calls.Load() == 3 }, 5*time.Second, time.Millisecond)
 
 	f.outcomes <- fetchOutcome{set: fresh}
-	waitIdle(t, c)
+	assert.Equal(t, fresh, <-retried)
 	got, _ = c.Get(ctx)
 	assert.Equal(t, fresh, got)
 	assert.EqualValues(t, 3, f.calls.Load())
+}
+
+func TestJWKSCache_StopsUsingKeysPastMaxStale(t *testing.T) {
+	c, f, clock := newTestJWKSCache(time.Hour)
+	ctx := context.Background()
+
+	answer(f, fetchOutcome{set: keySet(t, "old")})
+	_, err := c.Get(ctx)
+	require.NoError(t, err)
+
+	clock.Advance(jwksMaxAge)
+	answer(f, fetchOutcome{err: errors.New("supabase is down")})
+	_, err = c.Get(ctx)
+	require.NoError(t, err)
+
+	// Keys this old may have been revoked since: no answer rather than a possibly wrong one.
+	clock.Advance(jwksMaxStale - jwksMaxAge)
+	answer(f, fetchOutcome{err: errors.New("supabase is still down")})
+	_, err = c.Get(ctx)
+	assert.EqualError(t, err, "supabase is still down")
+	_, err = c.Get(ctx)
+	assert.EqualError(t, err, "supabase is still down")
+	assert.EqualValues(t, 3, f.calls.Load())
+
+	clock.Advance(jwksRetryAfter)
+	fresh := keySet(t, "fresh")
+	answer(f, fetchOutcome{set: fresh})
+	got, err := c.Get(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, fresh, got)
+}
+
+func TestJWKSCache_DuringARefreshOthersGetTheNewKeysIfTheyComeInTime(t *testing.T) {
+	c, f, clock := newTestJWKSCache(time.Hour)
+	ctx := context.Background()
+	old, fresh := keySet(t, "old"), keySet(t, "fresh")
+
+	answer(f, fetchOutcome{set: old})
+	_, err := c.Get(ctx)
+	require.NoError(t, err)
+
+	clock.Advance(jwksMaxAge)
+	refreshed := make(chan jwk.Set, 2)
+	go func() {
+		set, _ := c.Get(ctx)
+		refreshed <- set
+	}()
+	require.Eventually(t, func() bool { return f.calls.Load() == 2 }, 5*time.Second, time.Millisecond)
+	go func() {
+		set, _ := c.Get(ctx)
+		refreshed <- set
+	}()
+	select {
+	case <-refreshed:
+		t.Fatal("answered before the refresh under way finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	f.outcomes <- fetchOutcome{set: fresh}
+	assert.Equal(t, fresh, <-refreshed)
+	assert.Equal(t, fresh, <-refreshed, "a key rotated in since the last fetch is in the new keys")
+	assert.EqualValues(t, 2, f.calls.Load())
+}
+
+func TestJWKSCache_DuringASlowRefreshOthersUseTheCurrentKeys(t *testing.T) {
+	c, f, clock := newTestJWKSCache(20 * time.Millisecond)
+	ctx := context.Background()
+	old, fresh := keySet(t, "old"), keySet(t, "fresh")
+
+	answer(f, fetchOutcome{set: old})
+	_, err := c.Get(ctx)
+	require.NoError(t, err)
+
+	clock.Advance(jwksMaxAge)
+	refreshed := make(chan jwk.Set)
+	go func() {
+		set, _ := c.Get(ctx)
+		refreshed <- set
+	}()
+	require.Eventually(t, func() bool { return f.calls.Load() == 2 }, 5*time.Second, time.Millisecond)
+
+	quick, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	got, err := c.Get(quick)
+	require.NoError(t, err, "not held up on a slow Supabase while the keys still work")
+	assert.Equal(t, old, got)
+
+	f.outcomes <- fetchOutcome{set: fresh}
+	assert.Equal(t, fresh, <-refreshed)
 }
 
 func TestJWKSCache_SurvivesAPanickingFetch(t *testing.T) {
@@ -245,11 +342,9 @@ func TestFetchJWKS(t *testing.T) {
 	_, found := set.LookupKeyID("a")
 	assert.True(t, found)
 
-	set, err = fetch(serve(http.StatusOK, `{"keys":[]}`))
-	require.NoError(t, err, "a project without asymmetric keys publishes an empty set")
-	assert.Zero(t, set.Len())
-
 	for name, url := range map[string]string{
+		// A project still on the legacy HS256 secret publishes an empty set: no keys to keep.
+		"no keys":      serve(http.StatusOK, `{"keys":[]}`),
 		"error status": serve(http.StatusInternalServerError, `{"keys":[]}`),
 		"not a JWKS":   serve(http.StatusOK, `<html>maintenance</html>`),
 		"too large":    serve(http.StatusOK, `{"keys":[],"pad":"`+strings.Repeat("a", jwksMaxBytes)+`"}`),
