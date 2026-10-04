@@ -20,6 +20,8 @@ type JWTValidator interface {
 	ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error)
 }
 
+const statusClientClosedRequest = 499
+
 var (
 	ErrMissingToken = errors.New("missing access token")
 	// ErrSigningKeysUnavailable means the JWKS couldn't be fetched. The token may well be valid, so it's
@@ -142,7 +144,9 @@ func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
 			case err == nil:
 				next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), userId)))
 			case r.Context().Err() != nil:
-				// The client hung up mid-verification: there's no one left to answer.
+				// The client hung up mid-verification. Nobody reads the answer, but the access log does:
+				// 499 (nginx's "client closed request") instead of a misleading 200 or a fake auth outage.
+				w.WriteHeader(statusClientClosedRequest)
 			case errors.Is(err, ErrMissingToken):
 				WriteUnauthorized(w, r, "Missing or invalid access token")
 			case errors.Is(err, ErrSigningKeysUnavailable):

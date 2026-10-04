@@ -185,13 +185,14 @@ func TestValidateToken_ClientHangingUpIsNotAnAuthOutage(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.NotErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
 
-	// The middleware writes nothing for a client that's gone (no fake 503 in logs and metrics).
+	// No fake 503 for a client that's gone: the access log shows 499, "client closed request".
 	req := httptest.NewRequest("GET", "/api/v1/holdings", nil).WithContext(gone)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	called := false
 	middleware.AuthMiddleware(v)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(rec, req)
 	assert.False(t, called)
+	assert.Equal(t, 499, rec.Code)
 	assert.Zero(t, rec.Body.Len())
 
 	// A live client against an unreachable JWKS is the real outage.
