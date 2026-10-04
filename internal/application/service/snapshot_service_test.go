@@ -180,14 +180,15 @@ func TestSnapshotService_CapHoldsWhenSnapshotsRace(t *testing.T) {
 
 			_, err := svc.CreateSnapshot(ctx, user)
 
+			exists, _ := snapshotRepo.ExistsAt(ctx, user, now)
 			if deleteErr != nil {
-				assert.ErrorIs(t, err, deleteErr)
+				assert.NoError(t, err, "it couldn't be taken back, so it stands and is reported as created")
+				assert.True(t, exists)
 				return
 			}
 			assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
 			n, _ := snapshotRepo.Count(ctx, user)
 			assert.Equal(t, int64(model.MaxSnapshotsPerUser), n)
-			exists, _ := snapshotRepo.ExistsAt(ctx, user, now)
 			assert.False(t, exists, "ours was withdrawn")
 		})
 	}

@@ -57,7 +57,7 @@ func (s *HoldingService) CreateHolding(
 	now := s.clock()
 
 	// Validate everything before touching storage: a rejected request (e.g. a name that's too long)
-	// used to leave its brand-new platform behind, showing up as an empty $0 account.
+	// mustn't register its brand-new platform.
 	platform, err := model.NewPlatformName(command.Platform)
 	if err != nil {
 		return model.Holding{}, err
@@ -104,24 +104,16 @@ func (s *HoldingService) CreateHolding(
 		return model.Holding{}, err
 	}
 
-	// The count above isn't atomic with the insert, so concurrent creates can all pass it. Re-count with ours
-	// in and withdraw it on an overrun: the last insert that stays has counted every other one that stays, so
-	// the user never ends up above the cap. Fail-closed by design: when a burst crosses the cap every racer
-	// may be withdrawn, even one that would have fit (a retry then succeeds), and ours is withdrawn too if the
-	// re-count fails. Detached from the request, so a client hanging up right after the insert can't skip it.
-	bg := context.WithoutCancel(ctx)
-	count, err = s.holdingRepo.Count(bg, command.UserId)
-	if err == nil && count <= model.MaxHoldingsPerUser {
-		return saved, nil
-	}
-	if _, delErr := s.holdingRepo.DeleteById(bg, command.UserId, saved.Id); delErr != nil {
-		return model.Holding{}, delErr
-	}
-	_ = s.platformRepo.DeleteUnused(bg, command.UserId) // best effort: at worst an empty platform lingers
+	err = confirmUnderCap(ctx, model.MaxHoldingsPerUser, errHoldingsLimit,
+		func(ctx context.Context) (int64, error) { return s.holdingRepo.Count(ctx, command.UserId) },
+		func(ctx context.Context) error {
+			_, err := s.holdingRepo.DeleteById(ctx, command.UserId, saved.Id)
+			return err
+		})
 	if err != nil {
 		return model.Holding{}, err
 	}
-	return model.Holding{}, errHoldingsLimit
+	return saved, nil
 }
 
 func (s *HoldingService) DeleteHolding(

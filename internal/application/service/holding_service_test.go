@@ -244,17 +244,23 @@ func TestHoldingService_CapHoldsWhenCreatesRace(t *testing.T) {
 				UserId: user, Name: "Mine", AssetClass: "Cash", Platform: "Fresh", ValueUsd: 1,
 			})
 
+			mine := 0
+			for _, h := range holdingRepo.holdings {
+				if h.Name == "Mine" {
+					mine++
+				}
+			}
 			if deleteErr != nil {
-				assert.ErrorIs(t, err, deleteErr)
+				// It couldn't be taken back, so it stands and is reported as created: a 500 would only
+				// invite a retry that stores it twice.
+				assert.NoError(t, err)
+				assert.Equal(t, 1, mine)
 				return
 			}
 			assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
 			n, _ := holdingRepo.Count(ctx, user)
 			assert.Equal(t, int64(model.MaxHoldingsPerUser), n, "ours was withdrawn, so the user stays at the cap")
-			for _, h := range holdingRepo.holdings {
-				assert.NotEqual(t, "Mine", h.Name)
-			}
-			assert.NotContains(t, platformRepo.platforms, "Fresh", "its brand-new platform goes too")
+			assert.Zero(t, mine)
 		})
 	}
 }

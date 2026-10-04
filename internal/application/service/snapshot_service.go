@@ -73,20 +73,16 @@ func (s *SnapshotService) CreateSnapshot(
 		return model.NetWorthSnapshot{}, err
 	}
 
-	// Same race and remedy as HoldingService.CreateHolding: re-count with ours in (detached from the request)
-	// and withdraw it on an overrun or when the re-count fails.
-	bg := context.WithoutCancel(ctx)
-	count, err = s.snapshotRepo.Count(bg, userId)
-	if err == nil && count <= model.MaxSnapshotsPerUser {
-		return saved, nil
-	}
-	if _, delErr := s.snapshotRepo.DeleteById(bg, userId, saved.Id); delErr != nil {
-		return model.NetWorthSnapshot{}, delErr
-	}
+	err = confirmUnderCap(ctx, model.MaxSnapshotsPerUser, errSnapshotsLimit,
+		func(ctx context.Context) (int64, error) { return s.snapshotRepo.Count(ctx, userId) },
+		func(ctx context.Context) error {
+			_, err := s.snapshotRepo.DeleteById(ctx, userId, saved.Id)
+			return err
+		})
 	if err != nil {
 		return model.NetWorthSnapshot{}, err
 	}
-	return model.NetWorthSnapshot{}, errSnapshotsLimit
+	return saved, nil
 }
 
 func (s *SnapshotService) GetSnapshots(
