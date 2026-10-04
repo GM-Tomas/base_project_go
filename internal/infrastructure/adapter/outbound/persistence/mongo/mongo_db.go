@@ -77,16 +77,12 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 		log.Printf("Warning creating snapshots index: %v", err)
 	}
 
-	// Holdings: the user's list and platforms (both read oldest first) and the asset classes in use.
-	// (Earlier versions also created user_id_1_platform_name_1; nothing queries by platform name now, so
-	// it can be dropped.)
+	// Holdings: the user's list and platforms, both read in holdingsOldestFirst order (built from it, so the
+	// index always serves it and Mongo never sorts in memory), and the asset classes in use. Older indexes
+	// nothing uses now can be dropped, see the README.
 	_, err = db.Holdings.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
-			Keys: bson.D{ // holdingsOldestFirst, so those reads stream from the index instead of sorting
-				{Key: "user_id", Value: 1},
-				{Key: "created_at", Value: 1},
-				{Key: "_id", Value: 1},
-			},
+			Keys: append(bson.D{{Key: "user_id", Value: 1}}, holdingsOldestFirst...),
 		},
 		{
 			Keys: bson.D{

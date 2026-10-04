@@ -766,22 +766,24 @@ func TestWealthAggregation_Errors(t *testing.T) {
 func TestEnsureIndexes_HoldingsOldestFirstNeedsNoSort(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	_, err := NewMongoHoldingRepository(db).Save(ctx, holding(newUser(), "a", "Cash", "Bank", 1, at(1)))
-	require.NoError(t, err)
+	user := newUser()
+	for i := range 3 {
+		_, err := NewMongoHoldingRepository(db).Save(ctx, holding(user, "h", "Cash", "Bank", 1, at(i+1)))
+		require.NoError(t, err)
+	}
 
-	var explained bson.M
-	err = db.Database.RunCommand(ctx, bson.D{
+	var explained bson.D
+	err := db.Database.RunCommand(ctx, bson.D{
 		{Key: "explain", Value: bson.D{
 			{Key: "find", Value: db.Holdings.Name()},
-			{Key: "filter", Value: bson.M{"user_id": newUser().String()}},
+			{Key: "filter", Value: bson.M{"user_id": user.String()}},
 			{Key: "sort", Value: holdingsOldestFirst},
 		}},
 		{Key: "verbosity", Value: "queryPlanner"},
 	}).Decode(&explained)
 	require.NoError(t, err)
 
-	// Every stage of the winning plan, whatever its shape (the classic and slot-based engines nest it
-	// differently).
+	// The stages of the winning plan (not the rejected ones), however the engine nests them.
 	var stages []string
 	var walk func(any)
 	walk = func(node any) {
@@ -793,33 +795,22 @@ func TestEnsureIndexes_HoldingsOldestFirstNeedsNoSort(t *testing.T) {
 				}
 				walk(e.Value)
 			}
-		case bson.M:
-			for k, v := range n {
-				if name, ok := v.(string); ok && k == "stage" {
-					stages = append(stages, name)
-				}
-				walk(v)
-			}
 		case bson.A:
 			for _, v := range n {
 				walk(v)
 			}
 		}
 	}
-	field := func(doc any, key string) any {
-		switch d := doc.(type) {
-		case bson.D:
-			for _, e := range d {
-				if e.Key == key {
-					return e.Value
-				}
+	field := func(doc bson.D, key string) any {
+		for _, e := range doc {
+			if e.Key == key {
+				return e.Value
 			}
-		case bson.M:
-			return d[key]
 		}
 		return nil
 	}
-	walk(field(explained["queryPlanner"], "winningPlan")) // not the rejected plans
+	planner, _ := field(explained, "queryPlanner").(bson.D)
+	walk(field(planner, "winningPlan"))
 	assert.Contains(t, stages, "IXSCAN")
 	assert.NotContains(t, stages, "SORT", "plan: %v", stages)
 }
