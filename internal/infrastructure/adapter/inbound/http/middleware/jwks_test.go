@@ -318,6 +318,33 @@ func TestJWKSCache_SurvivesAPanickingFetch(t *testing.T) {
 	assert.Equal(t, keys, got)
 }
 
+// brokenSet is a key set whose Len panics. (Embedded under another name: jwk.Set has a Set method.)
+type anySet = jwk.Set
+type brokenSet struct{ anySet }
+
+func (brokenSet) Len() int { panic("broken set") }
+
+func TestJWKSCache_SurvivesAKeySetThatPanics(t *testing.T) {
+	keys := keySet(t, "a")
+	var calls atomic.Int32
+	c := newJWKSCache(func(context.Context) (jwk.Set, error) {
+		if calls.Add(1) == 1 {
+			return brokenSet{}, nil
+		}
+		return keys, nil
+	})
+	clock := &fakeClock{now: time.Unix(1_700_000_000, 0)}
+	c.now = clock.Now
+
+	_, err := c.Get(context.Background())
+	assert.ErrorContains(t, err, "panicked: broken set")
+
+	clock.Advance(jwksRetryAfter)
+	got, err := c.Get(context.Background())
+	require.NoError(t, err, "the failed fetch was recorded, so the next one could start")
+	assert.Equal(t, keys, got)
+}
+
 func TestJWKSCache_NoKeysIsAFailedFetch(t *testing.T) {
 	c := newJWKSCache(func(context.Context) (jwk.Set, error) { return nil, nil })
 	_, err := c.Get(context.Background())

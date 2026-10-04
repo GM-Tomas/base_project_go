@@ -131,10 +131,6 @@ func (c *jwksCache) runFetch(done chan struct{}) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("fetching JWKS panicked: %v", p)
-		} else if err == nil && (set == nil || set.Len() == 0) {
-			// Not a usable answer (a project still on the legacy HS256 secret, or Supabase misbehaving):
-			// keep the keys from before, if any, rather than reject every token with none.
-			err = errors.New("the JWKS has no keys")
 		}
 		c.mu.Lock()
 		if err == nil {
@@ -149,6 +145,11 @@ func (c *jwksCache) runFetch(done chan struct{}) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.fetchTimeout)
 	defer cancel()
 	set, err = c.fetch(ctx)
+	if err == nil && (set == nil || set.Len() == 0) {
+		// Not a usable answer (a project still on the legacy HS256 secret, or Supabase misbehaving): keep
+		// the keys from before, if any, rather than reject every token with none.
+		set, err = nil, errors.New("the JWKS has no keys")
+	}
 }
 
 // current returns the newest keys if they're still usable, or why there are none.
