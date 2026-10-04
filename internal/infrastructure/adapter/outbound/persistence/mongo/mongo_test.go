@@ -308,6 +308,54 @@ func TestPlatformRepository_Errors(t *testing.T) {
 	_, err = repo.EnsureExists(context.Background(), bad, model.MustPlatformName("X"), at(1))
 	assert.Error(t, err)
 	assert.Error(t, repo.DeleteUnused(context.Background(), bad))
+
+	// Holdings the driver can't decode break the platform listing and creation too.
+	worse := newUser()
+	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": worse.String(), "platform_name": 5})
+	_, err = repo.FindAll(context.Background(), worse)
+	assert.Error(t, err)
+	_, err = repo.EnsureExists(context.Background(), worse, model.MustPlatformName("Y"), at(1))
+	assert.Error(t, err)
+}
+
+func TestPlatformRepository_HealsAHoldingWhosePlatformDocIsGone(t *testing.T) {
+	db := testDB(t)
+	repo := NewMongoPlatformRepository(db)
+	holdings := NewMongoHoldingRepository(db)
+	ctx := context.Background()
+	user := newUser()
+
+	_, err := repo.EnsureExists(ctx, user, model.MustPlatformName("IBKR"), at(1))
+	require.NoError(t, err)
+	for _, h := range []model.Holding{
+		holding(user, "a", "Equity", "IBKR", 100, at(1)),
+		// What a create racing a delete's DeleteUnused can leave behind: no "Lost" platform doc.
+		holding(user, "b", "Cash", "Lost", 40, at(1)),
+		holding(user, "c", "Cash", "Lost", 2, at(1)),
+	} {
+		_, err := holdings.Save(ctx, h)
+		require.NoError(t, err)
+	}
+
+	names := func() []string {
+		platforms, err := repo.FindAll(ctx, user)
+		require.NoError(t, err)
+		var out []string
+		for _, p := range platforms {
+			out = append(out, p.Name.Value()+"/"+p.Type.Value())
+		}
+		return out
+	}
+	assert.Equal(t, []string{"IBKR/Other", "Lost/Other"}, names(), "listed once, like ByPlatform shows it")
+
+	// Typing it again in another case re-registers the holdings' spelling instead of splitting it in two.
+	name, err := repo.EnsureExists(ctx, user, model.MustPlatformName("LOST"), at(2))
+	require.NoError(t, err)
+	assert.Equal(t, "Lost", name.Value())
+	assert.Equal(t, []string{"IBKR/Other", "Lost/Other"}, names())
+	n, err := db.Platforms.CountDocuments(ctx, bson.M{"user_id": user.String()})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n, "the doc is back")
 }
 
 func TestMapDocToPlatform_RejectsCorruptDocs(t *testing.T) {

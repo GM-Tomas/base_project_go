@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -56,15 +57,44 @@ func (r *MongoPlatformRepository) FindAll(
 	}
 
 	platforms := make([]model.Platform, 0, len(docs))
+	listed := make(map[string]bool, len(docs))
 	for _, doc := range docs {
 		p, err := mapDocToPlatform(doc)
 		if err != nil {
 			return nil, err
 		}
 		platforms = append(platforms, p)
+		listed[p.Name.Value()] = true
+	}
+
+	// A holding can outlive its platform doc (see DeleteUnused). List its platform anyway, as ByPlatform
+	// does, so every view agrees on the user's platforms; adding to it again re-registers the doc.
+	inUse, err := r.namesInUse(ctx, userId)
+	if err != nil {
+		return nil, err
+	}
+	orphans := false
+	for _, name := range inUse {
+		pn, err := model.NewPlatformName(name)
+		if err != nil || listed[name] {
+			continue
+		}
+		platforms = append(platforms, model.Platform{UserId: userId, Name: pn, Type: model.PlatformTypeOther})
+		listed[name] = true
+		orphans = true
+	}
+	if orphans {
+		sort.Slice(platforms, func(i, j int) bool { return platforms[i].Name.Value() < platforms[j].Name.Value() })
 	}
 
 	return platforms, nil
+}
+
+// namesInUse is every platform name the user's holdings reference.
+func (r *MongoPlatformRepository) namesInUse(ctx context.Context, userId model.UserId) ([]string, error) {
+	var names []string
+	err := r.holdingsColl.Distinct(ctx, "platform_name", bson.M{"user_id": userId.UUID().String()}).Decode(&names)
+	return names, err
 }
 
 func (r *MongoPlatformRepository) findByName(
@@ -107,6 +137,21 @@ func (r *MongoPlatformRepository) EnsureExists(
 		return existing.Name, nil
 	}
 
+	// No doc, but a holding may still use this platform under its own spelling (its doc lost to the
+	// DeleteUnused race): register that spelling rather than split the platform in two.
+	inUse, err := r.namesInUse(ctx, userId)
+	if err != nil {
+		return model.PlatformName{}, err
+	}
+	for _, used := range inUse {
+		if strings.ToLower(used) == strings.ToLower(name.Value()) {
+			if pn, err := model.NewPlatformName(used); err == nil {
+				name = pn
+			}
+			break
+		}
+	}
+
 	newPlatform := model.Platform{
 		UserId:    userId,
 		Name:      name,
@@ -143,14 +188,14 @@ func (r *MongoPlatformRepository) insert(ctx context.Context, platform model.Pla
 }
 
 func (r *MongoPlatformRepository) DeleteUnused(ctx context.Context, userId model.UserId) error {
-	uid := userId.UUID().String()
-	var inUse []string
-	if err := r.holdingsColl.Distinct(ctx, "platform_name", bson.M{"user_id": uid}).Decode(&inUse); err != nil {
+	inUse, err := r.namesInUse(ctx, userId)
+	if err != nil {
 		return err
 	}
-	// Not atomic with a concurrent create on the same platform by the same user (other users' data is
-	// never involved): the holding can end up without its platform doc. ByPlatform still counts it.
-	_, err := r.platformsColl.DeleteMany(ctx, bson.M{"user_id": uid, "name": bson.M{"$nin": inUse}})
+	// Not atomic with a concurrent create on the same platform by the same user (other users' data is never
+	// involved), and closing that would take a transaction: the holding can end up without its platform doc.
+	// That's harmless here: FindAll and ByPlatform still list the platform, and EnsureExists re-registers it.
+	_, err = r.platformsColl.DeleteMany(ctx, bson.M{"user_id": userId.UUID().String(), "name": bson.M{"$nin": inUse}})
 	return err
 }
 
