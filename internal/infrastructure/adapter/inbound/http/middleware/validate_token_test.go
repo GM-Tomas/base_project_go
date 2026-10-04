@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -310,6 +311,13 @@ func TestAuthMiddleware_DevModeKeepsAccountsApart(t *testing.T) {
 	code, got = whoAmI("Basic ZG9jczpzZWNyZXQ=")
 	assert.Equal(t, http.StatusOK, code)
 	assert.Equal(t, devUser, got)
+
+	// Anything else that isn't "Bearer <token>" is a token sent wrong, never the dev user.
+	raw := strings.TrimPrefix(token(alice), "Bearer ")
+	for _, header := range []string{raw, "Token " + raw, "Bearer", "Bearer:" + raw} {
+		code, _ = whoAmI(header)
+		assert.Equal(t, http.StatusUnauthorized, code, header)
+	}
 }
 
 func TestAuthMiddleware_DevValidatorNeedsNoHeader(t *testing.T) {

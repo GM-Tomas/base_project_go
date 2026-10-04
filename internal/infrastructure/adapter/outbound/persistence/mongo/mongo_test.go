@@ -209,7 +209,7 @@ func TestHoldingRepository_AssetClassesInUseListsEachClassOnce(t *testing.T) {
 	assert.ElementsMatch(t, []model.AssetClass{model.MustAssetClass("Caf\u00e9"), model.MustAssetClass("Equity")}, classes)
 }
 
-func TestPlatformRepository_APlatformWithoutReadableAmountsIsNotListed(t *testing.T) {
+func TestPlatformRepository_APlatformWithoutReadableAmountsIsListedButNotBrokenDown(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	user := newUser()
@@ -221,14 +221,19 @@ func TestPlatformRepository_APlatformWithoutReadableAmountsIsNotListed(t *testin
 		"platform_name": "Kraken", "value_usd": "abc", "created_at": at(2), "updated_at": at(2),
 	})
 
+	// The list shows what holdings name, like the asset classes in use...
 	platforms, err := NewMongoPlatformRepository(db).FindAll(ctx, user)
 	require.NoError(t, err)
-	require.Len(t, platforms, 1)
-	assert.Equal(t, "Bank", platforms[0].Name.Value())
+	var listed []string
+	for _, p := range platforms {
+		listed = append(listed, p.Name.Value())
+	}
+	assert.Equal(t, []string{"Bank", "Kraken"}, listed)
 
+	// ...the breakdown counts readable amounts, like the class breakdown and net worth.
 	byPlatform, err := NewMongoWealthAggregationAdapter(db).ByPlatform(ctx, user)
 	require.NoError(t, err)
-	require.Len(t, byPlatform, 1, "like ByAssetClass and NetWorth, which leave that holding out")
+	require.Len(t, byPlatform, 1)
 	assert.Equal(t, "Bank", byPlatform[0].Name.Value())
 }
 

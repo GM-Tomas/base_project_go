@@ -12,7 +12,6 @@ import (
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
-	"github.com/shopspring/decimal"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -86,14 +85,15 @@ func (r *MongoPlatformRepository) Canonical(
 	return name, nil
 }
 
-// platformGroup is one platform: the holdings whose platform names have the same platformKey.
+// platformGroup is one platform: the holdings whose platform names have the same platformKey. The platform
+// list shows every platform holdings name; the totals, like every total, count only readable amounts.
 type platformGroup struct {
 	key       string
 	name      model.PlatformName // as platformSpellings spells it
 	sortName  string             // see byName
 	firstUsed time.Time
-	total     model.Money // value of the holdings with a valid amount, like NetWorth
-	count     int
+	total     model.Money // see readableValue
+	count     int         // holdings with a readable amount
 }
 
 // platformKey is what makes two platform names the same platform: Unicode's canonical caseless match
@@ -218,22 +218,9 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 			g = &platformGroup{key: key, name: name, sortName: sortName(name.Value()), firstUsed: doc.CreatedAt, total: model.ZeroMoney}
 			groups[key] = g
 		}
-		amount, err := decimal.NewFromString(doc.ValueUSD)
-		if err != nil {
-			continue
-		}
-		value, err := model.NewMoney(amount)
-		if err != nil {
-			continue
-		}
-		g.total = g.total.Plus(value)
-		g.count++
-	}
-	// A holding without a readable amount counts nowhere (nor in NetWorth or ByAssetClass): a platform
-	// with only such holdings isn't listed. (It still spells a platform it shares.)
-	for key, g := range groups {
-		if g.count == 0 {
-			delete(groups, key)
+		if value, ok := readableValue(doc); ok {
+			g.total = g.total.Plus(value)
+			g.count++
 		}
 	}
 	return groups, nil

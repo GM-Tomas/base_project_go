@@ -15,8 +15,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
 
-// JWTValidator resolves the caller from a bearer token. A request without an Authorization header at all
-// is validated as the empty token, which only dev mode accepts.
+// JWTValidator resolves the caller from a bearer token. A request that carries none (no Authorization
+// header, or the docs' Basic credentials) is validated as the empty token, which only dev mode accepts.
 type JWTValidator interface {
 	ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error)
 }
@@ -59,8 +59,8 @@ func NewStaticJWTValidator(keySet jwk.Set, issuer, audience string) *SupabaseJWT
 	}
 }
 
-// DevValidator makes requests that carry no token at all act as a fixed user, so "Skip login (dev)" and
-// Swagger work offline. A token that is sent is still verified by Tokens: signed-in accounts keep their
+// DevValidator makes requests that carry no token (see JWTValidator) act as a fixed user, so "Skip login
+// (dev)" and Swagger work offline. A token that is sent is still verified by Tokens: signed-in accounts keep their
 // own data in dev mode too, instead of all collapsing into one user. Local only: config refuses it on Vercel.
 type DevValidator struct {
 	UserId model.UserId
@@ -123,12 +123,15 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Only a Bearer header carries an access token. Another scheme is someone else's (browsers resend
-			// the docs' Basic credentials to the whole site): the request counts as carrying no token.
 			var tokenStr string
-			if scheme, credentials, _ := strings.Cut(r.Header.Get("Authorization"), " "); strings.EqualFold(scheme, "Bearer") {
-				tokenStr = strings.TrimSpace(credentials)
-				if tokenStr == "" {
+			if header := r.Header.Get("Authorization"); header != "" {
+				scheme, credentials, _ := strings.Cut(header, " ")
+				switch {
+				case strings.EqualFold(scheme, "Bearer") && strings.TrimSpace(credentials) != "":
+					tokenStr = strings.TrimSpace(credentials)
+				case strings.EqualFold(scheme, "Basic"):
+					// The docs' credentials, which browsers resend to the whole site: not a token, so none.
+				default:
 					WriteUnauthorized(w, r, "Missing or invalid access token")
 					return
 				}

@@ -26,6 +26,17 @@ func NewMongoWealthAggregationAdapter(db *MongoDB) *MongoWealthAggregationAdapte
 
 var _ outbound.WealthAggregationPort = (*MongoWealthAggregationAdapter)(nil)
 
+// readableValue is a holding's amount, if it can be read: the totals (net worth, the breakdowns) count
+// only those. Another amount can only have been written outside the API, and makes GET /holdings fail.
+func readableValue(doc holdingDoc) (model.Money, bool) {
+	amount, err := decimal.NewFromString(doc.ValueUSD)
+	if err != nil {
+		return model.Money{}, false
+	}
+	value, err := model.NewMoney(amount)
+	return value, err == nil
+}
+
 func (a *MongoWealthAggregationAdapter) NetWorth(
 	ctx context.Context,
 	userId model.UserId,
@@ -44,12 +55,8 @@ func (a *MongoWealthAggregationAdapter) NetWorth(
 
 	var totalMoney = model.ZeroMoney
 	for _, doc := range docs {
-		valDec, err := decimal.NewFromString(doc.ValueUSD)
-		if err == nil {
-			m, err := model.NewMoney(valDec)
-			if err == nil {
-				totalMoney = totalMoney.Plus(m)
-			}
+		if value, ok := readableValue(doc); ok {
+			totalMoney = totalMoney.Plus(value)
 		}
 	}
 
@@ -81,12 +88,8 @@ func (a *MongoWealthAggregationAdapter) ByAssetClass(
 	// forms, say) are one class, as in GET /holdings.
 	accMap := make(map[model.AssetClass]*classAccumulator)
 	for _, doc := range docs {
-		valDec, err := decimal.NewFromString(doc.ValueUSD)
-		if err != nil {
-			continue
-		}
-		m, err := model.NewMoney(valDec)
-		if err != nil {
+		m, ok := readableValue(doc)
+		if !ok {
 			continue
 		}
 		ac, err := model.NewAssetClass(doc.AssetClass)
@@ -146,6 +149,9 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 	}
 	list := make([]outbound.PlatformAggregate, 0, len(groups))
 	for _, g := range slices.SortedFunc(maps.Values(groups), byValue) {
+		if g.count == 0 {
+			continue // no holding with a readable amount: nothing to break down, as in ByAssetClass
+		}
 		list = append(list, outbound.PlatformAggregate{
 			Name:  g.name,
 			Type:  typeOf(types, g.key),
