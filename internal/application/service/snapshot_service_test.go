@@ -35,6 +35,9 @@ func (m *mockSnapshotRepo) FindAll(ctx context.Context, userId model.UserId) ([]
 }
 
 func (m *mockSnapshotRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	m.countCalls++
 	if m.countErr != nil && m.countCalls > m.countErrAfter {
 		return 0, m.countErr
@@ -57,6 +60,9 @@ func (m *mockSnapshotRepo) Save(ctx context.Context, snapshot model.NetWorthSnap
 }
 
 func (m *mockSnapshotRepo) DeleteById(ctx context.Context, userId model.UserId, id model.SnapshotId) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if m.deleteErr != nil {
 		return false, m.deleteErr
 	}
@@ -187,7 +193,7 @@ func TestSnapshotService_CapHoldsWhenSnapshotsRace(t *testing.T) {
 	}
 }
 
-func TestSnapshotService_KeepsTheSnapshotWhenTheRecountFails(t *testing.T) {
+func TestSnapshotService_WithdrawsTheSnapshotWhenTheRecountFails(t *testing.T) {
 	snapshotRepo := newMockSnapshotRepo()
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
@@ -195,6 +201,27 @@ func TestSnapshotService_KeepsTheSnapshotWhenTheRecountFails(t *testing.T) {
 
 	_, err := svc.CreateSnapshot(context.Background(), model.NewUserId(uuid.New()))
 
-	require.NoError(t, err)
-	assert.Len(t, snapshotRepo.snapshots, 1)
+	assert.EqualError(t, err, "db blip")
+	assert.Empty(t, snapshotRepo.snapshots)
+}
+
+func TestSnapshotService_ClientHangingUpAfterTheInsertDoesNotSkipTheCap(t *testing.T) {
+	snapshotRepo := newMockSnapshotRepo()
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
+	user := model.NewUserId(uuid.New())
+	add := func(at time.Time) {
+		snapshotRepo.snapshots = append(snapshotRepo.snapshots, model.NewNetWorthSnapshot(model.NewSnapshotId(), user, at, model.ZeroMoney))
+	}
+	for i := 0; i < model.MaxSnapshotsPerUser-1; i++ {
+		add(now.Add(-time.Duration(i+1) * time.Hour))
+	}
+	ctx, hangUp := context.WithCancel(context.Background())
+	snapshotRepo.beforeSave = func() { snapshotRepo.beforeSave = nil; add(now.Add(-time.Second)); hangUp() }
+
+	_, err := svc.CreateSnapshot(ctx, user)
+
+	assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
+	n, _ := snapshotRepo.Count(context.Background(), user)
+	assert.Equal(t, int64(model.MaxSnapshotsPerUser), n)
 }

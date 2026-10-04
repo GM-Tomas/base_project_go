@@ -43,6 +43,9 @@ func (m *mockHoldingRepo) FindAll(ctx context.Context, userId model.UserId) ([]m
 }
 
 func (m *mockHoldingRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	m.countCalls++
 	if m.countErr != nil && m.countCalls > m.countErrAfter {
 		return 0, m.countErr
@@ -60,6 +63,9 @@ func (m *mockHoldingRepo) Save(ctx context.Context, holding model.Holding) (mode
 }
 
 func (m *mockHoldingRepo) DeleteById(ctx context.Context, userId model.UserId, id model.HoldingId) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if m.deleteErr != nil {
 		return false, m.deleteErr
 	}
@@ -253,15 +259,39 @@ func TestHoldingService_CapHoldsWhenCreatesRace(t *testing.T) {
 	}
 }
 
-func TestHoldingService_KeepsTheHoldingWhenTheRecountFails(t *testing.T) {
+func TestHoldingService_WithdrawsTheHoldingWhenTheRecountFails(t *testing.T) {
 	holdingRepo := newMockHoldingRepo()
 	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
 	holdingRepo.countErr, holdingRepo.countErrAfter = errors.New("db blip"), 1
 
-	h, err := svc.CreateHolding(context.Background(), inbound.CreateHoldingCommand{
+	_, err := svc.CreateHolding(context.Background(), inbound.CreateHoldingCommand{
 		UserId: model.NewUserId(uuid.New()), Name: "x", AssetClass: "Cash", Platform: "Bank", ValueUsd: 1,
 	})
 
-	require.NoError(t, err, "it is saved: reporting a failure would only invite a duplicate retry")
-	assert.Contains(t, holdingRepo.holdings, h.Id.String())
+	assert.EqualError(t, err, "db blip", "fail closed: the cap couldn't be confirmed")
+	assert.Empty(t, holdingRepo.holdings, "and the client's error matches what's stored")
+}
+
+func TestHoldingService_ClientHangingUpAfterTheInsertDoesNotSkipTheCap(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
+	user := model.NewUserId(uuid.New())
+	add := func() {
+		h := model.Holding{Id: model.NewHoldingId(), UserId: user, Name: "other", Platform: model.MustPlatformName("Bank")}
+		holdingRepo.holdings[h.Id.String()] = h
+	}
+	for i := 0; i < model.MaxHoldingsPerUser-1; i++ {
+		add()
+	}
+	ctx, hangUp := context.WithCancel(context.Background())
+	// A racing request lands, and this client drops its connection right as its own insert goes in.
+	holdingRepo.beforeSave = func() { holdingRepo.beforeSave = nil; add(); hangUp() }
+
+	_, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{
+		UserId: user, Name: "Mine", AssetClass: "Cash", Platform: "Bank", ValueUsd: 1,
+	})
+
+	assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
+	n, _ := holdingRepo.Count(context.Background(), user)
+	assert.Equal(t, int64(model.MaxHoldingsPerUser), n)
 }
