@@ -137,8 +137,9 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 	ctx context.Context,
 	userId model.UserId,
 ) ([]outbound.PlatformAggregate, error) {
-	// The same platforms as PlatformRepository.FindAll, so the breakdown matches the platform list.
-	groups, types, err := platformsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId)
+	// The platforms of PlatformRepository.FindAll, named and typed the same way. The breakdown leaves out
+	// those without a readable amount, like the class breakdown (see readableValue).
+	groups, types, err := platformsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId, true)
 	if err != nil {
 		return nil, err
 	}

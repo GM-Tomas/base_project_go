@@ -35,7 +35,7 @@ var _ outbound.PlatformRepository = (*MongoPlatformRepository)(nil)
 
 // FindAll lists the user's platforms alphabetically, each created when its first holding was.
 func (r *MongoPlatformRepository) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
-	groups, types, err := platformsWithTypes(ctx, r.holdingsColl, r.platformsColl, userId)
+	groups, types, err := platformsWithTypes(ctx, r.holdingsColl, r.platformsColl, userId, false)
 	if err != nil {
 		return nil, err
 	}
@@ -156,13 +156,14 @@ func sortName(label string) string {
 	return folder.String(norm.NFC.String(unaccented))
 }
 
-// platformsWithTypes reads the user's platforms and the types earlier versions stored at the same time:
-// two independent queries, so a page load waits for one round trip rather than two. The first to fail
-// cancels the other, and its error is the one returned.
+// platformsWithTypes reads the user's platforms (with their totals if asked) and the types earlier
+// versions stored at the same time: two independent queries, so a page load waits for one round trip
+// rather than two. The first to fail cancels the other, and its error is the one returned.
 func platformsWithTypes(
 	ctx context.Context,
 	holdings, platforms *mongo.Collection,
 	userId model.UserId,
+	withTotals bool,
 ) (map[string]*platformGroup, map[string]model.PlatformType, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -178,7 +179,7 @@ func platformsWithTypes(
 		}
 		legacy <- result{types, err}
 	}()
-	groups, err := platformGroups(ctx, holdings, userId)
+	groups, err := platformGroups(ctx, holdings, userId, withTotals)
 	if err != nil {
 		cancel(err)
 	}
@@ -189,13 +190,21 @@ func platformsWithTypes(
 	return groups, res.types, nil
 }
 
-// platformGroups groups the user's holdings by platform, keyed by platformKey.
-func platformGroups(ctx context.Context, holdings *mongo.Collection, userId model.UserId) (map[string]*platformGroup, error) {
+// platformGroups groups the user's holdings by platform, keyed by platformKey. Only withTotals are the
+// amounts read and totalled (total and count stay zero otherwise).
+func platformGroups(
+	ctx context.Context,
+	holdings *mongo.Collection,
+	userId model.UserId,
+	withTotals bool,
+) (map[string]*platformGroup, error) {
+	fields := bson.M{"platform_name": 1, "created_at": 1}
+	if withTotals {
+		fields["value_usd"] = 1
+	}
 	cursor, err := holdings.Find(ctx,
 		bson.M{"user_id": userId.UUID().String()},
-		options.Find().
-			SetProjection(bson.M{"platform_name": 1, "created_at": 1, "value_usd": 1}).
-			SetSort(holdingsOldestFirst),
+		options.Find().SetProjection(fields).SetSort(holdingsOldestFirst),
 	)
 	if err != nil {
 		return nil, err
@@ -217,6 +226,9 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 		if !ok {
 			g = &platformGroup{key: key, name: name, sortName: sortName(name.Value()), firstUsed: doc.CreatedAt, total: model.ZeroMoney}
 			groups[key] = g
+		}
+		if !withTotals {
+			continue
 		}
 		if value, ok := readableValue(doc); ok {
 			g.total = g.total.Plus(value)
