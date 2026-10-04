@@ -68,6 +68,10 @@ La especificación OpenAPI 3.1 vive embebida en el binario
 ([`internal/infrastructure/adapter/inbound/http/openapi.json`](internal/infrastructure/adapter/inbound/http/openapi.json))
 y se sirve en `/api/v1/openapi.json` y `/swagger`.
 
+En Vercel la documentación no es pública: pide basic auth (usuario `docs`, contraseña = `DOCS_PASSWORD`) y, si esa
+variable está vacía o no existe, `/docs`, `/swagger` y `openapi.json` dan `404`. Las variables se leen al arrancar:
+después de cambiar `DOCS_PASSWORD` hay que redeployar. En local sigue abierta salvo que se defina `DOCS_PASSWORD`.
+
 ---
 
 ## ☁️ Despliegue en Vercel (Go Framework Preset)
@@ -83,6 +87,7 @@ y se sirve en `/api/v1/openapi.json` y `/swagger`.
 | `MONGODB_URI` | Sí | Connection string de MongoDB (Atlas: `mongodb+srv://...`). En Atlas, habilitar el acceso desde Vercel en *Network Access* (`0.0.0.0/0`: Vercel no tiene IPs fijas). Default local: `mongodb://localhost:27017`. |
 | `MONGODB_DATABASE` | No | Default `base_wealth`. |
 | `SUPABASE_URL` | Sí | `https://<ref>.supabase.co`: el **mismo** proyecto que usa el frontend para el login. Solo se usa para validar los JWT (JWKS e issuer). |
+| `DOCS_PASSWORD` | No | Protege `/docs`, `/swagger` y `openapi.json` con basic auth (usuario `docs`). En Vercel, sin ella esas rutas dan `404`. |
 | `FRONTEND_ORIGIN` | Recomendada en producción | Orígenes CORS separados por coma. Default: `localhost:3000` y `https://*.vercel.app` (cualquier sitio de Vercel). En producción: la URL exacta del frontend. |
 
 Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
@@ -120,7 +125,7 @@ Authorization: Bearer <session.access_token>
 | Método | Endpoint | Lo usa (frontend) | Auth |
 |---|---|---|---|
 | `GET` | `/api/v1/health` | — (monitoreo) | No |
-| `GET` | `/swagger`, `/api/v1/openapi.json` | — (documentación) | No |
+| `GET` | `/swagger`, `/api/v1/openapi.json` | — (documentación) | Basic auth si hay `DOCS_PASSWORD`; en Vercel, `404` sin ella |
 | `GET` | `/api/v1/wealth/summary` | Dashboard, Platforms (net worth, YTD, liquidez, desgloses) | Sí |
 | `GET` | `/api/v1/holdings` | Assets, drill-down de Platforms, contador | Sí |
 | `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva) | Sí |

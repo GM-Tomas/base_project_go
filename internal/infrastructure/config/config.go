@@ -17,6 +17,8 @@ type Config struct {
 	JWKSetURI           string
 	AuthIssuer          string
 	DevUserID           string // non-empty disables JWT validation; never honored on Vercel
+	DocsPassword        string // non-empty puts Swagger/OpenAPI behind basic auth (user "docs")
+	HideDocs            bool   // on Vercel without DOCS_PASSWORD the docs aren't served at all
 }
 
 func LoadConfig() Config {
@@ -34,6 +36,8 @@ func LoadConfig() Config {
 		JWKSetURI:           getEnv("SUPABASE_JWKS_URI", supabaseURL+"/auth/v1/.well-known/jwks.json"),
 		AuthIssuer:          getEnv("SUPABASE_ISSUER", supabaseURL+"/auth/v1"),
 		DevUserID:           devUserID(),
+		DocsPassword:        os.Getenv("DOCS_PASSWORD"),
+		HideDocs:            os.Getenv("VERCEL") != "" && os.Getenv("DOCS_PASSWORD") == "",
 	}
 }
 

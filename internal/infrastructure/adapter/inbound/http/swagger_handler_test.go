@@ -42,3 +42,23 @@ func TestSwaggerHandler_ServeSwaggerUI(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "SwaggerUIBundle")
 	assert.Contains(t, rec.Body.String(), "/api/v1/openapi.json")
 }
+
+func TestDocsAccess(t *testing.T) {
+	get := func(params appHttp.RouterParams, user, pass string) int {
+		req := httptest.NewRequest("GET", "/docs", nil)
+		if user != "" {
+			req.SetBasicAuth(user, pass)
+		}
+		rec := httptest.NewRecorder()
+		appHttp.NewRouter(params).ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	assert.Equal(t, http.StatusOK, get(appHttp.RouterParams{}, "", ""))
+	assert.Equal(t, http.StatusNotFound, get(appHttp.RouterParams{HideDocs: true}, "", ""))
+
+	locked := appHttp.RouterParams{DocsPassword: "s3cret"}
+	assert.Equal(t, http.StatusUnauthorized, get(locked, "", ""))
+	assert.Equal(t, http.StatusUnauthorized, get(locked, "docs", "wrong"))
+	assert.Equal(t, http.StatusOK, get(locked, "docs", "s3cret"))
+}

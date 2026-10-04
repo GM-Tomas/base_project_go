@@ -90,6 +90,8 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 		AssetClassHandler: assetClassHandler,
 		WealthHandler:     wealthHandler,
 		SwaggerHandler:    swaggerHandler,
+		DocsPassword:      cfg.DocsPassword,
+		HideDocs:          cfg.HideDocs,
 	})
 
 	return &App{

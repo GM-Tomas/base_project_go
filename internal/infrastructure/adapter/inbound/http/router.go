@@ -17,6 +17,8 @@ type RouterParams struct {
 	AssetClassHandler *AssetClassHandler
 	WealthHandler     *WealthHandler
 	SwaggerHandler    *SwaggerHandler
+	DocsPassword      string // non-empty = docs behind basic auth (user "docs")
+	HideDocs          bool
 }
 
 func NewRouter(params RouterParams) http.Handler {
@@ -33,14 +35,21 @@ func NewRouter(params RouterParams) http.Handler {
 	r.Use(chimiddleware.Recoverer)
 	r.Use(middleware.CorsMiddleware(params.AllowedOrigins))
 
-	// Documentation & Swagger UI (Public)
-	r.Get("/swagger", params.SwaggerHandler.ServeSwaggerUI)
-	r.Get("/swagger/*", params.SwaggerHandler.ServeSwaggerUI)
-	r.Get("/docs", params.SwaggerHandler.ServeSwaggerUI)
-	r.Get("/docs/*", params.SwaggerHandler.ServeSwaggerUI)
-	r.Get("/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
-	r.Get("/api/v1/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
-	r.Get("/docs/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
+	// Documentation & Swagger UI: public locally; on Vercel only behind DOCS_PASSWORD.
+	if !params.HideDocs {
+		r.Group(func(r chi.Router) {
+			if params.DocsPassword != "" {
+				r.Use(chimiddleware.BasicAuth("docs", map[string]string{"docs": params.DocsPassword}))
+			}
+			r.Get("/swagger", params.SwaggerHandler.ServeSwaggerUI)
+			r.Get("/swagger/*", params.SwaggerHandler.ServeSwaggerUI)
+			r.Get("/docs", params.SwaggerHandler.ServeSwaggerUI)
+			r.Get("/docs/*", params.SwaggerHandler.ServeSwaggerUI)
+			r.Get("/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
+			r.Get("/api/v1/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
+			r.Get("/docs/openapi.json", params.SwaggerHandler.ServeOpenAPIJSON)
+		})
+	}
 
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public route
