@@ -152,10 +152,6 @@ func (m *mockWealthAggregationPort) NetWorth(ctx context.Context, userId model.U
 	return m.netWorth, nil
 }
 
-func (m *mockWealthAggregationPort) ByAssetClass(ctx context.Context, userId model.UserId) ([]outbound.AssetClassAggregate, error) {
-	return m.byAssetClass, nil
-}
-
-func (m *mockWealthAggregationPort) ByPlatform(ctx context.Context, userId model.UserId) ([]outbound.PlatformAggregate, error) {
-	return m.byPlatform, nil
+func (m *mockWealthAggregationPort) Breakdown(ctx context.Context, userId model.UserId) (outbound.WealthBreakdown, error) {
+	return outbound.WealthBreakdown{NetWorth: m.netWorth, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform}, nil
 }

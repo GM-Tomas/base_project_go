@@ -10,9 +10,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	"github.com/shopspring/decimal"
-	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type MongoWealthAggregationAdapter struct {
@@ -41,44 +39,42 @@ func (a *MongoWealthAggregationAdapter) NetWorth(
 	ctx context.Context,
 	userId model.UserId,
 ) (model.Money, error) {
-	filter := bson.M{"user_id": userId.UUID().String()}
-	cursor, err := a.holdingsColl.Find(ctx, filter, options.Find().SetProjection(bson.M{"value_usd": 1}))
+	docs, err := readHoldings(ctx, a.holdingsColl, userId, "value_usd")
 	if err != nil {
 		return model.ZeroMoney, err
 	}
-	defer cursor.Close(ctx)
-
-	var docs []holdingDoc
-	if err := cursor.All(ctx, &docs); err != nil {
-		return model.ZeroMoney, err
-	}
-
-	var totalMoney = model.ZeroMoney
-	for _, doc := range docs {
-		if value, ok := readableValue(doc); ok {
-			totalMoney = totalMoney.Plus(value)
-		}
-	}
-
-	return totalMoney, nil
+	return netWorthOf(docs), nil
 }
 
-func (a *MongoWealthAggregationAdapter) ByAssetClass(
+// Breakdown reads the user's holdings once, alongside the platform types earlier versions stored, for
+// the net worth and both breakdowns.
+func (a *MongoWealthAggregationAdapter) Breakdown(
 	ctx context.Context,
 	userId model.UserId,
-) ([]outbound.AssetClassAggregate, error) {
-	filter := bson.M{"user_id": userId.UUID().String()}
-	cursor, err := a.holdingsColl.Find(ctx, filter, options.Find().SetProjection(bson.M{"asset_class": 1, "value_usd": 1}))
+) (outbound.WealthBreakdown, error) {
+	docs, types, err := holdingsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId,
+		"asset_class", "platform_name", "created_at", "value_usd")
 	if err != nil {
-		return nil, err
+		return outbound.WealthBreakdown{}, err
 	}
-	defer cursor.Close(ctx)
+	return outbound.WealthBreakdown{
+		NetWorth:     netWorthOf(docs),
+		ByAssetClass: classBreakdown(docs),
+		ByPlatform:   platformBreakdown(groupPlatforms(docs, true), types),
+	}, nil
+}
 
-	var docs []holdingDoc
-	if err := cursor.All(ctx, &docs); err != nil {
-		return nil, err
+func netWorthOf(docs []holdingDoc) model.Money {
+	total := model.ZeroMoney
+	for _, doc := range docs {
+		if value, ok := readableValue(doc); ok {
+			total = total.Plus(value)
+		}
 	}
+	return total
+}
 
+func classBreakdown(docs []holdingDoc) []outbound.AssetClassAggregate {
 	type classAccumulator struct {
 		total model.Money
 		count int
@@ -130,20 +126,12 @@ func (a *MongoWealthAggregationAdapter) ByAssetClass(
 	for _, row := range rows {
 		list = append(list, row.AssetClassAggregate)
 	}
-	return list, nil
+	return list
 }
 
-func (a *MongoWealthAggregationAdapter) ByPlatform(
-	ctx context.Context,
-	userId model.UserId,
-) ([]outbound.PlatformAggregate, error) {
-	// The platforms of PlatformRepository.FindAll, named and typed the same way. The breakdown leaves out
-	// those without a readable amount, like the class breakdown (see readableValue).
-	groups, types, err := platformsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId, true)
-	if err != nil {
-		return nil, err
-	}
-
+// platformBreakdown lists the platforms of PlatformRepository.FindAll, named and typed the same way,
+// leaving out those without a readable amount, like the class breakdown (see readableValue).
+func platformBreakdown(groups map[string]*platformGroup, types map[string]model.PlatformType) []outbound.PlatformAggregate {
 	// By value, largest first, then alphabetically.
 	byValue := func(x, y *platformGroup) int {
 		return cmp.Or(y.total.Amount().Cmp(x.total.Amount()), byName(x, y))
@@ -151,7 +139,7 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 	list := make([]outbound.PlatformAggregate, 0, len(groups))
 	for _, g := range slices.SortedFunc(maps.Values(groups), byValue) {
 		if g.count == 0 {
-			continue // no holding with a readable amount: nothing to break down, as in ByAssetClass
+			continue
 		}
 		list = append(list, outbound.PlatformAggregate{
 			Name:  g.name,
@@ -160,6 +148,5 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 			Count: g.count,
 		})
 	}
-
-	return list, nil
+	return list
 }

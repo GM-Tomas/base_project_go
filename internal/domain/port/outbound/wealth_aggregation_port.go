@@ -19,8 +19,15 @@ type PlatformAggregate struct {
 	Count int
 }
 
+// WealthBreakdown is a user's wealth and how it splits, from one read of their holdings: the three always
+// agree, even while the holdings change.
+type WealthBreakdown struct {
+	NetWorth     model.Money
+	ByAssetClass []AssetClassAggregate
+	ByPlatform   []PlatformAggregate
+}
+
 type WealthAggregationPort interface {
 	NetWorth(ctx context.Context, userId model.UserId) (model.Money, error)
-	ByAssetClass(ctx context.Context, userId model.UserId) ([]AssetClassAggregate, error)
-	ByPlatform(ctx context.Context, userId model.UserId) ([]PlatformAggregate, error)
+	Breakdown(ctx context.Context, userId model.UserId) (WealthBreakdown, error)
 }

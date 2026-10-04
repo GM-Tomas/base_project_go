@@ -12,6 +12,7 @@ import (
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
+	"github.com/GM-Tomas/base_project_go/internal/parallel"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -35,10 +36,11 @@ var _ outbound.PlatformRepository = (*MongoPlatformRepository)(nil)
 
 // FindAll lists the user's platforms alphabetically, each created when its first holding was.
 func (r *MongoPlatformRepository) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
-	groups, types, err := platformsWithTypes(ctx, r.holdingsColl, r.platformsColl, userId, false)
+	docs, types, err := holdingsWithTypes(ctx, r.holdingsColl, r.platformsColl, userId, "platform_name", "created_at")
 	if err != nil {
 		return nil, err
 	}
+	groups := groupPlatforms(docs, false)
 	platforms := make([]model.Platform, 0, len(groups))
 	for _, g := range slices.SortedFunc(maps.Values(groups), byName) {
 		platforms = append(platforms, model.Platform{
@@ -156,55 +158,43 @@ func sortName(label string) string {
 	return folder.String(norm.NFC.String(unaccented))
 }
 
-// platformsWithTypes reads the user's platforms (with their totals if asked) and the types earlier
-// versions stored at the same time: two independent queries, so a page load waits for one round trip
-// rather than two. The first to fail cancels the other, and its error is the one returned.
-func platformsWithTypes(
+// holdingsWithTypes reads the user's holdings (see readHoldings) and the types earlier versions stored
+// for platforms at the same time: two independent queries, so the caller waits for one round trip rather
+// than two. The first to fail cancels the other, and its error is the one returned.
+func holdingsWithTypes(
 	ctx context.Context,
 	holdings, platforms *mongo.Collection,
 	userId model.UserId,
-	withTotals bool,
-) (map[string]*platformGroup, map[string]model.PlatformType, error) {
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	type result struct {
-		types map[string]model.PlatformType
-		err   error
-	}
-	legacy := make(chan result, 1)
-	go func() {
-		types, err := legacyPlatformTypes(ctx, platforms, userId)
-		if err != nil {
-			cancel(err)
-		}
-		legacy <- result{types, err}
-	}()
-	groups, err := platformGroups(ctx, holdings, userId, withTotals)
+	fields ...string,
+) ([]holdingDoc, map[string]model.PlatformType, error) {
+	var docs []holdingDoc
+	var types map[string]model.PlatformType
+	err := parallel.Run(ctx,
+		func(ctx context.Context) (err error) {
+			docs, err = readHoldings(ctx, holdings, userId, fields...)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			types, err = legacyPlatformTypes(ctx, platforms, userId)
+			return err
+		},
+	)
 	if err != nil {
-		cancel(err)
+		return nil, nil, err
 	}
-	res := <-legacy
-	if err != nil || res.err != nil {
-		return nil, nil, context.Cause(ctx)
-	}
-	return groups, res.types, nil
+	return docs, types, nil
 }
 
-// platformGroups groups the user's holdings by platform, keyed by platformKey. Only withTotals are the
-// amounts read and totalled (total and count stay zero otherwise).
-func platformGroups(
-	ctx context.Context,
-	holdings *mongo.Collection,
-	userId model.UserId,
-	withTotals bool,
-) (map[string]*platformGroup, error) {
-	fields := bson.M{"platform_name": 1, "created_at": 1}
-	if withTotals {
-		fields["value_usd"] = 1
+// readHoldings reads the user's holdings, just the given fields, oldest first (the spelling rule's order),
+// all of them in the first reply rather than in batches of 101: one round trip.
+func readHoldings(ctx context.Context, holdings *mongo.Collection, userId model.UserId, fields ...string) ([]holdingDoc, error) {
+	projection := bson.M{}
+	for _, field := range fields {
+		projection[field] = 1
 	}
 	cursor, err := holdings.Find(ctx,
 		bson.M{"user_id": userId.UUID().String()},
-		options.Find().SetProjection(fields).SetSort(holdingsOldestFirst),
+		options.Find().SetProjection(projection).SetSort(holdingsOldestFirst).SetBatchSize(holdingsPerReply),
 	)
 	if err != nil {
 		return nil, err
@@ -213,7 +203,16 @@ func platformGroups(
 	if err := cursor.All(ctx, &docs); err != nil {
 		return nil, err
 	}
+	return docs, nil
+}
 
+// holdingsPerReply fits every holding a user can have (a few more after a race at the cap only take a
+// second reply).
+const holdingsPerReply = int32(model.MaxHoldingsPerUser + 1)
+
+// groupPlatforms groups holdings, read oldest first, by platform, keyed by platformKey. Only withTotals
+// are their amounts totalled (the docs then carry value_usd; total and count stay zero otherwise).
+func groupPlatforms(docs []holdingDoc, withTotals bool) map[string]*platformGroup {
 	groups := make(map[string]*platformGroup)
 	spellings := platformSpellings{}
 	for _, doc := range docs {
@@ -235,7 +234,7 @@ func platformGroups(
 			g.count++
 		}
 	}
-	return groups, nil
+	return groups
 }
 
 // legacyPlatformTypes maps platform keys to the types earlier versions stored in the platforms collection,

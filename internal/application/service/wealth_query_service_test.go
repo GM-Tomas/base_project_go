@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,4 +45,72 @@ func TestWealthQueryService_GetSummary(t *testing.T) {
 	assert.Equal(t, 0.0, summary.Liquidity.IlliquidPct)
 	assert.Len(t, summary.ByAssetClass, 2)
 	assert.Len(t, summary.ByPlatform, 3) // includes 0 value platform
+}
+
+// The summary's reads, each running onRead first.
+type slowAggregation struct {
+	mockWealthAggregationPort
+	onRead func()
+}
+
+func (a *slowAggregation) Breakdown(ctx context.Context, userId model.UserId) (outbound.WealthBreakdown, error) {
+	a.onRead()
+	return a.mockWealthAggregationPort.Breakdown(ctx, userId)
+}
+
+type slowSnapshots struct {
+	*mockSnapshotRepo
+	onRead         func()
+	firstOfYearErr error
+}
+
+func (s *slowSnapshots) FindFirstOfYear(ctx context.Context, userId model.UserId, year int) (*model.NetWorthSnapshot, error) {
+	s.onRead()
+	if s.firstOfYearErr != nil {
+		return nil, s.firstOfYearErr
+	}
+	return s.mockSnapshotRepo.FindFirstOfYear(ctx, userId, year)
+}
+
+func (s *slowSnapshots) FindEarliest(ctx context.Context, userId model.UserId) (*model.NetWorthSnapshot, error) {
+	s.onRead()
+	return s.mockSnapshotRepo.FindEarliest(ctx, userId)
+}
+
+func TestWealthQueryService_GetSummary_ReadsEverythingAtOnce(t *testing.T) {
+	// Each read waits until all three have started: read one after another, the summary would never come.
+	var started sync.WaitGroup
+	started.Add(3)
+	onRead := func() {
+		started.Done()
+		started.Wait()
+	}
+	agg := &slowAggregation{mockWealthAggregationPort: mockWealthAggregationPort{netWorth: model.MustMoneyFromFloat(10)}, onRead: onRead}
+	snapshots := &slowSnapshots{mockSnapshotRepo: newMockSnapshotRepo(), onRead: onRead}
+	svc := service.NewWealthQueryService(agg, snapshots, fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)), nil)
+
+	done := make(chan error, 1)
+	go func() {
+		summary, err := svc.GetSummary(context.Background(), model.NewUserId(uuid.New()))
+		if err == nil && summary.NetWorth.Usd != 10 {
+			err = errors.New("wrong net worth")
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the summary's reads didn't run at the same time")
+	}
+}
+
+func TestWealthQueryService_GetSummary_AFailingReadFailsItWithItsError(t *testing.T) {
+	broken := errors.New("snapshots unreachable")
+	snapshots := &slowSnapshots{mockSnapshotRepo: newMockSnapshotRepo(), onRead: func() {}, firstOfYearErr: broken}
+	svc := service.NewWealthQueryService(&mockWealthAggregationPort{}, snapshots, fixedClock(time.Now()), nil)
+
+	_, err := svc.GetSummary(context.Background(), model.NewUserId(uuid.New()))
+
+	assert.ErrorIs(t, err, broken)
 }

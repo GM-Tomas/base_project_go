@@ -8,6 +8,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	domainService "github.com/GM-Tomas/base_project_go/internal/domain/service"
+	"github.com/GM-Tomas/base_project_go/internal/parallel"
 )
 
 var DefaultLiquidAssetClasses = []string{
@@ -50,32 +51,31 @@ func (s *WealthQueryService) GetSummary(
 	ctx context.Context,
 	userId model.UserId,
 ) (dto.WealthSummaryResponse, error) {
-	netWorth, err := s.wealthAggregationPort.NetWorth(ctx, userId)
-	if err != nil {
-		return dto.WealthSummaryResponse{}, err
-	}
-
-	byClass, err := s.wealthAggregationPort.ByAssetClass(ctx, userId)
-	if err != nil {
-		return dto.WealthSummaryResponse{}, err
-	}
-
-	byPlatform, err := s.wealthAggregationPort.ByPlatform(ctx, userId)
-	if err != nil {
-		return dto.WealthSummaryResponse{}, err
-	}
-
+	// The holdings (one read gives the net worth and both breakdowns) and the two possible YTD baselines
+	// are independent: read all at once, so the summary waits for one round trip rather than one per read.
 	currentYear := s.clock().Year()
-
-	firstOfYear, err := s.snapshotRepo.FindFirstOfYear(ctx, userId, currentYear)
+	var (
+		breakdown             outbound.WealthBreakdown
+		firstOfYear, earliest *model.NetWorthSnapshot
+	)
+	err := parallel.Run(ctx,
+		func(ctx context.Context) (err error) {
+			breakdown, err = s.wealthAggregationPort.Breakdown(ctx, userId)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			firstOfYear, err = s.snapshotRepo.FindFirstOfYear(ctx, userId, currentYear)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			earliest, err = s.snapshotRepo.FindEarliest(ctx, userId)
+			return err
+		},
+	)
 	if err != nil {
 		return dto.WealthSummaryResponse{}, err
 	}
-
-	earliest, err := s.snapshotRepo.FindEarliest(ctx, userId)
-	if err != nil {
-		return dto.WealthSummaryResponse{}, err
-	}
+	netWorth, byClass, byPlatform := breakdown.NetWorth, breakdown.ByAssetClass, breakdown.ByPlatform
 
 	ytd := domainService.CalculateYtdGrowth(netWorth, firstOfYear, earliest)
 

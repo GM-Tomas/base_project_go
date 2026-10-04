@@ -5,15 +5,20 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
+	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/event"
+	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // Integration tests: they need a real MongoDB. `make test-coverage` starts a throwaway one.
@@ -57,6 +62,14 @@ func holding(user model.UserId, name, class, platform string, value float64, cre
 		CreatedAt:  created,
 		UpdatedAt:  created,
 	}
+}
+
+// breakdown is Breakdown for tests that look at one of its parts.
+func breakdown(t *testing.T, db *MongoDB, ctx context.Context, user model.UserId) outbound.WealthBreakdown {
+	t.Helper()
+	b, err := NewMongoWealthAggregationAdapter(db).Breakdown(ctx, user)
+	require.NoError(t, err)
+	return b
 }
 
 func insertRaw(t *testing.T, db *MongoDB, coll string, doc bson.M) {
@@ -231,8 +244,7 @@ func TestPlatformRepository_APlatformWithoutReadableAmountsIsListedButNotBrokenD
 	assert.Equal(t, []string{"Bank", "Kraken"}, listed)
 
 	// ...the breakdown counts readable amounts, like the class breakdown and net worth.
-	byPlatform, err := NewMongoWealthAggregationAdapter(db).ByPlatform(ctx, user)
-	require.NoError(t, err)
+	byPlatform := breakdown(t, db, ctx, user).ByPlatform
 	require.Len(t, byPlatform, 1)
 	assert.Equal(t, "Bank", byPlatform[0].Name.Value())
 }
@@ -252,9 +264,8 @@ func TestWealthAggregation_ByAssetClassBreaksTiesLikeAPerson(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	byClass, err := NewMongoWealthAggregationAdapter(db).ByAssetClass(ctx, user)
+	byClass := breakdown(t, db, ctx, user).ByAssetClass
 
-	require.NoError(t, err)
 	var classes []string
 	for _, r := range byClass {
 		classes = append(classes, r.AssetClass.Value())
@@ -272,9 +283,8 @@ func TestWealthAggregation_ByAssetClassReadsClassesLikeTheDomain(t *testing.T) {
 		})
 	}
 
-	byClass, err := NewMongoWealthAggregationAdapter(db).ByAssetClass(context.Background(), user)
+	byClass := breakdown(t, db, context.Background(), user).ByAssetClass
 
-	require.NoError(t, err)
 	require.Len(t, byClass, 1)
 	assert.Equal(t, "Caf\u00e9", byClass[0].AssetClass.Value())
 	assert.Equal(t, "3.00", byClass[0].Value.String())
@@ -385,7 +395,6 @@ func TestPlatformRepository(t *testing.T) {
 func TestPlatformRepository_CaseVariantsAreOnePlatform(t *testing.T) {
 	db := testDB(t)
 	repo := NewMongoPlatformRepository(db)
-	agg := NewMongoWealthAggregationAdapter(db)
 	holdings := NewMongoHoldingRepository(db)
 	ctx := context.Background()
 	user := newUser()
@@ -410,8 +419,7 @@ func TestPlatformRepository_CaseVariantsAreOnePlatform(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Kraken", name.Value())
 
-	byPlatform, err := agg.ByPlatform(ctx, user)
-	require.NoError(t, err)
+	byPlatform := breakdown(t, db, ctx, user).ByPlatform
 	require.Len(t, byPlatform, 1)
 	assert.Equal(t, "Kraken", byPlatform[0].Name.Value())
 	assert.Equal(t, "16.00", byPlatform[0].Value.String())
@@ -428,7 +436,6 @@ func TestPlatformRepository_CaseVariantsAreOnePlatform(t *testing.T) {
 func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 	db := testDB(t)
 	repo := NewMongoPlatformRepository(db)
-	agg := NewMongoWealthAggregationAdapter(db)
 	holdings := NewMongoHoldingRepository(db)
 	ctx := context.Background()
 	user := newUser()
@@ -468,8 +475,7 @@ func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 		assert.Equal(t, want, name.Value(), asked)
 	}
 
-	byPlatform, err := agg.ByPlatform(ctx, user)
-	require.NoError(t, err)
+	byPlatform := breakdown(t, db, ctx, user).ByPlatform
 	var rows []string
 	for _, p := range byPlatform {
 		rows = append(rows, fmt.Sprintf("%s/%s/%s/%d", p.Name.Value(), p.Type.Value(), p.Value.String(), p.Count))
@@ -488,7 +494,6 @@ func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 func TestPlatformRepository_KeepsTypesEarlierVersionsStoredAndSortsAlphabetically(t *testing.T) {
 	db := testDB(t)
 	repo := NewMongoPlatformRepository(db)
-	agg := NewMongoWealthAggregationAdapter(db)
 	holdings := NewMongoHoldingRepository(db)
 	ctx := context.Background()
 	user := newUser()
@@ -515,8 +520,7 @@ func TestPlatformRepository_KeepsTypesEarlierVersionsStoredAndSortsAlphabeticall
 	assert.Equal(t, []string{"abank/Other", "balanz/Broker", "Nexo/Other"}, listed,
 		"alphabetical regardless of case; a stored type kept, an unusable one Other; no holdings, no platform")
 
-	byPlatform, err := agg.ByPlatform(ctx, user)
-	require.NoError(t, err)
+	byPlatform := breakdown(t, db, ctx, user).ByPlatform
 	var rows []string
 	for _, p := range byPlatform {
 		rows = append(rows, p.Name.Value()+"/"+p.Type.Value())
@@ -761,8 +765,10 @@ func TestWealthAggregation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "311.00", total.String())
 
-	byClass, err := agg.ByAssetClass(ctx, user)
-	require.NoError(t, err)
+	// One read for all three: they agree.
+	summary := breakdown(t, db, ctx, user)
+	assert.Equal(t, total, summary.NetWorth)
+	byClass := summary.ByAssetClass
 	type classRow struct {
 		Class string
 		Value string
@@ -775,8 +781,7 @@ func TestWealthAggregation(t *testing.T) {
 	assert.Equal(t, []classRow{{"Cash", "150.00", 1}, {"Equity", "150.00", 2}, {"Crypto", "10.00", 1}}, classes,
 		"desc by value, ties by name")
 
-	byPlatform, err := agg.ByPlatform(ctx, user)
-	require.NoError(t, err)
+	byPlatform := summary.ByPlatform
 	type platformRow struct {
 		Name  string
 		Value string
@@ -800,18 +805,67 @@ func TestWealthAggregation_Errors(t *testing.T) {
 
 	_, err := agg.NetWorth(cancelled(), user)
 	assert.Error(t, err)
-	_, err = agg.ByAssetClass(cancelled(), user)
-	assert.Error(t, err)
-	_, err = agg.ByPlatform(cancelled(), user)
+	_, err = agg.Breakdown(cancelled(), user)
 	assert.Error(t, err)
 
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "value_usd": 5})
 	_, err = agg.NetWorth(context.Background(), user)
 	assert.Error(t, err)
-	_, err = agg.ByAssetClass(context.Background(), user)
-	assert.Error(t, err)
-	_, err = agg.ByPlatform(context.Background(), user)
-	assert.Error(t, err, "holdings decode")
+	_, err = agg.Breakdown(context.Background(), user)
+	assert.ErrorContains(t, err, "value_usd", "holdings decode")
+	assert.NotErrorIs(t, err, context.Canceled, "the error itself, not the cancellation of the other read it caused")
+}
+
+// The summary's holdings come in one reply, with the platform types read alongside: no read per figure,
+// no batches of 101.
+func TestWealthAggregation_BreakdownReadsHoldingsOnce(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	user := newUser()
+	docs := make([]any, 150)
+	for i := range docs {
+		docs[i] = bson.M{
+			"_id": uuid.NewString(), "user_id": user.String(), "name": "h", "asset_class": "Cash",
+			"platform_name": "Bank", "value_usd": "1.00", "created_at": at(1), "updated_at": at(1),
+		}
+	}
+	_, err := db.Holdings.InsertMany(ctx, docs)
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	var commands []string
+	monitored, err := mongodriver.Connect(options.Client().ApplyURI(os.Getenv("MONGO_TEST_URI")).SetMonitor(&event.CommandMonitor{
+		Started: func(_ context.Context, e *event.CommandStartedEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			if e.CommandName == "find" || e.CommandName == "getMore" || e.CommandName == "aggregate" {
+				commands = append(commands, e.CommandName+" "+collectionOf(e))
+			}
+		},
+	}))
+	require.NoError(t, err)
+	defer func() { _ = monitored.Disconnect(ctx) }()
+	database := monitored.Database(db.Database.Name())
+	agg := NewMongoWealthAggregationAdapter(&MongoDB{
+		Client: monitored, Database: database,
+		Holdings: database.Collection("holdings"), Snapshots: database.Collection("net_worth_snapshots"), Platforms: database.Collection("platforms"),
+	})
+
+	got, err := agg.Breakdown(ctx, user)
+	require.NoError(t, err)
+	assert.Equal(t, "150.00", got.NetWorth.String())
+	assert.ElementsMatch(t, []string{"find holdings", "find platforms"}, commands)
+}
+
+func collectionOf(e *event.CommandStartedEvent) string {
+	key := e.CommandName // find names its collection; getMore has it under "collection"
+	if key == "getMore" {
+		key = "collection"
+	}
+	if name, ok := e.Command.Lookup(key).StringValueOK(); ok {
+		return name
+	}
+	return "?"
 }
 
 // Every holdings read goes oldest first (the spelling rule depends on it). The index must serve that
