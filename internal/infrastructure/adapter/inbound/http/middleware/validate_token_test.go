@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -299,6 +300,7 @@ type rotatingJWKS struct {
 	*httptest.Server
 	set  atomic.Pointer[jwk.Set]
 	down atomic.Bool
+	slow atomic.Int64 // delay per fetch, in nanoseconds
 	hits atomic.Int32
 }
 
@@ -308,6 +310,7 @@ func newRotatingJWKS(t *testing.T, initial jwk.Set) *rotatingJWKS {
 	j.set.Store(&initial)
 	j.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		j.hits.Add(1)
+		time.Sleep(time.Duration(j.slow.Load()))
 		if j.down.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -396,3 +399,89 @@ func TestSupabaseJWTValidator_UnknownKeyWhileSupabaseIsDownIsAnOutage(t *testing
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestSupabaseJWTValidator_ConcurrentRequestsShareOneReFetch(t *testing.T) {
+	oldPriv, oldKey := keyWithKid(t, "old")
+	newPriv, newKey := keyWithKid(t, "new")
+	jwks := newRotatingJWKS(t, setOf(t, oldKey))
+	ctx := context.Background()
+	v, err := middleware.NewSupabaseJWTValidator(ctx, jwks.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+	_, err = v.ValidateToken(ctx, signWithKid(t, oldPriv, "old"))
+	require.NoError(t, err)
+	fetched := jwks.hits.Load()
+
+	// Right after a rotation the dashboard fires several requests at once, all with the new key.
+	jwks.set.Store(ptr(setOf(t, oldKey, newKey)))
+	jwks.slow.Store(int64(200 * time.Millisecond))
+	errs := make([]error, 6)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = v.ValidateToken(ctx, signWithKid(t, newPriv, "new"))
+		}(i)
+	}
+	wg.Wait()
+
+	for _, err := range errs {
+		assert.NoError(t, err, "every one waits for the fetch under way instead of a 401 on the stale set")
+	}
+	assert.Equal(t, fetched+1, jwks.hits.Load(), "and they share it")
+}
+
+func TestSupabaseJWTValidator_AFailedReFetchIsRetriedSoon(t *testing.T) {
+	oldPriv, oldKey := keyWithKid(t, "old")
+	newPriv, newKey := keyWithKid(t, "new")
+	jwks := newRotatingJWKS(t, setOf(t, oldKey))
+	ctx := context.Background()
+	v, err := middleware.NewSupabaseJWTValidator(ctx, jwks.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+	middleware.SetKeyFetchTiming(v, time.Hour, 50*time.Millisecond)
+	_, err = v.ValidateToken(ctx, signWithKid(t, oldPriv, "old"))
+	require.NoError(t, err)
+
+	jwks.set.Store(ptr(setOf(t, oldKey, newKey)))
+	jwks.down.Store(true)
+	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "new"))
+	assert.ErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
+	fetched := jwks.hits.Load()
+	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "new"))
+	assert.ErrorIs(t, err, middleware.ErrSigningKeysUnavailable, "still a 503 (not a 401) while backing off")
+	assert.Equal(t, fetched, jwks.hits.Load(), "without hitting Supabase again")
+
+	// The failure didn't use up the throttle: once Supabase is back, the key is fetched.
+	jwks.down.Store(false)
+	time.Sleep(60 * time.Millisecond)
+	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "new"))
+	assert.NoError(t, err)
+}
+
+func TestSupabaseJWTValidator_AClientHangingUpDoesNotCancelTheSharedReFetch(t *testing.T) {
+	oldPriv, oldKey := keyWithKid(t, "old")
+	newPriv, newKey := keyWithKid(t, "new")
+	jwks := newRotatingJWKS(t, setOf(t, oldKey))
+	v, err := middleware.NewSupabaseJWTValidator(context.Background(), jwks.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+	_, err = v.ValidateToken(context.Background(), signWithKid(t, oldPriv, "old"))
+	require.NoError(t, err)
+
+	jwks.set.Store(ptr(setOf(t, oldKey, newKey)))
+	jwks.slow.Store(int64(200 * time.Millisecond))
+	first, hangUp := context.WithCancel(context.Background())
+	var firstErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, firstErr = v.ValidateToken(first, signWithKid(t, newPriv, "new"))
+	}()
+	time.Sleep(50 * time.Millisecond) // the first request has started the fetch
+	hangUp()
+	_, err = v.ValidateToken(context.Background(), signWithKid(t, newPriv, "new"))
+	wg.Wait()
+
+	assert.ErrorIs(t, firstErr, context.Canceled)
+	assert.NoError(t, err, "the fetch the first one started still served the second")
+}
