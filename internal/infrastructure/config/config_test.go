@@ -18,20 +18,21 @@ func TestDevUserIDIgnoredOnVercel(t *testing.T) {
 
 func TestPreviewOnlyOnVercelPreviews(t *testing.T) {
 	for _, c := range []struct {
-		env, target string
-		preview     bool
+		vercel, env, target string
+		preview             bool
 	}{
-		{"preview", "preview", true},
-		{"preview", "", true},         // older deployments without VERCEL_TARGET_ENV
-		{"preview", "staging", false}, // a custom environment has its own database
-		{"production", "production", false},
-		{"development", "", false},
-		{"", "", false},
+		{"1", "preview", "preview", true},
+		{"1", "preview", "", true},         // older deployments without VERCEL_TARGET_ENV
+		{"1", "preview", "staging", false}, // a custom environment has its own database
+		{"1", "production", "production", false},
+		{"1", "", "", false},
+		{"", "preview", "preview", false}, // a local run with a pulled preview .env is still local
 	} {
+		t.Setenv("VERCEL", c.vercel)
 		t.Setenv("VERCEL_ENV", c.env)
 		t.Setenv("VERCEL_TARGET_ENV", c.target)
 		if got := LoadConfig().Preview; got != c.preview {
-			t.Errorf("VERCEL_ENV=%q VERCEL_TARGET_ENV=%q: Preview = %v, want %v", c.env, c.target, got, c.preview)
+			t.Errorf("VERCEL=%q VERCEL_ENV=%q VERCEL_TARGET_ENV=%q: Preview = %v, want %v", c.vercel, c.env, c.target, got, c.preview)
 		}
 	}
 }

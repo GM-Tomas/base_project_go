@@ -41,7 +41,7 @@ func LoadConfig() Config {
 		DevUserID:           devUserID(),
 		DocsPassword:        os.Getenv("DOCS_PASSWORD"),
 		HideDocs:            os.Getenv("VERCEL") != "" && os.Getenv("DOCS_PASSWORD") == "",
-		Preview:             vercelTarget() == "preview",
+		Preview:             os.Getenv("VERCEL") != "" && vercelTarget() == "preview",
 	}
 }
 

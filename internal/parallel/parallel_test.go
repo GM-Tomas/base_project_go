@@ -51,8 +51,13 @@ func TestRun_APanicIsAnError(t *testing.T) {
 		func(context.Context) error { panic("bad data") },
 	)
 
-	assert.ErrorContains(t, err, "panic: bad data\n")
+	assert.ErrorContains(t, err, "panic: bad data (stack: ")
 	assert.ErrorContains(t, err, "parallel_test.go", "the stack, to find the bug from the request's log line")
+	assert.NotContains(t, err.Error(), "\n", "one log line")
+
+	broken := errors.New("broken invariant")
+	err = parallel.Run(context.Background(), func(context.Context) error { panic(broken) })
+	assert.ErrorIs(t, err, broken)
 }
 
 func TestRun_ACanceledCallerCancelsEveryFn(t *testing.T) {
