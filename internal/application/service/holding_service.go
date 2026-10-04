@@ -11,6 +11,9 @@ import (
 	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 )
 
+var errHoldingsLimit = appErrors.NewLimitExceededError(fmt.Sprintf(
+	"You can track up to %d holdings. Remove one to add another.", model.MaxHoldingsPerUser))
+
 type Clock func() time.Time
 
 func RealClock() time.Time {
@@ -87,8 +90,7 @@ func (s *HoldingService) CreateHolding(
 		return model.Holding{}, err
 	}
 	if count >= model.MaxHoldingsPerUser {
-		return model.Holding{}, appErrors.NewLimitExceededError(fmt.Sprintf(
-			"You can track up to %d holdings. Remove one to add another.", model.MaxHoldingsPerUser))
+		return model.Holding{}, errHoldingsLimit
 	}
 
 	// The user's existing spelling of the platform wins (matched case-insensitively), else it's created.
@@ -97,7 +99,22 @@ func (s *HoldingService) CreateHolding(
 		return model.Holding{}, err
 	}
 
-	return s.holdingRepo.Save(ctx, holding)
+	saved, err := s.holdingRepo.Save(ctx, holding)
+	if err != nil {
+		return model.Holding{}, err
+	}
+
+	// The count above isn't atomic with the insert, so concurrent creates can all pass it. Re-count with ours
+	// in and withdraw it on an overrun: the last insert that stays has counted every other one that stays, so
+	// the user never ends up above the cap. (If the re-count fails, the saved holding stays.)
+	if count, err := s.holdingRepo.Count(ctx, command.UserId); err == nil && count > model.MaxHoldingsPerUser {
+		if _, err := s.holdingRepo.DeleteById(ctx, command.UserId, saved.Id); err != nil {
+			return model.Holding{}, err
+		}
+		_ = s.platformRepo.DeleteUnused(ctx, command.UserId) // best effort: at worst an empty platform lingers
+		return model.Holding{}, errHoldingsLimit
+	}
+	return saved, nil
 }
 
 func (s *HoldingService) DeleteHolding(

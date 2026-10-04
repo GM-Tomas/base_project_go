@@ -6,14 +6,17 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/app"
 	"github.com/google/uuid"
 	"github.com/lestrrat-go/jwx/v2/jwa"
@@ -22,6 +25,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
@@ -38,6 +42,7 @@ type e2e struct {
 	t       *testing.T
 	handler http.Handler
 	priv    *rsa.PrivateKey
+	dbName  string
 }
 
 func newE2E(t *testing.T, devUserID string) *e2e {
@@ -76,7 +81,16 @@ func newE2E(t *testing.T, devUserID string) *e2e {
 			_ = client.Disconnect(context.Background())
 		}
 	})
-	return &e2e{t: t, handler: a.Handler, priv: priv}
+	return &e2e{t: t, handler: a.Handler, priv: priv, dbName: cfg.MongoDBName}
+}
+
+// collection gives direct access to the app's MongoDB, for setups too slow to do through the API.
+func (e *e2e) collection(name string) *mongo.Collection {
+	e.t.Helper()
+	client, err := mongo.Connect(options.Client().ApplyURI(os.Getenv("MONGO_TEST_URI")))
+	require.NoError(e.t, err)
+	e.t.Cleanup(func() { _ = client.Disconnect(context.Background()) })
+	return client.Database(e.dbName).Collection(name)
 }
 
 // token signs a Supabase-shaped access token; edit tweaks it to build invalid ones.
@@ -305,4 +319,54 @@ func TestMultiUser_DevModeStillKeepsSignedInAccountsApart(t *testing.T) {
 	assert.Equal(t, []string{"Alice cash"}, e.holdingNames(alice))
 	assert.Equal(t, http.StatusUnauthorized, e.do("forged", "GET", "/api/v1/holdings", nil, nil),
 		"a bad token is rejected, not downgraded to the dev user")
+}
+
+func TestMultiUser_HoldingCapHoldsUnderConcurrentCreates(t *testing.T) {
+	e := newE2E(t, "")
+	user := uuid.New()
+	token := e.token(user, nil)
+
+	// Just under the cap, written straight to MongoDB: 990 POSTs would only slow the test down.
+	const prefilled = model.MaxHoldingsPerUser - 10
+	now := time.Now().UTC()
+	docs := make([]any, prefilled)
+	for i := range docs {
+		docs[i] = bson.M{
+			"_id": uuid.NewString(), "user_id": user.String(), "name": fmt.Sprintf("h%d", i), "asset_class": "Cash",
+			"platform_name": "Bank", "value_usd": "1.00", "created_at": now, "updated_at": now,
+		}
+	}
+	_, err := e.collection("holdings").InsertMany(context.Background(), docs)
+	require.NoError(t, err)
+
+	// 30 creates at once for 10 free slots: every one may pass the first check before any insert lands.
+	const burst = 30
+	codes := make([]int, burst)
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest("POST", "/api/v1/holdings", strings.NewReader(
+				fmt.Sprintf(`{"name":"burst %d","assetClass":"Cash","platform":"Bank","valueUsd":1}`, i)))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			e.handler.ServeHTTP(rec, req)
+			codes[i] = rec.Code
+		}(i)
+	}
+	wg.Wait()
+
+	created := 0
+	for _, code := range codes {
+		require.Contains(t, []int{http.StatusCreated, http.StatusConflict}, code)
+		if code == http.StatusCreated {
+			created++
+		}
+	}
+	var list []holdingRes
+	require.Equal(t, http.StatusOK, e.do(token, "GET", "/api/v1/holdings", nil, &list))
+	assert.LessOrEqual(t, len(list), model.MaxHoldingsPerUser, "never above the cap")
+	assert.Equal(t, prefilled+created, len(list), "every 201 stayed, every 409 left nothing behind")
 }

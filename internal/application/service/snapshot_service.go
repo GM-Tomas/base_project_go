@@ -12,6 +12,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+var errSnapshotsLimit = appErrors.NewLimitExceededError(fmt.Sprintf(
+	"You've reached the limit of %d snapshots.", model.MaxSnapshotsPerUser))
+
 type SnapshotService struct {
 	snapshotRepo          outbound.SnapshotRepository
 	wealthAggregationPort outbound.WealthAggregationPort
@@ -56,8 +59,7 @@ func (s *SnapshotService) CreateSnapshot(
 		return model.NetWorthSnapshot{}, err
 	}
 	if count >= model.MaxSnapshotsPerUser {
-		return model.NetWorthSnapshot{}, appErrors.NewLimitExceededError(fmt.Sprintf(
-			"You've reached the limit of %d snapshots.", model.MaxSnapshotsPerUser))
+		return model.NetWorthSnapshot{}, errSnapshotsLimit
 	}
 
 	netWorth, err := s.wealthAggregationPort.NetWorth(ctx, userId)
@@ -66,7 +68,19 @@ func (s *SnapshotService) CreateSnapshot(
 	}
 
 	snapshot := model.NewNetWorthSnapshot(model.NewSnapshotId(), userId, capturedAt, netWorth)
-	return s.snapshotRepo.Save(ctx, snapshot)
+	saved, err := s.snapshotRepo.Save(ctx, snapshot)
+	if err != nil {
+		return model.NetWorthSnapshot{}, err
+	}
+
+	// Same race and remedy as HoldingService.CreateHolding: re-count with ours in, withdraw it on an overrun.
+	if count, err := s.snapshotRepo.Count(ctx, userId); err == nil && count > model.MaxSnapshotsPerUser {
+		if _, err := s.snapshotRepo.DeleteById(ctx, userId, saved.Id); err != nil {
+			return model.NetWorthSnapshot{}, err
+		}
+		return model.NetWorthSnapshot{}, errSnapshotsLimit
+	}
+	return saved, nil
 }
 
 func (s *SnapshotService) GetSnapshots(

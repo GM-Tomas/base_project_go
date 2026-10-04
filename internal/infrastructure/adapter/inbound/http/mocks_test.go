@@ -127,6 +127,16 @@ func (m *mockSnapshotRepo) Save(ctx context.Context, snapshot model.NetWorthSnap
 	return snapshot, nil
 }
 
+func (m *mockSnapshotRepo) DeleteById(ctx context.Context, userId model.UserId, id model.SnapshotId) (bool, error) {
+	for i, s := range m.snapshots {
+		if s.Id == id && s.UserId == userId {
+			m.snapshots = append(m.snapshots[:i], m.snapshots[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *mockSnapshotRepo) ExistsAt(ctx context.Context, userId model.UserId, capturedAt time.Time) (bool, error) {
 	for _, s := range m.snapshots {
 		if s.UserId.UUID() == userId.UUID() && s.CapturedAt.Equal(capturedAt) {

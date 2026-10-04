@@ -16,10 +16,14 @@ import (
 )
 
 type mockSnapshotRepo struct {
-	snapshots   []model.NetWorthSnapshot
-	firstOfYear *model.NetWorthSnapshot
-	earliest    *model.NetWorthSnapshot
-	countErr    error
+	snapshots     []model.NetWorthSnapshot
+	firstOfYear   *model.NetWorthSnapshot
+	earliest      *model.NetWorthSnapshot
+	countErr      error
+	countErrAfter int // Count calls that still succeed before countErr kicks in
+	countCalls    int
+	deleteErr     error
+	beforeSave    func() // lands a "concurrent" request between the service's checks and its insert
 }
 
 func newMockSnapshotRepo() *mockSnapshotRepo {
@@ -31,7 +35,8 @@ func (m *mockSnapshotRepo) FindAll(ctx context.Context, userId model.UserId) ([]
 }
 
 func (m *mockSnapshotRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
-	if m.countErr != nil {
+	m.countCalls++
+	if m.countErr != nil && m.countCalls > m.countErrAfter {
 		return 0, m.countErr
 	}
 	var n int64
@@ -44,8 +49,24 @@ func (m *mockSnapshotRepo) Count(ctx context.Context, userId model.UserId) (int6
 }
 
 func (m *mockSnapshotRepo) Save(ctx context.Context, snapshot model.NetWorthSnapshot) (model.NetWorthSnapshot, error) {
+	if m.beforeSave != nil {
+		m.beforeSave()
+	}
 	m.snapshots = append(m.snapshots, snapshot)
 	return snapshot, nil
+}
+
+func (m *mockSnapshotRepo) DeleteById(ctx context.Context, userId model.UserId, id model.SnapshotId) (bool, error) {
+	if m.deleteErr != nil {
+		return false, m.deleteErr
+	}
+	for i, s := range m.snapshots {
+		if s.Id == id && s.UserId == userId {
+			m.snapshots = append(m.snapshots[:i], m.snapshots[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *mockSnapshotRepo) ExistsAt(ctx context.Context, userId model.UserId, capturedAt time.Time) (bool, error) {
@@ -131,4 +152,49 @@ func TestSnapshotService_CapsSnapshotsPerUser(t *testing.T) {
 	snapshotRepo.countErr = errors.New("db down")
 	_, err = svc.CreateSnapshot(context.Background(), model.NewUserId(uuid.New()))
 	assert.EqualError(t, err, "db down")
+}
+
+func TestSnapshotService_CapHoldsWhenSnapshotsRace(t *testing.T) {
+	for name, deleteErr := range map[string]error{"withdrawn": nil, "withdrawal fails": errors.New("db down")} {
+		t.Run(name, func(t *testing.T) {
+			snapshotRepo := newMockSnapshotRepo()
+			now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+			svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
+			ctx := context.Background()
+			user := model.NewUserId(uuid.New())
+			add := func(at time.Time) {
+				snapshotRepo.snapshots = append(snapshotRepo.snapshots, model.NewNetWorthSnapshot(model.NewSnapshotId(), user, at, model.ZeroMoney))
+			}
+			for i := 0; i < model.MaxSnapshotsPerUser-1; i++ {
+				add(now.Add(-time.Duration(i+1) * time.Hour))
+			}
+			// Another request, a second earlier, passed the same check and lands first.
+			snapshotRepo.beforeSave = func() { snapshotRepo.beforeSave = nil; add(now.Add(-time.Second)) }
+			snapshotRepo.deleteErr = deleteErr
+
+			_, err := svc.CreateSnapshot(ctx, user)
+
+			if deleteErr != nil {
+				assert.ErrorIs(t, err, deleteErr)
+				return
+			}
+			assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
+			n, _ := snapshotRepo.Count(ctx, user)
+			assert.Equal(t, int64(model.MaxSnapshotsPerUser), n)
+			exists, _ := snapshotRepo.ExistsAt(ctx, user, now)
+			assert.False(t, exists, "ours was withdrawn")
+		})
+	}
+}
+
+func TestSnapshotService_KeepsTheSnapshotWhenTheRecountFails(t *testing.T) {
+	snapshotRepo := newMockSnapshotRepo()
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
+	snapshotRepo.countErr, snapshotRepo.countErrAfter = errors.New("db blip"), 1
+
+	_, err := svc.CreateSnapshot(context.Background(), model.NewUserId(uuid.New()))
+
+	require.NoError(t, err)
+	assert.Len(t, snapshotRepo.snapshots, 1)
 }

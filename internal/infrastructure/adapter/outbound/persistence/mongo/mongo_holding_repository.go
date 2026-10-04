@@ -6,6 +6,7 @@ import (
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
+	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -86,6 +87,9 @@ func (r *MongoHoldingRepository) Save(
 	opts := options.Replace().SetUpsert(true)
 	_, err := r.coll.ReplaceOne(ctx, bson.M{"_id": doc.ID, "user_id": doc.UserID}, doc, opts)
 	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return model.Holding{}, appErrors.NewDuplicateResourceError("Holding " + doc.ID + " already exists")
+		}
 		return model.Holding{}, err
 	}
 

@@ -153,7 +153,7 @@ func TestHoldingRepository_SaveNeverOverwritesAnotherUsersHolding(t *testing.T) 
 	hijack.UserId = intruder
 	hijack.Value = model.MustMoneyFromFloat(1)
 	_, err = repo.Save(ctx, hijack)
-	assert.Error(t, err, "same id, different owner: the upsert's insert hits the duplicate _id")
+	assert.ErrorAs(t, err, &appErrors.DuplicateResourceError{}, "same id, different owner: a conflict, never an overwrite")
 
 	got, err := repo.FindAll(ctx, owner)
 	require.NoError(t, err)
@@ -377,8 +377,18 @@ func TestSnapshotRepository(t *testing.T) {
 	assert.ErrorAs(t, err, &appErrors.DuplicateResourceError{})
 
 	// The unique index is per user: another account may snapshot the very same second.
-	_, err = repo.Save(ctx, snap(other, at(2), 7))
+	othersSecond, err := repo.Save(ctx, snap(other, at(2), 7))
 	require.NoError(t, err)
+
+	// Deleting is scoped to the owner too.
+	deleted, err := repo.DeleteById(ctx, user, othersSecond.Id)
+	require.NoError(t, err)
+	assert.False(t, deleted, "another user's snapshot is untouched")
+	extra, err := repo.Save(ctx, snap(user, at(9), 1))
+	require.NoError(t, err)
+	deleted, err = repo.DeleteById(ctx, user, extra.Id)
+	require.NoError(t, err)
+	assert.True(t, deleted)
 
 	n, err := repo.Count(ctx, user)
 	require.NoError(t, err)
@@ -405,6 +415,8 @@ func TestSnapshotRepository_Errors(t *testing.T) {
 	_, err = repo.FindEarliest(cancelled(), user)
 	assert.Error(t, err)
 	_, err = repo.Count(cancelled(), user)
+	assert.Error(t, err)
+	_, err = repo.DeleteById(cancelled(), user, model.NewSnapshotId())
 	assert.Error(t, err)
 
 	insertRaw(t, db, "net_worth_snapshots", bson.M{"_id": "x", "user_id": user.String(), "captured_at": at(1), "total_value_usd": "1"})

@@ -88,6 +88,18 @@ func (r *MongoSnapshotRepository) Save(
 	return snapshot, nil
 }
 
+func (r *MongoSnapshotRepository) DeleteById(
+	ctx context.Context,
+	userId model.UserId,
+	id model.SnapshotId,
+) (bool, error) {
+	res, err := r.coll.DeleteOne(ctx, bson.M{"_id": id.UUID().String(), "user_id": userId.UUID().String()})
+	if err != nil {
+		return false, err
+	}
+	return res.DeletedCount > 0, nil
+}
+
 func (r *MongoSnapshotRepository) ExistsAt(
 	ctx context.Context,
 	userId model.UserId,

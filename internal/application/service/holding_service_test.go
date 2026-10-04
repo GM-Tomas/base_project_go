@@ -17,9 +17,13 @@ import (
 )
 
 type mockHoldingRepo struct {
-	holdings     map[string]model.Holding
-	assetClasses []model.AssetClass
-	countErr     error
+	holdings      map[string]model.Holding
+	assetClasses  []model.AssetClass
+	countErr      error
+	countErrAfter int // Count calls that still succeed before countErr kicks in
+	countCalls    int
+	deleteErr     error
+	beforeSave    func() // lands a "concurrent" request between the service's checks and its insert
 }
 
 func newMockHoldingRepo() *mockHoldingRepo {
@@ -39,7 +43,8 @@ func (m *mockHoldingRepo) FindAll(ctx context.Context, userId model.UserId) ([]m
 }
 
 func (m *mockHoldingRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
-	if m.countErr != nil {
+	m.countCalls++
+	if m.countErr != nil && m.countCalls > m.countErrAfter {
 		return 0, m.countErr
 	}
 	all, _ := m.FindAll(ctx, userId)
@@ -47,11 +52,17 @@ func (m *mockHoldingRepo) Count(ctx context.Context, userId model.UserId) (int64
 }
 
 func (m *mockHoldingRepo) Save(ctx context.Context, holding model.Holding) (model.Holding, error) {
+	if m.beforeSave != nil {
+		m.beforeSave()
+	}
 	m.holdings[holding.Id.String()] = holding
 	return holding, nil
 }
 
 func (m *mockHoldingRepo) DeleteById(ctx context.Context, userId model.UserId, id model.HoldingId) (bool, error) {
+	if m.deleteErr != nil {
+		return false, m.deleteErr
+	}
 	h, ok := m.holdings[id.String()]
 	if !ok || h.UserId.UUID() != userId.UUID() {
 		return false, nil
@@ -202,4 +213,55 @@ func TestHoldingService_CapsHoldingsPerUser(t *testing.T) {
 	holdingRepo.countErr = errors.New("db down")
 	_, err = svc.CreateHolding(context.Background(), cmd(other))
 	assert.EqualError(t, err, "db down")
+}
+
+func TestHoldingService_CapHoldsWhenCreatesRace(t *testing.T) {
+	for name, deleteErr := range map[string]error{"withdrawn": nil, "withdrawal fails": errors.New("db down")} {
+		t.Run(name, func(t *testing.T) {
+			holdingRepo := newMockHoldingRepo()
+			platformRepo := newMockPlatformRepo(holdingRepo)
+			svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(time.Now()))
+			ctx := context.Background()
+			user := model.NewUserId(uuid.New())
+			add := func() {
+				h := model.Holding{Id: model.NewHoldingId(), UserId: user, Name: "other", Platform: model.MustPlatformName("Bank")}
+				holdingRepo.holdings[h.Id.String()] = h
+			}
+			for i := 0; i < model.MaxHoldingsPerUser-1; i++ {
+				add()
+			}
+			// Both requests passed the check at 999; the other one's insert lands first.
+			holdingRepo.beforeSave = func() { holdingRepo.beforeSave = nil; add() }
+			holdingRepo.deleteErr = deleteErr
+
+			_, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{
+				UserId: user, Name: "Mine", AssetClass: "Cash", Platform: "Fresh", ValueUsd: 1,
+			})
+
+			if deleteErr != nil {
+				assert.ErrorIs(t, err, deleteErr)
+				return
+			}
+			assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
+			n, _ := holdingRepo.Count(ctx, user)
+			assert.Equal(t, int64(model.MaxHoldingsPerUser), n, "ours was withdrawn, so the user stays at the cap")
+			for _, h := range holdingRepo.holdings {
+				assert.NotEqual(t, "Mine", h.Name)
+			}
+			assert.NotContains(t, platformRepo.platforms, "Fresh", "its brand-new platform goes too")
+		})
+	}
+}
+
+func TestHoldingService_KeepsTheHoldingWhenTheRecountFails(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
+	holdingRepo.countErr, holdingRepo.countErrAfter = errors.New("db blip"), 1
+
+	h, err := svc.CreateHolding(context.Background(), inbound.CreateHoldingCommand{
+		UserId: model.NewUserId(uuid.New()), Name: "x", AssetClass: "Cash", Platform: "Bank", ValueUsd: 1,
+	})
+
+	require.NoError(t, err, "it is saved: reporting a failure would only invite a duplicate retry")
+	assert.Contains(t, holdingRepo.holdings, h.Id.String())
 }
