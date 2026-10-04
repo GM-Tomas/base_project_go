@@ -229,6 +229,13 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 		g.total = g.total.Plus(value)
 		g.count++
 	}
+	// A holding without a readable amount counts nowhere (nor in NetWorth or ByAssetClass): a platform
+	// with only such holdings isn't listed. (It still spells a platform it shares.)
+	for key, g := range groups {
+		if g.count == 0 {
+			delete(groups, key)
+		}
+	}
 	return groups, nil
 }
 

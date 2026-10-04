@@ -12,6 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type MongoWealthAggregationAdapter struct {
@@ -30,7 +31,7 @@ func (a *MongoWealthAggregationAdapter) NetWorth(
 	userId model.UserId,
 ) (model.Money, error) {
 	filter := bson.M{"user_id": userId.UUID().String()}
-	cursor, err := a.holdingsColl.Find(ctx, filter)
+	cursor, err := a.holdingsColl.Find(ctx, filter, options.Find().SetProjection(bson.M{"value_usd": 1}))
 	if err != nil {
 		return model.ZeroMoney, err
 	}
@@ -60,7 +61,7 @@ func (a *MongoWealthAggregationAdapter) ByAssetClass(
 	userId model.UserId,
 ) ([]outbound.AssetClassAggregate, error) {
 	filter := bson.M{"user_id": userId.UUID().String()}
-	cursor, err := a.holdingsColl.Find(ctx, filter)
+	cursor, err := a.holdingsColl.Find(ctx, filter, options.Find().SetProjection(bson.M{"asset_class": 1, "value_usd": 1}))
 	if err != nil {
 		return nil, err
 	}

@@ -209,6 +209,29 @@ func TestHoldingRepository_AssetClassesInUseListsEachClassOnce(t *testing.T) {
 	assert.ElementsMatch(t, []model.AssetClass{model.MustAssetClass("Caf\u00e9"), model.MustAssetClass("Equity")}, classes)
 }
 
+func TestPlatformRepository_APlatformWithoutReadableAmountsIsNotListed(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	user := newUser()
+	_, err := NewMongoHoldingRepository(db).Save(ctx, holding(user, "a", "Cash", "Bank", 5, at(1)))
+	require.NoError(t, err)
+	// Only writable outside the API.
+	insertRaw(t, db, "holdings", bson.M{
+		"_id": uuid.NewString(), "user_id": user.String(), "name": "k", "asset_class": "Crypto",
+		"platform_name": "Kraken", "value_usd": "abc", "created_at": at(2), "updated_at": at(2),
+	})
+
+	platforms, err := NewMongoPlatformRepository(db).FindAll(ctx, user)
+	require.NoError(t, err)
+	require.Len(t, platforms, 1)
+	assert.Equal(t, "Bank", platforms[0].Name.Value())
+
+	byPlatform, err := NewMongoWealthAggregationAdapter(db).ByPlatform(ctx, user)
+	require.NoError(t, err)
+	require.Len(t, byPlatform, 1, "like ByAssetClass and NetWorth, which leave that holding out")
+	assert.Equal(t, "Bank", byPlatform[0].Name.Value())
+}
+
 func TestWealthAggregation_ByAssetClassBreaksTiesLikeAPerson(t *testing.T) {
 	db := testDB(t)
 	holdings := NewMongoHoldingRepository(db)

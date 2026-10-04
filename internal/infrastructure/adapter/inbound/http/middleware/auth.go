@@ -123,14 +123,11 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Only a Bearer header carries an access token. Another scheme is someone else's (browsers resend
+			// the docs' Basic credentials to the whole site): the request counts as carrying no token.
 			var tokenStr string
-			if authHeader := r.Header.Get("Authorization"); authHeader != "" {
-				parts := strings.SplitN(authHeader, " ", 2)
-				if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-					WriteUnauthorized(w, r, "Missing or invalid access token")
-					return
-				}
-				tokenStr = strings.TrimSpace(parts[1])
+			if scheme, credentials, _ := strings.Cut(r.Header.Get("Authorization"), " "); strings.EqualFold(scheme, "Bearer") {
+				tokenStr = strings.TrimSpace(credentials)
 				if tokenStr == "" {
 					WriteUnauthorized(w, r, "Missing or invalid access token")
 					return

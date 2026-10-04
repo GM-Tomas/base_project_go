@@ -305,6 +305,11 @@ func TestAuthMiddleware_DevModeKeepsAccountsApart(t *testing.T) {
 
 	code, _ = whoAmI("Bearer forged")
 	assert.Equal(t, http.StatusUnauthorized, code)
+
+	// The docs' Basic credentials, which browsers resend to the whole site, aren't a token: still the dev user.
+	code, got = whoAmI("Basic ZG9jczpzZWNyZXQ=")
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, devUser, got)
 }
 
 func TestAuthMiddleware_DevValidatorNeedsNoHeader(t *testing.T) {
