@@ -302,14 +302,24 @@ type rotatingJWKS struct {
 	down atomic.Bool
 	slow atomic.Int64 // delay per fetch, in nanoseconds
 	hits atomic.Int32
+	// gate, when set, holds every fetch until it's closed, after reporting on started.
+	gate    atomic.Pointer[chan struct{}]
+	started chan struct{}
 }
 
 func newRotatingJWKS(t *testing.T, initial jwk.Set) *rotatingJWKS {
 	t.Helper()
-	j := &rotatingJWKS{}
+	j := &rotatingJWKS{started: make(chan struct{}, 1)}
 	j.set.Store(&initial)
 	j.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		j.hits.Add(1)
+		if gate := j.gate.Load(); gate != nil {
+			select {
+			case j.started <- struct{}{}:
+			default:
+			}
+			<-*gate
+		}
 		time.Sleep(time.Duration(j.slow.Load()))
 		if j.down.Load() {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -372,10 +382,10 @@ func TestSupabaseJWTValidator_AcceptsAKeyRotatedInSinceTheLastFetch(t *testing.T
 	require.NoError(t, err, "re-fetched instead of a 401 that would sign the user out")
 	assert.Equal(t, fetched+1, jwks.hits.Load())
 
-	// Made-up key ids can't make it hammer Supabase: at most one forced fetch a minute. Until the next one
-	// an unknown key is "unavailable" (503), not invalid (401): it may have been rotated in since.
+	// Made-up key ids can't make it hammer Supabase: a key missing from a fetch that recent is just unknown.
 	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "made-up"))
-	assert.ErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, middleware.ErrSigningKeysUnavailable, "401: a revoked or made-up key is invalid")
 	assert.Equal(t, fetched+1, jwks.hits.Load())
 }
 
@@ -481,25 +491,52 @@ func TestSupabaseJWTValidator_AClientHangingUpDoesNotCancelTheSharedReFetch(t *t
 	_, err = v.ValidateToken(context.Background(), signWithKid(t, oldPriv, "old"))
 	require.NoError(t, err)
 	jwks.set.Store(ptr(setOf(t, oldKey, newKey)))
-	jwks.slow.Store(int64(300 * time.Millisecond))
 	fetched := jwks.hits.Load()
+	release := make(chan struct{})
+	jwks.gate.Store(&release)
 
-	// The first request starts the fetch, then its client hangs up; another request arrives meanwhile.
 	starter, hangUp := context.WithCancel(context.Background())
 	var starterErr, otherErr error
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); _, starterErr = v.ValidateToken(starter, signWithKid(t, newPriv, "new")) }()
-	time.Sleep(50 * time.Millisecond)
+	<-jwks.started // the first request's fetch has reached Supabase
 	go func() {
 		defer wg.Done()
 		_, otherErr = v.ValidateToken(context.Background(), signWithKid(t, newPriv, "new"))
 	}()
-	time.Sleep(50 * time.Millisecond)
-	hangUp()
+	hangUp() // its client goes away
+	close(release)
 	wg.Wait()
 
 	assert.NoError(t, starterErr, "the starter still finishes the fetch, for everyone")
 	assert.NoError(t, otherErr)
 	assert.Equal(t, fetched+1, jwks.hits.Load(), "one fetch served them all")
+}
+
+func TestSupabaseJWTValidator_APanickingFetchDoesNotWedgeTheNextOnes(t *testing.T) {
+	oldPriv, oldKey := keyWithKid(t, "old")
+	newPriv, newKey := keyWithKid(t, "new")
+	jwks := newRotatingJWKS(t, setOf(t, oldKey))
+	ctx := context.Background()
+	v, err := middleware.NewSupabaseJWTValidator(ctx, jwks.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+	_, err = v.ValidateToken(ctx, signWithKid(t, oldPriv, "old"))
+	require.NoError(t, err)
+
+	middleware.SetKeyFetchTiming(v, time.Hour, time.Millisecond)
+	calls := 0
+	middleware.SetKeyFetcher(v, func(context.Context) (jwk.Set, error) {
+		calls++
+		if calls == 1 {
+			panic("malformed JWKS")
+		}
+		return setOf(t, oldKey, newKey), nil
+	})
+
+	assert.Panics(t, func() { _, _ = v.ValidateToken(ctx, signWithKid(t, newPriv, "new")) }, "left to chi's Recoverer")
+	time.Sleep(5 * time.Millisecond) // past the retry backoff
+	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "new"))
+	assert.NoError(t, err, "the next fetch ran instead of everyone waiting forever on the one that panicked")
+	assert.Equal(t, 2, calls)
 }

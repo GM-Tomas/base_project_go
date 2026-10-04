@@ -31,13 +31,16 @@ var (
 	ErrSigningKeysUnavailable = errors.New("signing keys unavailable")
 )
 
-// A token whose key the cached JWKS lacks (just rotated in) makes the validator re-fetch it: right away,
-// then at most once per keyFetchInterval after a successful fetch, so made-up key ids can't make the API
-// hammer Supabase; after a failed one, again after keyFetchRetryBackoff.
+// A token whose key the cached JWKS lacks (just rotated in) makes the validator re-fetch it, at most once
+// per keyFetchInterval after a successful fetch (made-up key ids can't make the API hammer Supabase; a key
+// missing from a fetch that recent is truly unknown: 401), and once per keyFetchRetryBackoff after a failed
+// one (meanwhile the keys are "unavailable": 503).
 const (
-	keyFetchInterval     = time.Minute
+	keyFetchInterval     = 5 * time.Second
 	keyFetchRetryBackoff = 5 * time.Second
 )
+
+var errKeyFetchAborted = errors.New("JWKS fetch aborted")
 
 type SupabaseJWTValidator struct {
 	keys     func(ctx context.Context) (jwk.Set, error)
@@ -119,7 +122,7 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 	// No keys means no verification is possible: reject, never fall back to an unverified parse.
 	keySet, err := v.keys(ctx)
 	if err == nil && !hasKey(keySet, tokenStr) {
-		keySet, err = v.refreshedKeys(ctx)
+		keySet, err = v.refreshedKeys(ctx, keySet)
 	}
 	if err != nil {
 		// A caller that hung up says nothing about the keys.
@@ -172,16 +175,10 @@ func hasKey(keySet jwk.Set, tokenStr string) bool {
 	return ok
 }
 
-// errKeyNotYetPublished: the token's key wasn't in a JWKS fetched under keyFetchInterval ago. It may have
-// been rotated in since, so the token isn't called invalid (a 401 signs its user out): the keys are
-// "unavailable" (503) until the next fetch can tell.
-var errKeyNotYetPublished = errors.New("token key not in the JWKS fetched moments ago")
-
 // refreshedKeys returns the key set to verify a token whose key the cached set lacks: a freshly fetched one
-// when a re-fetch is due, or already under way (concurrent callers share it, so none is judged against the
-// stale set meanwhile). Between fetches it returns an error instead: the last fetch's failure, or
-// errKeyNotYetPublished.
-func (v *SupabaseJWTValidator) refreshedKeys(ctx context.Context) (jwk.Set, error) {
+// when a re-fetch is due or already under way (concurrent callers share it, so none is judged against the
+// stale set meanwhile). Otherwise the cached set, fetched moments ago, or the error that fetch failed with.
+func (v *SupabaseJWTValidator) refreshedKeys(ctx context.Context, cached jwk.Set) (jwk.Set, error) {
 	v.mu.Lock()
 	if fetch := v.inFlight; fetch != nil {
 		v.mu.Unlock()
@@ -195,28 +192,31 @@ func (v *SupabaseJWTValidator) refreshedKeys(ctx context.Context) (jwk.Set, erro
 	if time.Now().Before(v.nextFetch) {
 		err := v.lastErr
 		v.mu.Unlock()
-		if err == nil {
-			err = errKeyNotYetPublished
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		return cached, nil
 	}
-	fetch := &keyFetch{done: make(chan struct{})}
+	fetch := &keyFetch{done: make(chan struct{}), err: errKeyFetchAborted}
 	v.inFlight = fetch
 	v.mu.Unlock()
 
+	// Whatever happens to the fetch, even a panic, the waiters are released and the next one can start.
+	defer func() {
+		v.mu.Lock()
+		v.inFlight = nil
+		v.lastErr = fetch.err
+		if fetch.err != nil {
+			v.nextFetch = time.Now().Add(v.retryBackoff)
+		} else {
+			v.nextFetch = time.Now().Add(v.fetchInterval)
+		}
+		v.mu.Unlock()
+		close(fetch.done)
+	}()
 	// Run by this request, for everyone waiting on it: detached from its cancellation (its client may hang
 	// up), but not left to a background goroutine, which a serverless host can freeze mid-fetch.
 	fetch.set, fetch.err = v.refresh(context.WithoutCancel(ctx))
-	v.mu.Lock()
-	v.inFlight = nil
-	v.lastErr = fetch.err
-	if fetch.err != nil {
-		v.nextFetch = time.Now().Add(v.retryBackoff)
-	} else {
-		v.nextFetch = time.Now().Add(v.fetchInterval)
-	}
-	v.mu.Unlock()
-	close(fetch.done)
 	return fetch.set, fetch.err
 }
 
