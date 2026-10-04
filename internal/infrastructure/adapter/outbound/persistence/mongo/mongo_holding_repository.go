@@ -127,15 +127,17 @@ func (r *MongoHoldingRepository) AssetClassesInUse(
 		return nil, err
 	}
 
+	// Stored spellings the domain reads as one class (different Unicode forms, stray whitespace from
+	// older versions) are listed once.
 	var classes []model.AssetClass
+	seen := make(map[string]bool, len(results))
 	for _, str := range results {
-		if str == "" {
+		ac, err := model.NewAssetClass(str)
+		if err != nil || seen[ac.Value()] {
 			continue
 		}
-		ac, err := model.NewAssetClass(str)
-		if err == nil {
-			classes = append(classes, ac)
-		}
+		seen[ac.Value()] = true
+		classes = append(classes, ac)
 	}
 
 	return classes, nil

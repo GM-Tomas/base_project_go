@@ -177,6 +177,39 @@ func TestHoldingRepository_AssetClassesInUseSkipsInvalid(t *testing.T) {
 	assert.Equal(t, []model.AssetClass{model.MustAssetClass("Equity")}, classes)
 }
 
+func TestHoldingRepository_AssetClassesInUseListsEachClassOnce(t *testing.T) {
+	db := testDB(t)
+	user := newUser()
+	// Written outside the API or by older versions: spellings the domain reads as one class.
+	for id, class := range map[string]string{"a": "Caf\u00e9", "b": "Cafe\u0301", "c": "Equity", "d": " Equity "} {
+		insertRaw(t, db, "holdings", bson.M{"_id": id, "user_id": user.String(), "asset_class": class})
+	}
+
+	classes, err := NewMongoHoldingRepository(db).AssetClassesInUse(context.Background(), user)
+
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []model.AssetClass{model.MustAssetClass("Caf\u00e9"), model.MustAssetClass("Equity")}, classes)
+}
+
+func TestWealthAggregation_ByAssetClassReadsClassesLikeTheDomain(t *testing.T) {
+	db := testDB(t)
+	user := newUser()
+	for i, class := range []string{"Caf\u00e9", "Cafe\u0301"} {
+		insertRaw(t, db, "holdings", bson.M{
+			"_id": uuid.NewString(), "user_id": user.String(), "name": "x", "asset_class": class,
+			"platform_name": "Bank", "value_usd": fmt.Sprintf("%d.00", i+1), "created_at": at(1), "updated_at": at(1),
+		})
+	}
+
+	byClass, err := NewMongoWealthAggregationAdapter(db).ByAssetClass(context.Background(), user)
+
+	require.NoError(t, err)
+	require.Len(t, byClass, 1)
+	assert.Equal(t, "Caf\u00e9", byClass[0].AssetClass.Value())
+	assert.Equal(t, "3.00", byClass[0].Value.String())
+	assert.Equal(t, 2, byClass[0].Count)
+}
+
 func TestHoldingRepository_Errors(t *testing.T) {
 	db := testDB(t)
 	repo := NewMongoHoldingRepository(db)
@@ -340,11 +373,15 @@ func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 		holding(user, "c", "Cash", "ΟΔΟΣ", 3, at(3)),
 		holding(user, "d", "Cash", "οδος", 4, at(4)),
 		holding(user, "e", "Cash", cafeComposed, 5, at(5)),
-		holding(user, "f", "Cash", cafeDecomposed, 6, at(6)),
 	} {
 		_, err := holdings.Save(ctx, h)
 		require.NoError(t, err)
 	}
+	// The API stores labels in NFC; an older version may have stored the decomposed form.
+	insertRaw(t, db, "holdings", bson.M{
+		"_id": uuid.NewString(), "user_id": user.String(), "name": "f", "asset_class": "Cash",
+		"platform_name": cafeDecomposed, "value_usd": "6.00", "created_at": at(6), "updated_at": at(6),
+	})
 
 	platforms, err := repo.FindAll(ctx, user)
 	require.NoError(t, err)

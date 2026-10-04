@@ -76,7 +76,9 @@ func (a *MongoWealthAggregationAdapter) ByAssetClass(
 		count int
 	}
 
-	accMap := make(map[string]*classAccumulator)
+	// Keyed by the class as the domain reads it, so stored spellings it reads as one (different Unicode
+	// forms, say) are one class, as in GET /holdings.
+	accMap := make(map[model.AssetClass]*classAccumulator)
 	for _, doc := range docs {
 		valDec, err := decimal.NewFromString(doc.ValueUSD)
 		if err != nil {
@@ -86,22 +88,22 @@ func (a *MongoWealthAggregationAdapter) ByAssetClass(
 		if err != nil {
 			continue
 		}
+		ac, err := model.NewAssetClass(doc.AssetClass)
+		if err != nil {
+			continue
+		}
 
-		acc, exists := accMap[doc.AssetClass]
+		acc, exists := accMap[ac]
 		if !exists {
 			acc = &classAccumulator{total: model.ZeroMoney, count: 0}
-			accMap[doc.AssetClass] = acc
+			accMap[ac] = acc
 		}
 		acc.total = acc.total.Plus(m)
 		acc.count++
 	}
 
 	var list []outbound.AssetClassAggregate
-	for className, acc := range accMap {
-		ac, err := model.NewAssetClass(className)
-		if err != nil {
-			continue
-		}
+	for ac, acc := range accMap {
 		list = append(list, outbound.AssetClassAggregate{
 			AssetClass: ac,
 			Value:      acc.total,
