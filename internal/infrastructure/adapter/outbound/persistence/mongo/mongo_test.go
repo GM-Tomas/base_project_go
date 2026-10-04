@@ -788,6 +788,6 @@ func TestEnsureIndexes_CoversEveryPerUserQuery(t *testing.T) {
 		return out
 	}
 
-	assert.ElementsMatch(t, []string{"_id", "user_id+created_at", "user_id+asset_class"}, keysOf("holdings"))
+	assert.ElementsMatch(t, []string{"_id", "user_id+created_at+_id", "user_id+asset_class"}, keysOf("holdings"))
 	assert.ElementsMatch(t, []string{"_id", "user_id+captured_at unique"}, keysOf("net_worth_snapshots"))
 }

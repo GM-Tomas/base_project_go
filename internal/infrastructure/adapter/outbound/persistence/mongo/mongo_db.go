@@ -82,9 +82,10 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 	// it can be dropped.)
 	_, err = db.Holdings.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
-			Keys: bson.D{
+			Keys: bson.D{ // holdingsOldestFirst, so those reads stream from the index instead of sorting
 				{Key: "user_id", Value: 1},
 				{Key: "created_at", Value: 1},
+				{Key: "_id", Value: 1},
 			},
 		},
 		{

@@ -22,6 +22,11 @@ type Holding struct {
 	UpdatedAt  time.Time
 }
 
+// NormalizeHoldingName is how a holding's name is stored: a label of at most MaxHoldingNameLength.
+func NormalizeHoldingName(raw string) (string, error) {
+	return NormalizeLabel(raw, MaxHoldingNameLength, "Holding name")
+}
+
 // CreateHolding creates a new Holding with a new HoldingId and current timestamps.
 func CreateHolding(
 	userId UserId,
@@ -31,7 +36,7 @@ func CreateHolding(
 	value Money,
 	now time.Time,
 ) (Holding, error) {
-	normName, err := NormalizeLabel(name, MaxHoldingNameLength, "Holding name")
+	normName, err := NormalizeHoldingName(name)
 	if err != nil {
 		return Holding{}, err
 	}
