@@ -13,16 +13,17 @@ import (
 )
 
 func TestPlatformService_GetAllPlatforms(t *testing.T) {
-	platformRepo := newMockPlatformRepo(newMockHoldingRepo())
-	svc := service.NewPlatformService(platformRepo)
-
+	holdingRepo := newMockHoldingRepo()
+	svc := service.NewPlatformService(newMockPlatformRepo(holdingRepo))
 	userId := model.NewUserId(uuid.New())
 	ctx := context.Background()
 
-	_, err := platformRepo.EnsureExists(ctx, userId, model.MustPlatformName("Binance"), time.Now())
-	require.NoError(t, err)
-	_, err = platformRepo.EnsureExists(ctx, model.NewUserId(uuid.New()), model.MustPlatformName("Nexo"), time.Now())
-	require.NoError(t, err)
+	for _, h := range []model.Holding{
+		{Id: model.NewHoldingId(), UserId: userId, Platform: model.MustPlatformName("Binance"), CreatedAt: time.Now()},
+		{Id: model.NewHoldingId(), UserId: model.NewUserId(uuid.New()), Platform: model.MustPlatformName("Nexo"), CreatedAt: time.Now()},
+	} {
+		holdingRepo.holdings[h.Id.String()] = h
+	}
 
 	platforms, err := svc.GetAllPlatforms(ctx, userId)
 	require.NoError(t, err)

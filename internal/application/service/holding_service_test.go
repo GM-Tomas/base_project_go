@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -81,49 +82,36 @@ func (m *mockHoldingRepo) AssetClassesInUse(ctx context.Context, userId model.Us
 	return m.assetClasses, nil
 }
 
+// mockPlatformRepo derives platforms from the holdings, like the real one.
 type mockPlatformRepo struct {
-	platforms map[string]model.Platform
-	holdings  *mockHoldingRepo // to know which platforms are still referenced
+	holdings *mockHoldingRepo
 }
 
 func newMockPlatformRepo(holdings *mockHoldingRepo) *mockPlatformRepo {
-	return &mockPlatformRepo{
-		platforms: make(map[string]model.Platform),
-		holdings:  holdings,
-	}
+	return &mockPlatformRepo{holdings: holdings}
 }
 
 func (m *mockPlatformRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
+	seen := map[string]bool{}
 	var list []model.Platform
-	for _, p := range m.platforms {
-		if p.UserId.UUID() == userId.UUID() {
-			list = append(list, p)
+	for _, h := range m.holdings.holdings {
+		if h.UserId != userId || seen[strings.ToLower(h.Platform.Value())] {
+			continue
 		}
+		seen[strings.ToLower(h.Platform.Value())] = true
+		list = append(list, model.NewPlatform(userId, h.Platform, model.PlatformTypeOther, h.CreatedAt))
 	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name.Value() < list[j].Name.Value() })
 	return list, nil
 }
 
-func (m *mockPlatformRepo) EnsureExists(ctx context.Context, userId model.UserId, name model.PlatformName, now time.Time) (model.PlatformName, error) {
-	for _, p := range m.platforms {
-		if p.UserId.UUID() == userId.UUID() && strings.EqualFold(p.Name.Value(), name.Value()) {
-			return p.Name, nil
-		}
-	}
-	m.platforms[name.Value()] = model.NewPlatform(userId, name, model.PlatformTypeOther, now)
-	return name, nil
-}
-
-func (m *mockPlatformRepo) DeleteUnused(ctx context.Context, userId model.UserId, now time.Time) error {
-	used := map[string]bool{}
+func (m *mockPlatformRepo) Canonical(ctx context.Context, userId model.UserId, name model.PlatformName) (model.PlatformName, error) {
 	for _, h := range m.holdings.holdings {
-		used[h.Platform.Value()] = true
-	}
-	for name, p := range m.platforms {
-		if p.UserId.UUID() == userId.UUID() && !used[name] {
-			delete(m.platforms, name)
+		if h.UserId == userId && strings.EqualFold(h.Platform.Value(), name.Value()) {
+			return h.Platform, nil
 		}
 	}
-	return nil
+	return name, nil
 }
 
 func fixedClock(t time.Time) service.Clock {
@@ -153,8 +141,13 @@ func TestHoldingService_Lifecycle(t *testing.T) {
 	assert.Equal(t, "10557.00", nvda.Value.String())
 	aapl := create("AAPL", "balanz")
 	assert.Equal(t, "Balanz", aapl.Platform.Value())
-	assert.Len(t, platformRepo.platforms, 1)
-	assert.Equal(t, "Other", platformRepo.platforms["Balanz"].Type.Value())
+	platforms := func() []model.Platform {
+		list, err := platformRepo.FindAll(ctx, userId)
+		require.NoError(t, err)
+		return list
+	}
+	require.Len(t, platforms(), 1)
+	assert.Equal(t, "Other", platforms()[0].Type.Value())
 
 	all, err := svc.GetAllHoldings(ctx, userId)
 	require.NoError(t, err)
@@ -162,11 +155,11 @@ func TestHoldingService_Lifecycle(t *testing.T) {
 
 	// 2. Deleting one holding keeps the platform while another holding still uses it.
 	require.NoError(t, svc.DeleteHolding(ctx, userId, nvda.Id))
-	assert.Len(t, platformRepo.platforms, 1)
+	assert.Len(t, platforms(), 1)
 
 	// 3. Deleting the last one prunes the platform (the UI has no way to delete it).
 	require.NoError(t, svc.DeleteHolding(ctx, userId, aapl.Id))
-	assert.Empty(t, platformRepo.platforms)
+	assert.Empty(t, platforms())
 
 	// 4. Delete again -> not found
 	assert.Error(t, svc.DeleteHolding(ctx, userId, aapl.Id))
@@ -188,7 +181,6 @@ func TestHoldingService_RejectedCreateLeavesNoPlatformBehind(t *testing.T) {
 			cmd.UserId = userId
 			_, err := svc.CreateHolding(context.Background(), cmd)
 			assert.Error(t, err)
-			assert.Empty(t, platformRepo.platforms)
 			assert.Empty(t, holdingRepo.holdings)
 		})
 	}
@@ -210,7 +202,9 @@ func TestHoldingService_CapsHoldingsPerUser(t *testing.T) {
 
 	_, err := svc.CreateHolding(context.Background(), cmd(full))
 	assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
-	assert.Empty(t, platformRepo.platforms, "no platform for a refused holding")
+	platforms, _ := platformRepo.FindAll(context.Background(), full)
+	require.Len(t, platforms, 1)
+	assert.Equal(t, "Bank", platforms[0].Name.Value(), "no platform for a refused holding")
 
 	// The cap is per account: everyone else is unaffected.
 	_, err = svc.CreateHolding(context.Background(), cmd(other))

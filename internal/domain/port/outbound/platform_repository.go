@@ -2,15 +2,14 @@ package outbound
 
 import (
 	"context"
-	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 )
 
+// PlatformRepository is read-only: a platform is a name the user's holdings use (matched
+// case-insensitively), so it appears with the first holding on it and is gone with the last.
 type PlatformRepository interface {
 	FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error)
-	EnsureExists(ctx context.Context, userId model.UserId, name model.PlatformName, now time.Time) (model.PlatformName, error)
-	// DeleteUnused removes the user's platforms that no holding references anymore, sparing those a
-	// create used within the last minute (its holding may not have landed yet).
-	DeleteUnused(ctx context.Context, userId model.UserId, now time.Time) error
+	// Canonical is the spelling the user's holdings already use for this platform, or name for a new one.
+	Canonical(ctx context.Context, userId model.UserId, name model.PlatformName) (model.PlatformName, error)
 }

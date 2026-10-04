@@ -78,7 +78,7 @@ func do(t *testing.T, router http.Handler, method, path string, body any) *httpt
 
 func TestHoldingHandler_Endpoints(t *testing.T) {
 	userId := model.NewUserId(uuid.New())
-	router, _, platformRepo, _, _ := setupTestRouter(userId)
+	router, _, _, _, _ := setupTestRouter(userId)
 
 	// 1. Create holding (what AddAssetModal sends)
 	rec := do(t, router, "POST", "/api/v1/holdings", dto.CreateHoldingRequest{
@@ -109,7 +109,8 @@ func TestHoldingHandler_Endpoints(t *testing.T) {
 	// 3. Delete holding -> its now-empty platform is gone too
 	rec = do(t, router, "DELETE", "/api/v1/holdings/"+created.Id, nil)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Empty(t, platformRepo.platforms)
+	rec = do(t, router, "GET", "/api/v1/platforms", nil)
+	assert.JSONEq(t, "[]", rec.Body.String())
 
 	// 4. Delete again -> 404
 	rec = do(t, router, "DELETE", "/api/v1/holdings/"+created.Id, nil)

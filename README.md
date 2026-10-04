@@ -104,7 +104,7 @@ después de cambiar `DOCS_PASSWORD` hay que redeployar. En local sigue abierta s
 Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
 valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request da `401`.
 
-Los índices de MongoDB (plataforma única por usuario, un snapshot por segundo y por usuario, listado de holdings por usuario) se crean solos al arrancar.
+Los índices de MongoDB (un snapshot por segundo y por usuario, listado de holdings por usuario) se crean solos al arrancar.
 
 ---
 
@@ -112,8 +112,12 @@ Los índices de MongoDB (plataforma única por usuario, un snapshot por segundo 
 
 El adaptador `internal/infrastructure/adapter/outbound/persistence/mongo/` implementa los puertos outbound
 (`HoldingRepository`, `PlatformRepository`, `SnapshotRepository`, `WealthAggregationPort`) sobre las
-colecciones `holdings`, `platforms` y `net_worth_snapshots`. Los montos se guardan como decimales en texto
+colecciones `holdings` y `net_worth_snapshots`. Los montos se guardan como decimales en texto
 (escala 2) para no perder precisión.
+
+Las plataformas no se guardan aparte: son los nombres que usan los holdings del usuario, sin distinguir mayúsculas
+("Binance" y "binance" son la misma, escrita como en su holding más antiguo). Aparecen con el primer holding y
+desaparecen con el último. Una colección `platforms` de versiones anteriores ya no se usa y se puede borrar.
 
 ---
 
@@ -136,9 +140,9 @@ Authorization: Bearer <session.access_token>
 
 La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Supabase y ve y modifica **solo sus datos**.
 
-- **Cómo se aísla:** cada documento de MongoDB (`holdings`, `platforms`, `net_worth_snapshots`) guarda el `user_id` (el `sub` del JWT)
-  y **toda** lectura, escritura y borrado filtra por él, incluidos los agregados del resumen y la proyección. Los índices únicos
-  también son por usuario: dos cuentas pueden tener una plataforma "Binance" o un snapshot en el mismo segundo sin chocar.
+- **Cómo se aísla:** cada documento de MongoDB (`holdings`, `net_worth_snapshots`) guarda el `user_id` (el `sub` del JWT)
+  y **toda** lectura, escritura y borrado filtra por él, incluidos las plataformas, los agregados del resumen y la proyección.
+  Dos cuentas pueden tener una plataforma "Binance" o un snapshot en el mismo segundo sin chocar.
 - **Recursos ajenos:** borrar un holding de otra cuenta (aunque se conozca su id) responde `404`, igual que uno inexistente,
   y un upsert con un id ajeno falla en vez de sobrescribirlo.
 - **Agregar usuarios:** en Supabase, *Authentication → Users → Add user* (email + contraseña). Los sign-ups públicos están
@@ -150,7 +154,8 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
   ```js
   // mongosh, con el id (UUID) del usuario de Supabase
   const uid = "<uuid>";
-  ["holdings", "platforms", "net_worth_snapshots"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
+  // ("platforms" solo existe en bases de versiones anteriores)
+  ["holdings", "net_worth_snapshots", "platforms"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
   ```
 - **Tests:** `internal/infrastructure/app/multiuser_test.go` levanta la API completa (router, auth, servicios y MongoDB real)
   con un JWKS de prueba y verifica con dos usuarios que ninguno ve ni modifica holdings, plataformas, clases de activo,

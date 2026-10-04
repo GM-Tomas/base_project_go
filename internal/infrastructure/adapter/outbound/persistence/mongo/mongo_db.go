@@ -16,7 +16,6 @@ type MongoDB struct {
 	Client    *mongo.Client
 	Database  *mongo.Database
 	Holdings  *mongo.Collection
-	Platforms *mongo.Collection
 	Snapshots *mongo.Collection
 }
 
@@ -42,20 +41,16 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 	}
 
 	database := client.Database(dbName)
-	holdingsColl := database.Collection("holdings")
-	platformsColl := database.Collection("platforms")
-	snapshotsColl := database.Collection("net_worth_snapshots")
-
+	// Platforms are derived from holdings: a "platforms" collection left by earlier versions is unused.
 	db := &MongoDB{
 		Client:    client,
 		Database:  database,
-		Holdings:  holdingsColl,
-		Platforms: platformsColl,
-		Snapshots: snapshotsColl,
+		Holdings:  database.Collection("holdings"),
+		Snapshots: database.Collection("net_worth_snapshots"),
 	}
 
 	// Synchronous on purpose: a background goroutine can be frozen on Vercel before it finishes, and
-	// the unique indexes are what turn duplicate platforms/snapshots into conflicts. Idempotent and cheap once built.
+	// the unique index is what turns a second snapshot in the same second into a conflict. Idempotent and cheap once built.
 	idxCtx, idxCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer idxCancel()
 	db.ensureIndexes(idxCtx)
@@ -68,20 +63,8 @@ func (db *MongoDB) Close(ctx context.Context) error {
 }
 
 func (db *MongoDB) ensureIndexes(ctx context.Context) {
-	// Unique Platform index: user_id + lower_name
-	_, err := db.Platforms.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys: bson.D{
-			{Key: "user_id", Value: 1},
-			{Key: "lower_name", Value: 1},
-		},
-		Options: options.Index().SetUnique(true),
-	})
-	if err != nil {
-		log.Printf("Warning creating platforms index: %v", err)
-	}
-
 	// Unique Snapshot index: user_id + captured_at
-	_, err = db.Snapshots.Indexes().CreateOne(ctx, mongo.IndexModel{
+	_, err := db.Snapshots.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{
 			{Key: "user_id", Value: 1},
 			{Key: "captured_at", Value: 1},
@@ -92,7 +75,7 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 		log.Printf("Warning creating snapshots index: %v", err)
 	}
 
-	// Holdings: the user's list (sorted by creation) plus the per-platform / per-class lookups.
+	// Holdings: the user's list and platforms (both by creation) plus the per-platform / per-class lookups.
 	_, err = db.Holdings.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
 			Keys: bson.D{

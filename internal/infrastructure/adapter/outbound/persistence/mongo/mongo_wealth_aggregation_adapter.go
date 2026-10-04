@@ -12,15 +12,11 @@ import (
 )
 
 type MongoWealthAggregationAdapter struct {
-	holdingsColl  *mongo.Collection
-	platformsColl *mongo.Collection
+	holdingsColl *mongo.Collection
 }
 
 func NewMongoWealthAggregationAdapter(db *MongoDB) *MongoWealthAggregationAdapter {
-	return &MongoWealthAggregationAdapter{
-		holdingsColl:  db.Holdings,
-		platformsColl: db.Platforms,
-	}
+	return &MongoWealthAggregationAdapter{holdingsColl: db.Holdings}
 }
 
 var _ outbound.WealthAggregationPort = (*MongoWealthAggregationAdapter)(nil)
@@ -125,65 +121,19 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 	ctx context.Context,
 	userId model.UserId,
 ) ([]outbound.PlatformAggregate, error) {
-	uid := userId.UUID().String()
-
-	// Same rule as PlatformRepository.FindAll: the platforms are the ones the holdings use, so the breakdown
-	// always adds up to the net worth; a platform's doc only adds its type.
-	docs, err := platformDocsByName(ctx, a.platformsColl, uid)
+	// The same platforms as PlatformRepository.FindAll, so the breakdown matches the platform list.
+	groups, err := platformGroups(ctx, a.holdingsColl, userId)
 	if err != nil {
 		return nil, err
 	}
 
-	hCursor, err := a.holdingsColl.Find(ctx, bson.M{"user_id": uid})
-	if err != nil {
-		return nil, err
-	}
-	defer hCursor.Close(ctx)
-
-	var hDocs []holdingDoc
-	if err := hCursor.All(ctx, &hDocs); err != nil {
-		return nil, err
-	}
-
-	type platformStats struct {
-		total model.Money
-		count int
-	}
-	statsByPlatform := make(map[string]*platformStats)
-	for _, doc := range hDocs {
-		valDec, err := decimal.NewFromString(doc.ValueUSD)
-		if err != nil {
-			continue
-		}
-		m, err := model.NewMoney(valDec)
-		if err != nil {
-			continue
-		}
-
-		ps, exists := statsByPlatform[doc.PlatformName]
-		if !exists {
-			ps = &platformStats{total: model.ZeroMoney, count: 0}
-			statsByPlatform[doc.PlatformName] = ps
-		}
-		ps.total = ps.total.Plus(m)
-		ps.count++
-	}
-
-	list := make([]outbound.PlatformAggregate, 0, len(statsByPlatform))
-	for name, ps := range statsByPlatform {
-		pn, err := model.NewPlatformName(name)
-		if err != nil {
-			continue
-		}
-		pt := model.PlatformTypeOther
-		if doc, ok := docs[name]; ok {
-			pt = platformType(doc)
-		}
+	list := make([]outbound.PlatformAggregate, 0, len(groups))
+	for _, g := range groups {
 		list = append(list, outbound.PlatformAggregate{
-			Name:  pn,
-			Type:  pt,
-			Value: ps.total,
-			Count: ps.count,
+			Name:  g.name,
+			Type:  model.PlatformTypeOther,
+			Value: g.total,
+			Count: g.count,
 		})
 	}
 

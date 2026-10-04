@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -239,121 +238,79 @@ func TestPlatformRepository(t *testing.T) {
 	ctx := context.Background()
 	user, other := newUser(), newUser()
 
-	ensure := func(u model.UserId, raw string, when time.Time) string {
+	canonical := func(u model.UserId, raw string) string {
 		t.Helper()
-		name, err := repo.EnsureExists(ctx, u, model.MustPlatformName(raw), when)
+		name, err := repo.Canonical(ctx, u, model.MustPlatformName(raw))
 		require.NoError(t, err)
 		return name.Value()
 	}
-	assert.Equal(t, "Binance", ensure(user, "Binance", at(1)))
-	assert.Equal(t, "Binance", ensure(user, "binance", at(2)), "case-insensitive: the stored spelling wins")
-	assert.Equal(t, "Abank", ensure(user, "Abank", at(3)))
-	assert.Equal(t, "binance", ensure(other, "binance", at(1)), "another user's platform is their own")
-
-	// A platform is listed while a holding uses it, with its doc's type and first-use time, sorted by name.
-	btc := holding(user, "BTC", "Crypto", "Binance", 1, at(5))
-	acc := holding(user, "Account", "Cash", "Abank", 1, at(6))
-	for _, h := range []model.Holding{btc, acc} {
+	save := func(h model.Holding) {
+		t.Helper()
 		_, err := holdings.Save(ctx, h)
 		require.NoError(t, err)
 	}
+
+	assert.Equal(t, "binance", canonical(user, "binance"), "a new platform keeps the spelling given")
+
+	acc := holding(user, "Account", "Cash", "Abank", 1, at(3))
+	save(holding(user, "BTC", "Crypto", "Binance", 1, at(2)))
+	save(acc)
+	save(holding(other, "ETH", "Crypto", "binance", 1, at(1)))
+
+	assert.Equal(t, "Binance", canonical(user, "BINANCE"), "the spelling the user's holdings use wins")
+	assert.Equal(t, "binance", canonical(other, "Binance"), "another user's spelling is their own")
+
 	platforms, err := repo.FindAll(ctx, user)
 	require.NoError(t, err)
 	assert.Equal(t, []model.Platform{
 		{UserId: user, Name: model.MustPlatformName("Abank"), Type: model.PlatformTypeOther, CreatedAt: at(3)},
-		{UserId: user, Name: model.MustPlatformName("Binance"), Type: model.PlatformTypeOther, CreatedAt: at(1)},
-	}, platforms)
+		{UserId: user, Name: model.MustPlatformName("Binance"), Type: model.PlatformTypeOther, CreatedAt: at(2)},
+	}, platforms, "sorted by name, created with their first holding, scoped to the user")
 
-	// Its last holding gone, it isn't listed anymore, even while its doc is still there.
+	// Gone with its last holding; re-adding it later may then pick a new spelling.
 	_, err = holdings.DeleteById(ctx, user, acc.Id)
 	require.NoError(t, err)
 	platforms, err = repo.FindAll(ctx, user)
 	require.NoError(t, err)
 	require.Len(t, platforms, 1)
 	assert.Equal(t, "Binance", platforms[0].Name.Value())
-
-	docs := func(u model.UserId) int64 {
-		n, err := db.Platforms.CountDocuments(ctx, bson.M{"user_id": u.String()})
-		require.NoError(t, err)
-		return n
-	}
-	// DeleteUnused spares a doc a create used within the last minute (its holding may be on its way)...
-	require.NoError(t, repo.DeleteUnused(ctx, user, at(3).Add(30*time.Second)))
-	assert.Equal(t, int64(2), docs(user))
-	// ...and prunes it after that. Docs still in use, and other users', stay.
-	require.NoError(t, repo.DeleteUnused(ctx, user, at(3).Add(2*time.Minute)))
-	assert.Equal(t, int64(1), docs(user))
-	assert.Equal(t, int64(1), docs(other))
+	assert.Equal(t, "ABANK", canonical(user, "ABANK"))
 }
 
-func TestPlatformRepository_ConcurrentCreatesShareOneDoc(t *testing.T) {
+func TestPlatformRepository_CaseVariantsAreOnePlatform(t *testing.T) {
 	db := testDB(t)
 	repo := NewMongoPlatformRepository(db)
-	user := newUser()
-
-	spellings := []string{"Kraken", "kraken", "KRAKEN", "Kraken", "kRaKeN", "Kraken", "kraken", "Kraken"}
-	got := make([]string, len(spellings))
-	errs := make([]error, len(spellings))
-	var wg sync.WaitGroup
-	for i, raw := range spellings {
-		wg.Add(1)
-		go func(i int, raw string) {
-			defer wg.Done()
-			name, err := repo.EnsureExists(context.Background(), user, model.MustPlatformName(raw), at(1))
-			got[i], errs[i] = name.Value(), err
-		}(i, raw)
-	}
-	wg.Wait()
-
-	for i := range spellings {
-		require.NoError(t, errs[i])
-		assert.Equal(t, got[0], got[i], "every create gets the one spelling that was registered")
-	}
-	n, err := db.Platforms.CountDocuments(context.Background(), bson.M{"user_id": user.String()})
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), n)
-}
-
-func TestPlatformRepository_PrunesUnusedDocsWrittenBeforeLastUsedAt(t *testing.T) {
-	db := testDB(t)
-	user := newUser()
-	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "name": "Old", "lower_name": "old", "type": "Other", "created_at": at(1)})
-
-	require.NoError(t, NewMongoPlatformRepository(db).DeleteUnused(context.Background(), user, at(1)))
-
-	n, err := db.Platforms.CountDocuments(context.Background(), bson.M{"user_id": user.String()})
-	require.NoError(t, err)
-	assert.Zero(t, n)
-}
-
-func TestPlatformRepository_ListsTheHoldingsPlatformsEvenWithoutADoc(t *testing.T) {
-	db := testDB(t)
-	repo := NewMongoPlatformRepository(db)
+	agg := NewMongoWealthAggregationAdapter(db)
 	holdings := NewMongoHoldingRepository(db)
 	ctx := context.Background()
 	user := newUser()
 
-	_, err := repo.EnsureExists(ctx, user, model.MustPlatformName("IBKR"), at(1))
-	require.NoError(t, err)
-	// Holdings on "Lost", which has no doc (e.g. data written by hand), plus a doc with a type the domain rejects.
+	// What two creates racing on a new platform in different cases can store.
 	for _, h := range []model.Holding{
-		holding(user, "a", "Equity", "IBKR", 100, at(1)),
-		holding(user, "b", "Cash", "Lost", 40, at(4)),
-		holding(user, "c", "Cash", "Lost", 2, at(3)),
-		holding(user, "d", "Cash", "Weird", 1, at(1)),
+		holding(user, "a", "Cash", "kraken", 10, at(2)),
+		holding(user, "b", "Cash", "Kraken", 5, at(1)),
+		holding(user, "c", "Cash", "KRAKEN", 1, at(3)),
 	} {
 		_, err := holdings.Save(ctx, h)
 		require.NoError(t, err)
 	}
-	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "name": "Weird", "lower_name": "weird", "type": strings.Repeat("x", 100), "created_at": at(2)})
 
 	platforms, err := repo.FindAll(ctx, user)
 	require.NoError(t, err)
 	assert.Equal(t, []model.Platform{
-		{UserId: user, Name: model.MustPlatformName("IBKR"), Type: model.PlatformTypeOther, CreatedAt: at(1)},
-		{UserId: user, Name: model.MustPlatformName("Lost"), Type: model.PlatformTypeOther, CreatedAt: at(3)},
-		{UserId: user, Name: model.MustPlatformName("Weird"), Type: model.PlatformTypeOther, CreatedAt: at(2)},
-	}, platforms, "no doc: first holding's time; unusable type: Other")
+		{UserId: user, Name: model.MustPlatformName("Kraken"), Type: model.PlatformTypeOther, CreatedAt: at(1)},
+	}, platforms, "one platform, spelled as its earliest holding")
+
+	name, err := repo.Canonical(ctx, user, model.MustPlatformName("kRaKeN"))
+	require.NoError(t, err)
+	assert.Equal(t, "Kraken", name.Value())
+
+	byPlatform, err := agg.ByPlatform(ctx, user)
+	require.NoError(t, err)
+	require.Len(t, byPlatform, 1)
+	assert.Equal(t, "Kraken", byPlatform[0].Name.Value())
+	assert.Equal(t, "16.00", byPlatform[0].Value.String())
+	assert.Equal(t, 3, byPlatform[0].Count)
 }
 
 func TestPlatformRepository_Errors(t *testing.T) {
@@ -364,26 +321,21 @@ func TestPlatformRepository_Errors(t *testing.T) {
 
 	_, err := repo.FindAll(cancelled(), user)
 	assert.Error(t, err)
-	_, err = repo.EnsureExists(cancelled(), user, model.MustPlatformName("x"), at(1))
-	assert.Error(t, err)
-	assert.Error(t, repo.DeleteUnused(cancelled(), user, at(1)))
-
-	// A stored spelling the domain rejects is never handed out.
-	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "name": "", "lower_name": "broken"})
-	_, err = repo.EnsureExists(ctx, user, model.MustPlatformName("Broken"), at(1))
+	_, err = repo.Canonical(cancelled(), user, model.MustPlatformName("x"))
 	assert.Error(t, err)
 
-	// Docs or holdings the driver can't decode.
+	// A name the domain rejects (only writable outside the API) is no platform; undecodable data is an error.
+	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "platform_name": "", "value_usd": "1"})
+	platforms, err := repo.FindAll(ctx, user)
+	require.NoError(t, err)
+	assert.Empty(t, platforms)
+
 	bad := newUser()
-	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": bad.String(), "lower_name": "x", "created_at": "yesterday"})
-	_, err = repo.FindAll(ctx, bad)
-	assert.Error(t, err)
-	_, err = repo.EnsureExists(ctx, bad, model.MustPlatformName("X"), at(1))
-	assert.Error(t, err)
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": bad.String(), "platform_name": 5})
 	_, err = repo.FindAll(ctx, bad)
 	assert.Error(t, err)
-	assert.Error(t, repo.DeleteUnused(ctx, bad, at(1)))
+	_, err = repo.Canonical(ctx, bad, model.MustPlatformName("X"))
+	assert.Error(t, err)
 }
 
 func TestSnapshotRepository(t *testing.T) {
@@ -518,7 +470,6 @@ func TestWealthAggregation(t *testing.T) {
 	db := testDB(t)
 	agg := NewMongoWealthAggregationAdapter(db)
 	holdings := NewMongoHoldingRepository(db)
-	platforms := NewMongoPlatformRepository(db)
 	ctx := context.Background()
 	user := newUser()
 
@@ -536,16 +487,10 @@ func TestWealthAggregation(t *testing.T) {
 		_, err := holdings.Save(ctx, h)
 		require.NoError(t, err)
 	}
-	for _, name := range []string{"IBKR", "Bank", "Binance", "Empty"} {
-		_, err := platforms.EnsureExists(ctx, user, model.MustPlatformName(name), at(1))
-		require.NoError(t, err)
-	}
 	// Rows the aggregation must skip rather than fail on.
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": "Cash", "platform_name": "Bank", "value_usd": "abc"})
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": "Cash", "platform_name": "Bank", "value_usd": "-5"})
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": "", "platform_name": "Bank", "value_usd": "1"})
-	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "name": "", "lower_name": "", "type": "Other"})
-	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "name": "BadType", "lower_name": "badtype", "type": strings.Repeat("x", 100)})
 
 	total, err := agg.NetWorth(ctx, user)
 	require.NoError(t, err)
@@ -580,7 +525,7 @@ func TestWealthAggregation(t *testing.T) {
 		{"Bank", "151.00", 2},
 		{"IBKR", "150.00", 2},
 		{"Binance", "10.00", 1},
-	}, rows, "a registered platform without holdings (Empty) isn't one")
+	}, rows, "desc by value; holdings without a valid amount don't count, like in NetWorth")
 }
 
 func TestWealthAggregation_Errors(t *testing.T) {
@@ -602,38 +547,6 @@ func TestWealthAggregation_Errors(t *testing.T) {
 	assert.Error(t, err)
 	_, err = agg.ByPlatform(context.Background(), user)
 	assert.Error(t, err, "holdings decode")
-
-	bad := newUser()
-	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": bad.String(), "created_at": "yesterday"})
-	_, err = agg.ByPlatform(context.Background(), bad)
-	assert.Error(t, err, "platforms decode")
-}
-
-func TestWealthAggregation_CountsHoldingsWhosePlatformHasNoDoc(t *testing.T) {
-	db := testDB(t)
-	agg := NewMongoWealthAggregationAdapter(db)
-	holdings := NewMongoHoldingRepository(db)
-	platforms := NewMongoPlatformRepository(db)
-	ctx := context.Background()
-	user := newUser()
-
-	_, err := platforms.EnsureExists(ctx, user, model.MustPlatformName("IBKR"), at(1))
-	require.NoError(t, err)
-	for _, h := range []model.Holding{
-		holding(user, "a", "Equity", "IBKR", 100, at(1)),
-		holding(user, "b", "Cash", "Lost", 40, at(1)), // no "Lost" doc
-	} {
-		_, err := holdings.Save(ctx, h)
-		require.NoError(t, err)
-	}
-
-	byPlatform, err := agg.ByPlatform(ctx, user)
-	require.NoError(t, err)
-	require.Len(t, byPlatform, 2)
-	assert.Equal(t, "Lost", byPlatform[1].Name.Value())
-	assert.Equal(t, model.PlatformTypeOther, byPlatform[1].Type)
-	assert.Equal(t, "40.00", byPlatform[1].Value.String())
-	assert.Equal(t, 1, byPlatform[1].Count)
 }
 
 func TestEnsureIndexes_CoversEveryPerUserQuery(t *testing.T) {
@@ -664,6 +577,5 @@ func TestEnsureIndexes_CoversEveryPerUserQuery(t *testing.T) {
 	}
 
 	assert.ElementsMatch(t, []string{"_id", "user_id+created_at", "user_id+platform_name", "user_id+asset_class"}, keysOf("holdings"))
-	assert.ElementsMatch(t, []string{"_id", "user_id+lower_name unique"}, keysOf("platforms"))
 	assert.ElementsMatch(t, []string{"_id", "user_id+captured_at unique"}, keysOf("net_worth_snapshots"))
 }

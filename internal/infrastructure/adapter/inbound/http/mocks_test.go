@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -53,49 +54,36 @@ func (m *mockHoldingRepo) AssetClassesInUse(ctx context.Context, userId model.Us
 	return m.assetClasses, nil
 }
 
+// mockPlatformRepo derives platforms from the holdings, like the real one.
 type mockPlatformRepo struct {
-	platforms map[string]model.Platform
-	holdings  *mockHoldingRepo
+	holdings *mockHoldingRepo
 }
 
 func newMockPlatformRepo(holdings *mockHoldingRepo) *mockPlatformRepo {
-	return &mockPlatformRepo{
-		platforms: make(map[string]model.Platform),
-		holdings:  holdings,
-	}
+	return &mockPlatformRepo{holdings: holdings}
 }
 
 func (m *mockPlatformRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
+	seen := map[string]bool{}
 	var list []model.Platform
-	for _, p := range m.platforms {
-		if p.UserId.UUID() == userId.UUID() {
-			list = append(list, p)
+	for _, h := range m.holdings.holdings {
+		if h.UserId != userId || seen[strings.ToLower(h.Platform.Value())] {
+			continue
 		}
+		seen[strings.ToLower(h.Platform.Value())] = true
+		list = append(list, model.NewPlatform(userId, h.Platform, model.PlatformTypeOther, h.CreatedAt))
 	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Name.Value() < list[j].Name.Value() })
 	return list, nil
 }
 
-func (m *mockPlatformRepo) EnsureExists(ctx context.Context, userId model.UserId, name model.PlatformName, now time.Time) (model.PlatformName, error) {
-	for _, p := range m.platforms {
-		if p.UserId.UUID() == userId.UUID() && strings.EqualFold(p.Name.Value(), name.Value()) {
-			return p.Name, nil
-		}
-	}
-	m.platforms[name.Value()] = model.NewPlatform(userId, name, model.PlatformTypeOther, now)
-	return name, nil
-}
-
-func (m *mockPlatformRepo) DeleteUnused(ctx context.Context, userId model.UserId, now time.Time) error {
-	used := map[string]bool{}
+func (m *mockPlatformRepo) Canonical(ctx context.Context, userId model.UserId, name model.PlatformName) (model.PlatformName, error) {
 	for _, h := range m.holdings.holdings {
-		used[h.Platform.Value()] = true
-	}
-	for name, p := range m.platforms {
-		if p.UserId.UUID() == userId.UUID() && !used[name] {
-			delete(m.platforms, name)
+		if h.UserId == userId && strings.EqualFold(h.Platform.Value(), name.Value()) {
+			return h.Platform, nil
 		}
 	}
-	return nil
+	return name, nil
 }
 
 type mockSnapshotRepo struct {

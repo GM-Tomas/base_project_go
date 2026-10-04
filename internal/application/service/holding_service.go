@@ -56,8 +56,7 @@ func (s *HoldingService) CreateHolding(
 ) (model.Holding, error) {
 	now := s.clock()
 
-	// Validate everything before touching storage: a rejected request (e.g. a name that's too long)
-	// mustn't register its brand-new platform.
+	// Validate everything before touching storage.
 	platform, err := model.NewPlatformName(command.Platform)
 	if err != nil {
 		return model.Holding{}, err
@@ -93,8 +92,8 @@ func (s *HoldingService) CreateHolding(
 		return model.Holding{}, errHoldingsLimit
 	}
 
-	// The user's existing spelling of the platform wins (matched case-insensitively), else it's created.
-	holding.Platform, err = s.platformRepo.EnsureExists(ctx, command.UserId, platform, now)
+	// The spelling the user's holdings already use for this platform wins (matched case-insensitively).
+	holding.Platform, err = s.platformRepo.Canonical(ctx, command.UserId, platform)
 	if err != nil {
 		return model.Holding{}, err
 	}
@@ -128,6 +127,5 @@ func (s *HoldingService) DeleteHolding(
 	if !deleted {
 		return appErrors.NewResourceNotFoundError(fmt.Sprintf("Holding %s not found", id.String()))
 	}
-	// There is no platform management in the UI: a platform lives exactly as long as a holding uses it.
-	return s.platformRepo.DeleteUnused(ctx, userId, s.clock())
+	return nil
 }
