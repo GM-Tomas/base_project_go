@@ -10,8 +10,8 @@
   },
   "servers": [
     {
-      "url": "http://localhost:8080",
-      "description": "Servidor local de desarrollo"
+      "url": "/",
+      "description": "Mismo host que sirve este Swagger (local o Vercel)"
     }
   ],
   "tags": [

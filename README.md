@@ -34,14 +34,17 @@ internal/
 
 ## 🚀 Comandos Rápidos
 
-### 1. Ejecutar la API en modo Desarrollo
+### 1. Ejecutar la API 100% local (sin Atlas ni Supabase)
 ```powershell
-# Iniciar MongoDB con Docker Compose
+# MongoDB local (mongodb://localhost:27017, el default de MONGODB_URI)
 docker compose up -d
 
-# Ejecutar la API
+# AUTH_DEV_USER_ID apaga la validación JWT: cualquier "Bearer <algo>" actúa como ese usuario.
+$env:AUTH_DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 go run ./cmd/api
 ```
+En Swagger: **Authorize** → cualquier valor (p. ej. `dev`). Sin `AUTH_DEV_USER_ID` la API exige JWT reales de Supabase.
+En Vercel se ignora siempre (la variable `VERCEL` la desactiva).
 - API REST: `http://localhost:8080`
 - **Swagger UI Interactivo**: `http://localhost:8080/swagger` o `http://localhost:8080/docs`
 - **Especificación OpenAPI 3.1 JSON**: `http://localhost:8080/api/v1/openapi.json`
@@ -67,11 +70,11 @@ y se sirve en `/api/v1/openapi.json` y `/swagger`.
 
 ---
 
-## ☁️ Despliegue en Vercel (Serverless Go)
+## ☁️ Despliegue en Vercel (Go Framework Preset)
 
-- **`api/index.go`**: entrypoint serverless. Construye la app una vez por instancia caliente; si la inicialización
-  falla (p. ej. DB inalcanzable en el cold start) responde `503` y reintenta en el siguiente request.
-- **`vercel.json`**: reescribe todas las rutas hacia la función.
+- **`vercel.json`** fija `"framework": "go"`: Vercel compila y corre `cmd/api/main.go` como servidor HTTP en `$PORT`,
+  con las rutas tal cual (sin rewrites). Si MongoDB no responde al arrancar, el proceso termina y Vercel lo reinicia.
+- Las variables vienen de Vercel; no hay `.env` en producción. `MONGODB_URI` la inyecta la integración de Atlas.
 
 ### Variables de entorno (Project Settings → Environment Variables)
 

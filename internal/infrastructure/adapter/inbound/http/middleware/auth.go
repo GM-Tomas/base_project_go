@@ -50,6 +50,13 @@ func NewStaticJWTValidator(keySet jwk.Set, issuer, audience string) *SupabaseJWT
 	}
 }
 
+// DevValidator accepts any token as a fixed user. Local only: config refuses it on Vercel.
+type DevValidator struct{ UserId model.UserId }
+
+func (v DevValidator) ValidateToken(context.Context, string) (model.UserId, error) {
+	return v.UserId, nil
+}
+
 func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error) {
 	// No keys means no verification is possible: reject, never fall back to an unverified parse.
 	keySet, err := v.keys(ctx)

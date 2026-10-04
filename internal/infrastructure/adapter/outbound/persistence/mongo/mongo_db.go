@@ -51,12 +51,11 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 		Snapshots: snapshotsColl,
 	}
 
-	// Ensure Indexes asynchronously or in background
-	go func() {
-		idxCtx, idxCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer idxCancel()
-		db.ensureIndexes(idxCtx)
-	}()
+	// Synchronous on purpose: a background goroutine can be frozen on Vercel before it finishes, and
+	// the unique indexes are what turn duplicate platforms/snapshots into conflicts. Idempotent and cheap once built.
+	idxCtx, idxCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer idxCancel()
+	db.ensureIndexes(idxCtx)
 
 	return db, nil
 }

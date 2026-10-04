@@ -16,10 +16,11 @@ type Config struct {
 	AuthAudience        string
 	JWKSetURI           string
 	AuthIssuer          string
+	DevUserID           string // non-empty disables JWT validation; never honored on Vercel
 }
 
 func LoadConfig() Config {
-	supabaseURL := strings.TrimRight(getEnv("SUPABASE_URL", "https://vffsdgqqyqcbmkehnpxx.supabase.co"), "/")
+	supabaseURL := strings.TrimRight(getEnv("SUPABASE_URL", "https://rhzumppfruperaivykhe.supabase.co"), "/")
 
 	return Config{
 		Port:        getEnv("PORT", "8080"),
@@ -32,7 +33,17 @@ func LoadConfig() Config {
 		AuthAudience:        getEnv("SUPABASE_AUDIENCE", "authenticated"),
 		JWKSetURI:           getEnv("SUPABASE_JWKS_URI", supabaseURL+"/auth/v1/.well-known/jwks.json"),
 		AuthIssuer:          getEnv("SUPABASE_ISSUER", supabaseURL+"/auth/v1"),
+		DevUserID:           devUserID(),
 	}
+}
+
+// devUserID is ignored when VERCEL is set (Vercel injects it into every deployment), so a stray
+// AUTH_DEV_USER_ID in the project settings can't switch off auth in production.
+func devUserID() string {
+	if os.Getenv("VERCEL") != "" {
+		return ""
+	}
+	return os.Getenv("AUTH_DEV_USER_ID")
 }
 
 func splitList(raw string) []string {

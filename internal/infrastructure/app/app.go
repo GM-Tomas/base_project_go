@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	appService "github.com/GM-Tomas/base_project_go/internal/application/service"
+	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	appHttp "github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http/middleware"
 	mongopersistence "github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/outbound/persistence/mongo"
@@ -19,8 +20,7 @@ type App struct {
 }
 
 func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
-	// A failed connection is returned, not swallowed: callers decide whether to exit (cmd/api)
-	// or retry on the next request (api/index.go).
+	// A failed connection is returned, not swallowed: cmd/api (also the Vercel entrypoint) exits on it.
 	log.Printf("Connecting to MongoDB (database: %s)...", cfg.MongoDBName)
 	mongoDB, err := mongopersistence.NewMongoDB(ctx, cfg.MongoDBURI, cfg.MongoDBName)
 	if err != nil {
@@ -57,16 +57,27 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 	wealthHandler := appHttp.NewWealthHandler(wealthService, snapshotService, projectionService)
 	swaggerHandler := appHttp.NewSwaggerHandler()
 
-	// Supabase JWT Validator
-	jwtValidator, err := middleware.NewSupabaseJWTValidator(
-		ctx,
-		cfg.JWKSetURI,
-		cfg.AuthIssuer,
-		cfg.AuthAudience,
-	)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("configuring JWT validation: %w", err)
+	// Supabase JWT Validator, or a fixed user for fully offline local runs.
+	var jwtValidator middleware.JWTValidator
+	if cfg.DevUserID != "" {
+		devUser, err := model.ParseUserId(cfg.DevUserID)
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("AUTH_DEV_USER_ID: %w", err)
+		}
+		log.Printf("WARNING: auth disabled, any Bearer token acts as user %s (AUTH_DEV_USER_ID)", cfg.DevUserID)
+		jwtValidator = middleware.DevValidator{UserId: devUser}
+	} else {
+		jwtValidator, err = middleware.NewSupabaseJWTValidator(
+			ctx,
+			cfg.JWKSetURI,
+			cfg.AuthIssuer,
+			cfg.AuthAudience,
+		)
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("configuring JWT validation: %w", err)
+		}
 	}
 
 	// Router
