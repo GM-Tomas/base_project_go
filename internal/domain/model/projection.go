@@ -44,16 +44,12 @@ var (
 )
 
 // YieldPctFromFloat converts an annual yield percentage, refusing NaN/±Inf (decimal.NewFromFloat panics on
-// them) and anything outside 0–100.
+// them). The 0–100 range is NewProjectionParams' to enforce.
 func YieldPctFromFloat(v float64) (decimal.Decimal, error) {
 	if math.IsNaN(v) || math.IsInf(v, 0) {
 		return decimal.Zero, ErrYieldOutOfRange
 	}
-	pct := decimal.NewFromFloat(v)
-	if pct.IsNegative() || pct.GreaterThan(MaxYieldPct) {
-		return decimal.Zero, ErrYieldOutOfRange
-	}
-	return pct, nil
+	return decimal.NewFromFloat(v), nil
 }
 
 type ProjectionParams struct {

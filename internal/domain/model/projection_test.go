@@ -68,8 +68,14 @@ func TestYieldPctFromFloat(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "9.5", pct.String())
 
-	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -0.1, 100.1} {
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
 		_, err := model.YieldPctFromFloat(v)
 		assert.ErrorIs(t, err, model.ErrYieldOutOfRange, "%v", v)
 	}
+
+	// Finite but out of range converts fine; NewProjectionParams is what refuses it.
+	pct, err = model.YieldPctFromFloat(150)
+	require.NoError(t, err)
+	_, err = model.NewProjectionParams(model.ZeroMoney, model.ZeroMoney, pct, 1, nil)
+	assert.ErrorIs(t, err, model.ErrYieldOutOfRange)
 }
