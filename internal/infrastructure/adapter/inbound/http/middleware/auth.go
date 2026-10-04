@@ -119,7 +119,7 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 	// No keys means no verification is possible: reject, never fall back to an unverified parse.
 	keySet, err := v.keys(ctx)
 	if err == nil && !hasKey(keySet, tokenStr) {
-		keySet, err = v.refreshedKeys(ctx, keySet)
+		keySet, err = v.refreshedKeys(ctx)
 	}
 	if err != nil {
 		// A caller that hung up says nothing about the keys.
@@ -172,36 +172,41 @@ func hasKey(keySet jwk.Set, tokenStr string) bool {
 	return ok
 }
 
+// errKeyNotYetPublished: the token's key wasn't in a JWKS fetched under keyFetchInterval ago. It may have
+// been rotated in since, so the token isn't called invalid (a 401 signs its user out): the keys are
+// "unavailable" (503) until the next fetch can tell.
+var errKeyNotYetPublished = errors.New("token key not in the JWKS fetched moments ago")
+
 // refreshedKeys returns the key set to verify a token whose key the cached set lacks: a freshly fetched one
 // when a re-fetch is due, or already under way (concurrent callers share it, so none is judged against the
-// stale set meanwhile). Otherwise the cached set, unless the last re-fetch failed moments ago: then that
-// error, since the key may well exist and the answer is a 503, not a 401.
-func (v *SupabaseJWTValidator) refreshedKeys(ctx context.Context, cached jwk.Set) (jwk.Set, error) {
+// stale set meanwhile). Between fetches it returns an error instead: the last fetch's failure, or
+// errKeyNotYetPublished.
+func (v *SupabaseJWTValidator) refreshedKeys(ctx context.Context) (jwk.Set, error) {
 	v.mu.Lock()
-	fetch := v.inFlight
-	if fetch == nil {
-		if time.Now().Before(v.nextFetch) {
-			err := v.lastErr
-			v.mu.Unlock()
-			return cached, err
+	if fetch := v.inFlight; fetch != nil {
+		v.mu.Unlock()
+		select {
+		case <-fetch.done:
+			return fetch.set, fetch.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-		fetch = &keyFetch{done: make(chan struct{})}
-		v.inFlight = fetch
-		// Detached: the caller hanging up mustn't fail the fetch for everyone waiting on it.
-		go v.fetchKeys(context.WithoutCancel(ctx), fetch)
 	}
+	if time.Now().Before(v.nextFetch) {
+		err := v.lastErr
+		v.mu.Unlock()
+		if err == nil {
+			err = errKeyNotYetPublished
+		}
+		return nil, err
+	}
+	fetch := &keyFetch{done: make(chan struct{})}
+	v.inFlight = fetch
 	v.mu.Unlock()
 
-	select {
-	case <-fetch.done:
-		return fetch.set, fetch.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (v *SupabaseJWTValidator) fetchKeys(ctx context.Context, fetch *keyFetch) {
-	fetch.set, fetch.err = v.refresh(ctx)
+	// Run by this request, for everyone waiting on it: detached from its cancellation (its client may hang
+	// up), but not left to a background goroutine, which a serverless host can freeze mid-fetch.
+	fetch.set, fetch.err = v.refresh(context.WithoutCancel(ctx))
 	v.mu.Lock()
 	v.inFlight = nil
 	v.lastErr = fetch.err
@@ -212,6 +217,7 @@ func (v *SupabaseJWTValidator) fetchKeys(ctx context.Context, fetch *keyFetch) {
 	}
 	v.mu.Unlock()
 	close(fetch.done)
+	return fetch.set, fetch.err
 }
 
 func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {

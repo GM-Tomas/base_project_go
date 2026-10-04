@@ -372,11 +372,25 @@ func TestSupabaseJWTValidator_AcceptsAKeyRotatedInSinceTheLastFetch(t *testing.T
 	require.NoError(t, err, "re-fetched instead of a 401 that would sign the user out")
 	assert.Equal(t, fetched+1, jwks.hits.Load())
 
-	// Made-up key ids can't make it hammer Supabase: at most one forced fetch a minute.
+	// Made-up key ids can't make it hammer Supabase: at most one forced fetch a minute. Until the next one
+	// an unknown key is "unavailable" (503), not invalid (401): it may have been rotated in since.
 	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "made-up"))
-	assert.Error(t, err)
-	assert.NotErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
+	assert.ErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
 	assert.Equal(t, fetched+1, jwks.hits.Load())
+}
+
+func TestSupabaseJWTValidator_AKeyMissingFromAFreshFetchIsInvalid(t *testing.T) {
+	oldPriv, oldKey := keyWithKid(t, "old")
+	jwks := newRotatingJWKS(t, setOf(t, oldKey))
+	ctx := context.Background()
+	v, err := middleware.NewSupabaseJWTValidator(ctx, jwks.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+	_, err = v.ValidateToken(ctx, signWithKid(t, oldPriv, "old"))
+	require.NoError(t, err)
+
+	_, err = v.ValidateToken(ctx, signWithKid(t, oldPriv, "made-up"))
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, middleware.ErrSigningKeysUnavailable, "re-fetched just now and still unknown: a 401")
 }
 
 func TestSupabaseJWTValidator_UnknownKeyWhileSupabaseIsDownIsAnOutage(t *testing.T) {
@@ -466,22 +480,26 @@ func TestSupabaseJWTValidator_AClientHangingUpDoesNotCancelTheSharedReFetch(t *t
 	require.NoError(t, err)
 	_, err = v.ValidateToken(context.Background(), signWithKid(t, oldPriv, "old"))
 	require.NoError(t, err)
-
 	jwks.set.Store(ptr(setOf(t, oldKey, newKey)))
-	jwks.slow.Store(int64(200 * time.Millisecond))
-	first, hangUp := context.WithCancel(context.Background())
-	var firstErr error
+	jwks.slow.Store(int64(300 * time.Millisecond))
+	fetched := jwks.hits.Load()
+
+	// The first request starts the fetch, then its client hangs up; another request arrives meanwhile.
+	starter, hangUp := context.WithCancel(context.Background())
+	var starterErr, otherErr error
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
+	go func() { defer wg.Done(); _, starterErr = v.ValidateToken(starter, signWithKid(t, newPriv, "new")) }()
+	time.Sleep(50 * time.Millisecond)
 	go func() {
 		defer wg.Done()
-		_, firstErr = v.ValidateToken(first, signWithKid(t, newPriv, "new"))
+		_, otherErr = v.ValidateToken(context.Background(), signWithKid(t, newPriv, "new"))
 	}()
-	time.Sleep(50 * time.Millisecond) // the first request has started the fetch
+	time.Sleep(50 * time.Millisecond)
 	hangUp()
-	_, err = v.ValidateToken(context.Background(), signWithKid(t, newPriv, "new"))
 	wg.Wait()
 
-	assert.ErrorIs(t, firstErr, context.Canceled)
-	assert.NoError(t, err, "the fetch the first one started still served the second")
+	assert.NoError(t, starterErr, "the starter still finishes the fetch, for everyone")
+	assert.NoError(t, otherErr)
+	assert.Equal(t, fetched+1, jwks.hits.Load(), "one fetch served them all")
 }
