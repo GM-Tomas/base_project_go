@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"sync"
 
@@ -10,31 +11,35 @@ import (
 )
 
 var (
+	mu      sync.Mutex
 	handler http.Handler
-	initErr error
-	once    sync.Once
 )
 
-// Handler is the official Vercel serverless entrypoint for Go runtime.
+// Handler is the Vercel serverless entrypoint for the Go runtime.
 func Handler(w http.ResponseWriter, r *http.Request) {
-	once.Do(func() {
-		cfg := config.LoadConfig()
-		application, err := app.BuildApp(context.Background(), cfg)
-		if err != nil {
-			initErr = err
-			return
-		}
-		handler = application.Handler
-	})
-
-	if initErr != nil {
-		http.Error(w, "Failed to initialize serverless application: "+initErr.Error(), http.StatusInternalServerError)
+	h, err := getHandler()
+	if err != nil {
+		// Details stay in the function logs; they can include connection strings.
+		log.Printf("init failed: %v", err)
+		http.Error(w, "Service temporarily unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	h.ServeHTTP(w, r)
+}
 
+// getHandler builds the app once per warm instance. Unlike sync.Once, a failed build (e.g. the
+// database was briefly unreachable on cold start) is retried on the next request instead of
+// leaving the instance broken until Vercel recycles it.
+func getHandler() (http.Handler, error) {
+	mu.Lock()
+	defer mu.Unlock()
 	if handler != nil {
-		handler.ServeHTTP(w, r)
-	} else {
-		http.Error(w, "Serverless handler not initialized", http.StatusInternalServerError)
+		return handler, nil
 	}
+	application, err := app.BuildApp(context.Background(), config.LoadConfig())
+	if err != nil {
+		return nil, err
+	}
+	handler = application.Handler
+	return handler, nil
 }

@@ -17,7 +17,7 @@ var DefaultAssetClasses = []string{
 }
 
 type AssetClassService struct {
-	holdingRepo        outbound.HoldingRepository
+	holdingRepo         outbound.HoldingRepository
 	defaultAssetClasses []string
 }
 
@@ -29,7 +29,7 @@ func NewAssetClassService(
 		defaultAssetClasses = DefaultAssetClasses
 	}
 	return &AssetClassService{
-		holdingRepo:        holdingRepo,
+		holdingRepo:         holdingRepo,
 		defaultAssetClasses: defaultAssetClasses,
 	}
 }

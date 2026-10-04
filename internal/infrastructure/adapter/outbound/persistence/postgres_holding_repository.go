@@ -3,7 +3,6 @@ package persistence
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -26,28 +25,11 @@ var _ outbound.HoldingRepository = (*PostgresHoldingRepository)(nil)
 func (r *PostgresHoldingRepository) FindAll(
 	ctx context.Context,
 	userId model.UserId,
-	assetClass *model.AssetClass,
-	platform *model.PlatformName,
 ) ([]model.Holding, error) {
-	query := `SELECT id, user_id, name, asset_class, platform_name, value_usd, created_at, updated_at 
-              FROM holdings WHERE user_id = $1`
-	args := []any{userId.UUID()}
-	argIdx := 2
+	query := `SELECT id, user_id, name, asset_class, platform_name, value_usd, created_at, updated_at
+              FROM holdings WHERE user_id = $1 ORDER BY created_at ASC`
 
-	if assetClass != nil {
-		query += fmt.Sprintf(" AND asset_class = $%d", argIdx)
-		args = append(args, assetClass.Value())
-		argIdx++
-	}
-	if platform != nil {
-		query += fmt.Sprintf(" AND platform_name = $%d", argIdx)
-		args = append(args, platform.Value())
-		argIdx++
-	}
-
-	query += " ORDER BY created_at ASC"
-
-	rows, err := r.db.Pool.Query(ctx, query, args...)
+	rows, err := r.db.Pool.Query(ctx, query, userId.UUID())
 	if err != nil {
 		return nil, err
 	}
@@ -68,34 +50,6 @@ func (r *PostgresHoldingRepository) FindAll(
 	return holdings, nil
 }
 
-func (r *PostgresHoldingRepository) FindById(
-	ctx context.Context,
-	userId model.UserId,
-	id model.HoldingId,
-) (*model.Holding, error) {
-	query := `SELECT id, user_id, name, asset_class, platform_name, value_usd, created_at, updated_at 
-              FROM holdings WHERE id = $1 AND user_id = $2`
-
-	rows, err := r.db.Pool.Query(ctx, query, id.UUID(), userId.UUID())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}
-
-	h, err := mapRowToHolding(rows)
-	if err != nil {
-		return nil, err
-	}
-	return &h, nil
-}
-
 func (r *PostgresHoldingRepository) Save(
 	ctx context.Context,
 	holding model.Holding,
@@ -103,12 +57,6 @@ func (r *PostgresHoldingRepository) Save(
 	query := `
         INSERT INTO holdings (id, user_id, name, asset_class, platform_name, value_usd, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            asset_class = EXCLUDED.asset_class,
-            platform_name = EXCLUDED.platform_name,
-            value_usd = EXCLUDED.value_usd,
-            updated_at = EXCLUDED.updated_at
     `
 
 	_, err := r.db.Pool.Exec(

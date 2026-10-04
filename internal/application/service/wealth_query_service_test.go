@@ -29,7 +29,7 @@ func TestWealthQueryService_GetSummary(t *testing.T) {
 	}
 
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	svc := service.NewWealthQueryService(wealthAgg, snapshotRepo, fixedClock(now), nil, 1050.0)
+	svc := service.NewWealthQueryService(wealthAgg, snapshotRepo, fixedClock(now), nil)
 
 	userId := model.NewUserId(uuid.New())
 	ctx := context.Background()
@@ -38,9 +38,6 @@ func TestWealthQueryService_GetSummary(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 100000.00, summary.NetWorth.Usd)
-	require.NotNil(t, summary.NetWorth.Ars)
-	assert.Equal(t, 105000000.00, *summary.NetWorth.Ars)
-	assert.True(t, summary.NetWorth.FxRate.Available)
 	assert.Equal(t, 5, summary.HoldingsCount)
 	assert.Equal(t, 100.0, summary.Liquidity.LiquidPct)
 	assert.Equal(t, 0.0, summary.Liquidity.IlliquidPct)

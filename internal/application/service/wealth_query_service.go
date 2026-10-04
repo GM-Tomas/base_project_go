@@ -2,14 +2,12 @@ package service
 
 import (
 	"context"
-	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/application/dto"
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	domainService "github.com/GM-Tomas/base_project_go/internal/domain/service"
-	"github.com/shopspring/decimal"
 )
 
 var DefaultLiquidAssetClasses = []string{
@@ -19,14 +17,11 @@ var DefaultLiquidAssetClasses = []string{
 	"Index Fund",
 }
 
-const DefaultFxUsdArs = 1050.0
-
 type WealthQueryService struct {
 	wealthAggregationPort outbound.WealthAggregationPort
 	snapshotRepo          outbound.SnapshotRepository
 	clock                 Clock
 	liquidAssetClasses    []string
-	defaultFxUsdArs       float64
 }
 
 func NewWealthQueryService(
@@ -34,7 +29,6 @@ func NewWealthQueryService(
 	snapshotRepo outbound.SnapshotRepository,
 	clock Clock,
 	liquidAssetClasses []string,
-	defaultFxUsdArs float64,
 ) *WealthQueryService {
 	if clock == nil {
 		clock = RealClock
@@ -42,15 +36,11 @@ func NewWealthQueryService(
 	if len(liquidAssetClasses) == 0 {
 		liquidAssetClasses = DefaultLiquidAssetClasses
 	}
-	if defaultFxUsdArs <= 0 {
-		defaultFxUsdArs = DefaultFxUsdArs
-	}
 	return &WealthQueryService{
 		wealthAggregationPort: wealthAggregationPort,
 		snapshotRepo:          snapshotRepo,
 		clock:                 clock,
 		liquidAssetClasses:    liquidAssetClasses,
-		defaultFxUsdArs:       defaultFxUsdArs,
 	}
 }
 
@@ -75,8 +65,7 @@ func (s *WealthQueryService) GetSummary(
 		return dto.WealthSummaryResponse{}, err
 	}
 
-	now := s.clock()
-	currentYear := now.Year()
+	currentYear := s.clock().Year()
 
 	firstOfYear, err := s.snapshotRepo.FindFirstOfYear(ctx, userId, currentYear)
 	if err != nil {
@@ -103,15 +92,6 @@ func (s *WealthQueryService) GetSummary(
 		totalCount += agg.Count
 	}
 	liquidityBreakdown := policy.Breakdown(valueByClassMap)
-
-	// FxRate & ARS conversion
-	fxRateDTO := s.buildFxRateDTO(now)
-	var arsValue *float64
-	if fxRateDTO.Available && fxRateDTO.Value != nil {
-		arsMoney := netWorth.Times(decimal.NewFromFloat(*fxRateDTO.Value))
-		arsF := arsMoney.Float64()
-		arsValue = &arsF
-	}
 
 	// YtdDTO
 	ytdDTO := dto.YtdDTO{
@@ -170,9 +150,7 @@ func (s *WealthQueryService) GetSummary(
 
 	return dto.WealthSummaryResponse{
 		NetWorth: dto.NetWorthDTO{
-			Usd:    netWorth.Float64(),
-			Ars:    arsValue,
-			FxRate: fxRateDTO,
+			Usd: netWorth.Float64(),
 		},
 		HoldingsCount: totalCount,
 		Ytd:           ytdDTO,
@@ -180,17 +158,4 @@ func (s *WealthQueryService) GetSummary(
 		ByAssetClass:  byAssetClassDTOs,
 		ByPlatform:    byPlatformDTOs,
 	}, nil
-}
-
-func (s *WealthQueryService) buildFxRateDTO(now time.Time) dto.FxRateDTO {
-	if s.defaultFxUsdArs <= 0 {
-		return dto.FxRateDTO{Available: false}
-	}
-	src := string(model.FxRateSourceFixedConfig)
-	return dto.FxRateDTO{
-		Available: true,
-		Value:     &s.defaultFxUsdArs,
-		AsOf:      &now,
-		Source:    &src,
-	}
 }

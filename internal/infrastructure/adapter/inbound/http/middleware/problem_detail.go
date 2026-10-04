@@ -2,8 +2,12 @@ package middleware
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
+	"strings"
 
+	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 )
 
@@ -62,13 +66,39 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 		WriteProblem(w, r, http.StatusConflict, "conflict", "Conflict", e.Message, nil)
 	case appErrors.ValidationErrors:
 		fieldErrs := make([]FieldError, len(e.Errors))
+		messages := make([]string, len(e.Errors))
 		for i, fe := range e.Errors {
 			fieldErrs[i] = FieldError{Field: fe.Field, Message: fe.Message}
+			messages[i] = fe.Message
 		}
-		WriteProblem(w, r, http.StatusBadRequest, "validation", "Bad Request", "The request has invalid fields", fieldErrs)
+		// detail carries the messages too: the frontend shows detail, not the per-field list.
+		WriteProblem(w, r, http.StatusBadRequest, "validation", "Bad Request", strings.Join(messages, "; "), fieldErrs)
 	default:
-		WriteProblem(w, r, http.StatusBadRequest, "bad-request", "Bad Request", err.Error(), nil)
+		if isDomainValidationError(err) {
+			WriteProblem(w, r, http.StatusBadRequest, "bad-request", "Bad Request", err.Error(), nil)
+			return
+		}
+		// Infrastructure failure (DB unreachable, etc.): log it, never leak it to the client.
+		log.Printf("unhandled error [traceId=%s] %s %s: %v", GetTraceID(r.Context()), r.Method, r.URL.Path, err)
+		WriteInternalServerError(w, r)
 	}
+}
+
+func isDomainValidationError(err error) bool {
+	for _, target := range []error{
+		model.ErrBlankLabel,
+		model.ErrLabelTooLong,
+		model.ErrNegativeMoney,
+		model.ErrInvalidUUID,
+		model.ErrYearsOutOfRange,
+		model.ErrYieldOutOfRange,
+		model.ErrTooManyMilestones,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func WriteInternalServerError(w http.ResponseWriter, r *http.Request) {

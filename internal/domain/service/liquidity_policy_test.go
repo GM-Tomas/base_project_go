@@ -44,5 +44,5 @@ func TestLiquidityPolicy_EmptyPortfolio(t *testing.T) {
 	breakdown := policy.Breakdown(map[string]model.Money{})
 
 	assert.Equal(t, "0.0", breakdown.LiquidPct.StringFixed(1))
-	assert.Equal(t, "100.0", breakdown.IlliquidPct.StringFixed(1))
+	assert.Equal(t, "0.0", breakdown.IlliquidPct.StringFixed(1))
 }

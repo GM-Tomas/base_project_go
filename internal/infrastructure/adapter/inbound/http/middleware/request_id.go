@@ -10,7 +10,7 @@ import (
 type contextKey string
 
 const (
-	RequestIDHeader             = "X-Request-Id"
+	RequestIDHeader              = "X-Request-Id"
 	TraceIDContextKey contextKey = "traceId"
 )
 

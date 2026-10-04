@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-	"strings"
-	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/application/dto"
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -14,7 +12,8 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http/middleware"
 )
 
-var defaultEstimateMilestones = []float64{150000.0, 250000.0}
+// The Estimate view shows exactly two milestones ("next" and "bigger").
+var estimateMilestones = []float64{150000.0, 250000.0}
 
 type WealthHandler struct {
 	wealthUseCase     inbound.WealthUseCase
@@ -106,54 +105,12 @@ func (h *WealthHandler) GetEstimate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var milestones []float64
-	milestonesQuery := q["milestones"]
-	if len(milestonesQuery) > 0 {
-		for _, param := range milestonesQuery {
-			for _, part := range strings.Split(param, ",") {
-				trimmed := strings.TrimSpace(part)
-				if trimmed != "" {
-					mVal, err := strconv.ParseFloat(trimmed, 64)
-					if err != nil || mVal < 0 {
-						middleware.HandleError(w, r, errors.NewValidationErrors([]errors.ValidationError{
-							{Field: "milestones", Message: "milestone amounts must be non-negative numbers"},
-						}))
-						return
-					}
-					milestones = append(milestones, mVal)
-				}
-			}
-		}
-	} else {
-		milestones = defaultEstimateMilestones
-	}
-
-	if len(milestones) > model.MaxProjectionMilestones {
-		middleware.HandleError(w, r, errors.NewValidationErrors([]errors.ValidationError{
-			{Field: "milestones", Message: "at most 5 milestones are allowed"},
-		}))
-		return
-	}
-
-	var principalOverride *float64
-	if princStr := q.Get("principal"); princStr != "" {
-		pVal, err := strconv.ParseFloat(princStr, 64)
-		if err != nil || pVal < 0 {
-			middleware.HandleError(w, r, errors.NewValidationErrors([]errors.ValidationError{
-				{Field: "principal", Message: "principal must be non-negative"},
-			}))
-			return
-		}
-		principalOverride = &pVal
-	}
-
 	req := inbound.ProjectionRequest{
 		UserId:              userId,
 		MonthlyContribution: contribution,
 		AnnualYieldPct:      yieldPct,
 		Years:               years,
-		Milestones:          milestones,
-		PrincipalOverride:   principalOverride,
+		Milestones:          estimateMilestones,
 	}
 
 	result, err := h.projectionUseCase.Project(r.Context(), req)
@@ -192,7 +149,6 @@ func (h *WealthHandler) GetEstimate(w http.ResponseWriter, r *http.Request) {
 		Milestones:             milestonesRes,
 	}
 
-	w.Header().Set("Cache-Control", "private, max-age=30")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
@@ -205,26 +161,7 @@ func (h *WealthHandler) GetSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q := r.URL.Query()
-	var from *time.Time
-	if fromStr := q.Get("from"); fromStr != "" {
-		t, err := time.Parse("2006-01-02", fromStr)
-		if err == nil {
-			utc := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-			from = &utc
-		}
-	}
-
-	var to *time.Time
-	if toStr := q.Get("to"); toStr != "" {
-		t, err := time.Parse("2006-01-02", toStr)
-		if err == nil {
-			utc := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, time.UTC)
-			to = &utc
-		}
-	}
-
-	snapshots, err := h.snapshotUseCase.GetSnapshots(r.Context(), userId, from, to)
+	snapshots, err := h.snapshotUseCase.GetSnapshots(r.Context(), userId)
 	if err != nil {
 		middleware.HandleError(w, r, err)
 		return

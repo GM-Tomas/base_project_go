@@ -10,8 +10,8 @@ type ProjectionPointResponse struct {
 type MilestoneResponse struct {
 	AmountUsd      float64 `json:"amountUsd"`
 	Status         string  `json:"status"`
-	MonthsRequired *int    `json:"monthsRequired,omitempty"`
-	TargetMonth    *string `json:"targetMonth,omitempty"`
+	MonthsRequired *int    `json:"monthsRequired"`
+	TargetMonth    *string `json:"targetMonth"`
 }
 
 type ProjectionResponse struct {

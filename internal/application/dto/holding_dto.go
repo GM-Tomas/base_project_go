@@ -9,13 +9,6 @@ type CreateHoldingRequest struct {
 	ValueUsd   float64 `json:"valueUsd"`
 }
 
-type UpdateHoldingRequest struct {
-	Name       *string  `json:"name,omitempty"`
-	AssetClass *string  `json:"assetClass,omitempty"`
-	Platform   *string  `json:"platform,omitempty"`
-	ValueUsd   *float64 `json:"valueUsd,omitempty"`
-}
-
 type HoldingResponse struct {
 	Id         string    `json:"id"`
 	Name       string    `json:"name"`

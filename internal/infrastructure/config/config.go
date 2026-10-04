@@ -2,21 +2,16 @@ package config
 
 import (
 	"os"
-	"strconv"
 	"strings"
 )
 
 type Config struct {
 	Port                string
-	SupabaseURL         string
 	DBType              string // "postgres" or "mongodb"
 	DatabaseURL         string
-	DatabaseUser        string
-	DatabasePassword    string
 	MongoDBURI          string
 	MongoDBName         string
 	AllowedOrigins      []string
-	DefaultFxUsdArs     float64
 	DefaultAssetClasses []string
 	LiquidAssetClasses  []string
 	AuthAudience        string
@@ -25,58 +20,9 @@ type Config struct {
 }
 
 func LoadConfig() Config {
-	port := getEnv("PORT", "8080")
-	supabaseURL := getEnv("SUPABASE_URL", "https://vffsdgqqyqcbmkehnpxx.supabase.co")
-
-	jwkSetURI := getEnv("SUPABASE_JWKS_URI", supabaseURL+"/auth/v1/.well-known/jwks.json")
-	authIssuer := getEnv("SUPABASE_ISSUER", supabaseURL+"/auth/v1")
-	authAudience := getEnv("SUPABASE_AUDIENCE", "authenticated")
-
-	// Origins
-	corsEnv := getEnv("FRONTEND_ORIGIN", "")
-	var allowedOrigins []string
-	if corsEnv != "" {
-		for _, o := range strings.Split(corsEnv, ",") {
-			trimmed := strings.TrimSpace(o)
-			if trimmed != "" {
-				allowedOrigins = append(allowedOrigins, trimmed)
-			}
-		}
-	} else {
-		allowedOrigins = []string{
-			"http://localhost:3000",
-			"http://127.0.0.1:3000",
-			"https://*.vercel.app",
-		}
-	}
-
-	fxRateStr := getEnv("WEALTH_DEFAULT_FX_USD_ARS", "1050.0")
-	fxRate, err := strconv.ParseFloat(fxRateStr, 64)
-	if err != nil || fxRate <= 0 {
-		fxRate = 1050.0
-	}
-
-	defaultClassesStr := getEnv("WEALTH_DEFAULT_ASSET_CLASSES", "Cash,Fixed Income,Index Fund,Equity,Crypto")
-	var defaultClasses []string
-	for _, c := range strings.Split(defaultClassesStr, ",") {
-		trimmed := strings.TrimSpace(c)
-		if trimmed != "" {
-			defaultClasses = append(defaultClasses, trimmed)
-		}
-	}
-
-	liquidClassesStr := getEnv("WEALTH_LIQUID_ASSET_CLASSES", "Cash,Equity,Crypto,Index Fund")
-	var liquidClasses []string
-	for _, c := range strings.Split(liquidClassesStr, ",") {
-		trimmed := strings.TrimSpace(c)
-		if trimmed != "" {
-			liquidClasses = append(liquidClasses, trimmed)
-		}
-	}
+	supabaseURL := strings.TrimRight(getEnv("SUPABASE_URL", "https://vffsdgqqyqcbmkehnpxx.supabase.co"), "/")
 
 	mongoURI := getEnv("MONGODB_URI", "")
-	mongoDBName := getEnv("MONGODB_DATABASE", "base_wealth")
-
 	dbType := strings.ToLower(getEnv("DB_TYPE", ""))
 	if dbType == "" {
 		if mongoURI != "" {
@@ -86,27 +32,30 @@ func LoadConfig() Config {
 		}
 	}
 
-	dbURL := getEnv("SUPABASE_DB_URL", getEnv("DATABASE_URL", "postgres://base_wealth:base_wealth@localhost:5432/base_wealth?sslmode=disable"))
-	dbUser := getEnv("SUPABASE_DB_USER", "")
-	dbPassword := getEnv("SUPABASE_DB_PASSWORD", "")
-
 	return Config{
-		Port:                port,
-		SupabaseURL:         supabaseURL,
-		DBType:              dbType,
-		DatabaseURL:         dbURL,
-		DatabaseUser:        dbUser,
-		DatabasePassword:    dbPassword,
-		MongoDBURI:          mongoURI,
-		MongoDBName:         mongoDBName,
-		AllowedOrigins:      allowedOrigins,
-		DefaultFxUsdArs:     fxRate,
-		DefaultAssetClasses: defaultClasses,
-		LiquidAssetClasses:  liquidClasses,
-		AuthAudience:        authAudience,
-		JWKSetURI:           jwkSetURI,
-		AuthIssuer:          authIssuer,
+		Port:        getEnv("PORT", "8080"),
+		DBType:      dbType,
+		DatabaseURL: getEnv("SUPABASE_DB_URL", getEnv("DATABASE_URL", "postgres://base_wealth:base_wealth@localhost:5432/base_wealth?sslmode=disable")),
+		MongoDBURI:  mongoURI,
+		MongoDBName: getEnv("MONGODB_DATABASE", "base_wealth"),
+		// Preview deployments of the frontend live under *.vercel.app; set FRONTEND_ORIGIN to lock it down.
+		AllowedOrigins:      splitList(getEnv("FRONTEND_ORIGIN", "http://localhost:3000,http://127.0.0.1:3000,https://*.vercel.app")),
+		DefaultAssetClasses: splitList(getEnv("WEALTH_DEFAULT_ASSET_CLASSES", "Cash,Fixed Income,Index Fund,Equity,Crypto")),
+		LiquidAssetClasses:  splitList(getEnv("WEALTH_LIQUID_ASSET_CLASSES", "Cash,Equity,Crypto,Index Fund")),
+		AuthAudience:        getEnv("SUPABASE_AUDIENCE", "authenticated"),
+		JWKSetURI:           getEnv("SUPABASE_JWKS_URI", supabaseURL+"/auth/v1/.well-known/jwks.json"),
+		AuthIssuer:          getEnv("SUPABASE_ISSUER", supabaseURL+"/auth/v1"),
 	}
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, item := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func getEnv(key, defaultVal string) string {

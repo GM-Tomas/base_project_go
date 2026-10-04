@@ -2,8 +2,6 @@ package persistence
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -48,7 +46,7 @@ func (r *PostgresPlatformRepository) FindAll(
 	return platforms, nil
 }
 
-func (r *PostgresPlatformRepository) FindByName(
+func (r *PostgresPlatformRepository) findByName(
 	ctx context.Context,
 	userId model.UserId,
 	name model.PlatformName,
@@ -80,7 +78,7 @@ func (r *PostgresPlatformRepository) EnsureExists(
 	name model.PlatformName,
 	now time.Time,
 ) (model.PlatformName, error) {
-	existing, err := r.FindByName(ctx, userId, name)
+	existing, err := r.findByName(ctx, userId, name)
 	if err != nil {
 		return model.PlatformName{}, err
 	}
@@ -92,7 +90,7 @@ func (r *PostgresPlatformRepository) EnsureExists(
 	_, err = r.db.Pool.Exec(ctx, query, userId.UUID(), name.Value(), model.DefaultPlatformType, now)
 	if err != nil {
 		// If concurrent insert happened, retry find
-		existingRetry, errRetry := r.FindByName(ctx, userId, name)
+		existingRetry, errRetry := r.findByName(ctx, userId, name)
 		if errRetry == nil && existingRetry != nil {
 			return existingRetry.Name, nil
 		}
@@ -102,89 +100,11 @@ func (r *PostgresPlatformRepository) EnsureExists(
 	return name, nil
 }
 
-func (r *PostgresPlatformRepository) Save(
-	ctx context.Context,
-	platform model.Platform,
-) (model.Platform, error) {
-	query := `
-        INSERT INTO platforms (user_id, name, type, created_at) 
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (user_id, name) DO UPDATE SET type = EXCLUDED.type
-    `
-	_, err := r.db.Pool.Exec(ctx, query, platform.UserId.UUID(), platform.Name.Value(), platform.Type.Value(), platform.CreatedAt)
-	if err != nil {
-		return model.Platform{}, err
-	}
-	return platform, nil
-}
-
-func (r *PostgresPlatformRepository) Update(
-	ctx context.Context,
-	userId model.UserId,
-	currentName model.PlatformName,
-	newName *model.PlatformName,
-	newType *model.PlatformType,
-) (*model.Platform, error) {
-	if newName == nil && newType == nil {
-		return r.FindByName(ctx, userId, currentName)
-	}
-
-	sets := []string{}
-	args := []any{userId.UUID(), currentName.Value()}
-	argIdx := 3
-
-	if newName != nil {
-		sets = append(sets, fmt.Sprintf("name = $%d", argIdx))
-		args = append(args, newName.Value())
-		argIdx++
-	}
-	if newType != nil {
-		sets = append(sets, fmt.Sprintf("type = $%d", argIdx))
-		args = append(args, newType.Value())
-		argIdx++
-	}
-
-	query := fmt.Sprintf("UPDATE platforms SET %s WHERE user_id = $1 AND lower(name) = lower($2)", strings.Join(sets, ", "))
-	tag, err := r.db.Pool.Exec(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	if tag.RowsAffected() == 0 {
-		return nil, nil
-	}
-
-	targetName := currentName
-	if newName != nil {
-		targetName = *newName
-	}
-	return r.FindByName(ctx, userId, targetName)
-}
-
-func (r *PostgresPlatformRepository) DeleteByName(
-	ctx context.Context,
-	userId model.UserId,
-	name model.PlatformName,
-) (bool, error) {
-	query := `DELETE FROM platforms WHERE user_id = $1 AND lower(name) = lower($2)`
-	tag, err := r.db.Pool.Exec(ctx, query, userId.UUID(), name.Value())
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() > 0, nil
-}
-
-func (r *PostgresPlatformRepository) CountHoldings(
-	ctx context.Context,
-	userId model.UserId,
-	name model.PlatformName,
-) (int, error) {
-	query := `SELECT count(*) FROM holdings WHERE user_id = $1 AND platform_name = $2`
-	var count int
-	err := r.db.Pool.QueryRow(ctx, query, userId.UUID(), name.Value()).Scan(&count)
-	if err != nil {
-		return 0, err
-	}
-	return count, nil
+func (r *PostgresPlatformRepository) DeleteUnused(ctx context.Context, userId model.UserId) error {
+	query := `DELETE FROM platforms p WHERE p.user_id = $1
+              AND NOT EXISTS (SELECT 1 FROM holdings h WHERE h.user_id = p.user_id AND h.platform_name = p.name)`
+	_, err := r.db.Pool.Exec(ctx, query, userId.UUID())
+	return err
 }
 
 func mapRowToPlatform(rows pgx.Rows) (model.Platform, error) {

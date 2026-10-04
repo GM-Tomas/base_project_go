@@ -13,7 +13,6 @@ type ProjectionRequest struct {
 	AnnualYieldPct      float64
 	Years               int
 	Milestones          []float64
-	PrincipalOverride   *float64
 }
 
 type ProjectionResult struct {

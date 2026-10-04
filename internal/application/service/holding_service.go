@@ -43,25 +43,8 @@ var _ inbound.HoldingUseCase = (*HoldingService)(nil)
 func (s *HoldingService) GetAllHoldings(
 	ctx context.Context,
 	userId model.UserId,
-	assetClass *model.AssetClass,
-	platform *model.PlatformName,
 ) ([]model.Holding, error) {
-	return s.holdingRepo.FindAll(ctx, userId, assetClass, platform)
-}
-
-func (s *HoldingService) GetHoldingById(
-	ctx context.Context,
-	userId model.UserId,
-	id model.HoldingId,
-) (model.Holding, error) {
-	h, err := s.holdingRepo.FindById(ctx, userId, id)
-	if err != nil {
-		return model.Holding{}, err
-	}
-	if h == nil {
-		return model.Holding{}, appErrors.NewResourceNotFoundError(fmt.Sprintf("No se encontró el holding con ID: %s", id.String()))
-	}
-	return *h, nil
+	return s.holdingRepo.FindAll(ctx, userId)
 }
 
 func (s *HoldingService) CreateHolding(
@@ -105,50 +88,6 @@ func (s *HoldingService) CreateHolding(
 	return s.holdingRepo.Save(ctx, holding)
 }
 
-func (s *HoldingService) UpdateHolding(
-	ctx context.Context,
-	command inbound.PatchHoldingCommand,
-) (model.Holding, error) {
-	existing, err := s.GetHoldingById(ctx, command.UserId, command.Id)
-	if err != nil {
-		return model.Holding{}, err
-	}
-
-	var ac *model.AssetClass
-	if command.AssetClass != nil {
-		val, err := model.NewAssetClass(*command.AssetClass)
-		if err != nil {
-			return model.Holding{}, err
-		}
-		ac = &val
-	}
-
-	var pn *model.PlatformName
-	if command.Platform != nil {
-		val, err := model.NewPlatformName(*command.Platform)
-		if err != nil {
-			return model.Holding{}, err
-		}
-		pn = &val
-	}
-
-	var m *model.Money
-	if command.ValueUsd != nil {
-		val, err := model.NewMoneyFromFloat(*command.ValueUsd)
-		if err != nil {
-			return model.Holding{}, err
-		}
-		m = &val
-	}
-
-	updated, err := existing.Patch(command.Name, ac, pn, m, s.clock())
-	if err != nil {
-		return model.Holding{}, err
-	}
-
-	return s.holdingRepo.Save(ctx, updated)
-}
-
 func (s *HoldingService) DeleteHolding(
 	ctx context.Context,
 	userId model.UserId,
@@ -159,7 +98,8 @@ func (s *HoldingService) DeleteHolding(
 		return err
 	}
 	if !deleted {
-		return appErrors.NewResourceNotFoundError(fmt.Sprintf("No se encontró el holding con ID: %s para eliminar", id.String()))
+		return appErrors.NewResourceNotFoundError(fmt.Sprintf("Holding %s not found", id.String()))
 	}
-	return nil
+	// There is no platform management in the UI: a platform lives exactly as long as a holding uses it.
+	return s.platformRepo.DeleteUnused(ctx, userId)
 }

@@ -2,7 +2,6 @@ package persistence
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -25,27 +24,11 @@ var _ outbound.SnapshotRepository = (*PostgresSnapshotRepository)(nil)
 func (r *PostgresSnapshotRepository) FindAll(
 	ctx context.Context,
 	userId model.UserId,
-	from *time.Time,
-	to *time.Time,
 ) ([]model.NetWorthSnapshot, error) {
-	query := `SELECT id, user_id, captured_at, total_value_usd FROM net_worth_snapshots WHERE user_id = $1`
-	args := []any{userId.UUID()}
-	argIdx := 2
+	query := `SELECT id, user_id, captured_at, total_value_usd FROM net_worth_snapshots
+              WHERE user_id = $1 ORDER BY captured_at ASC`
 
-	if from != nil {
-		query += fmt.Sprintf(" AND captured_at >= $%d", argIdx)
-		args = append(args, *from)
-		argIdx++
-	}
-	if to != nil {
-		query += fmt.Sprintf(" AND captured_at <= $%d", argIdx)
-		args = append(args, *to)
-		argIdx++
-	}
-
-	query += " ORDER BY captured_at ASC"
-
-	rows, err := r.db.Pool.Query(ctx, query, args...)
+	rows, err := r.db.Pool.Query(ctx, query, userId.UUID())
 	if err != nil {
 		return nil, err
 	}

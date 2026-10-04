@@ -23,7 +23,7 @@ func newMockSnapshotRepo() *mockSnapshotRepo {
 	return &mockSnapshotRepo{}
 }
 
-func (m *mockSnapshotRepo) FindAll(ctx context.Context, userId model.UserId, from *time.Time, to *time.Time) ([]model.NetWorthSnapshot, error) {
+func (m *mockSnapshotRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.NetWorthSnapshot, error) {
 	return m.snapshots, nil
 }
 
@@ -89,7 +89,7 @@ func TestSnapshotService_CreateAndGet(t *testing.T) {
 	assert.Error(t, err)
 
 	// 3. GetSnapshots
-	snaps, err := svc.GetSnapshots(ctx, userId, nil, nil)
+	snaps, err := svc.GetSnapshots(ctx, userId)
 	require.NoError(t, err)
 	assert.Len(t, snaps, 1)
 	assert.Nil(t, snaps[0].ChangePctFromPrevious)

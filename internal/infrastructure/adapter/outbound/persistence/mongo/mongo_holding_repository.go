@@ -2,7 +2,6 @@ package mongo
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -38,20 +37,9 @@ var _ outbound.HoldingRepository = (*MongoHoldingRepository)(nil)
 func (r *MongoHoldingRepository) FindAll(
 	ctx context.Context,
 	userId model.UserId,
-	assetClass *model.AssetClass,
-	platform *model.PlatformName,
 ) ([]model.Holding, error) {
-	filter := bson.M{"user_id": userId.UUID().String()}
-
-	if assetClass != nil {
-		filter["asset_class"] = assetClass.Value()
-	}
-	if platform != nil {
-		filter["platform_name"] = platform.Value()
-	}
-
 	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}})
-	cursor, err := r.coll.Find(ctx, filter, opts)
+	cursor, err := r.coll.Find(ctx, bson.M{"user_id": userId.UUID().String()}, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -72,32 +60,6 @@ func (r *MongoHoldingRepository) FindAll(
 	}
 
 	return holdings, nil
-}
-
-func (r *MongoHoldingRepository) FindById(
-	ctx context.Context,
-	userId model.UserId,
-	id model.HoldingId,
-) (*model.Holding, error) {
-	filter := bson.M{
-		"_id":     id.UUID().String(),
-		"user_id": userId.UUID().String(),
-	}
-
-	var doc holdingDoc
-	err := r.coll.FindOne(ctx, filter).Decode(&doc)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	h, err := mapDocToHolding(doc)
-	if err != nil {
-		return nil, err
-	}
-	return &h, nil
 }
 
 func (r *MongoHoldingRepository) Save(

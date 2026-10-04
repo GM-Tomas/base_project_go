@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "BASE Wealth Management API (Go Backend)",
-    "description": "REST API construida en **Go 1.25** siguiendo los principios de **Arquitectura Hexagonal (Ports & Adapters)** y **Domain-Driven Design (DDD)**.\nExpone la gestión integral de activos financieros, posiciones de inversión (holdings), plataformas/entidades, cálculo de patrimonio neto en USD y ARS, variaciones de rendimiento YTD, desglose de liquidez, serie histórica de snapshots y motor de proyecciones financieras con interés compuesto.\n\n### Seguridad y Autenticación\nTodos los endpoints bajo `/api/v1/**` (excepto `/api/v1/health`) requieren un token Bearer JWT emitido por **Supabase Auth**.\nEl backend extrae la identidad del usuario a partir del claim `sub` del JWT y aplica aislamiento multi-tenant estricto.\n\n### Formato de Errores\nTodos los errores siguen el estándar **RFC 9457 / RFC 7807** (`application/problem+json`) incluyendo identificador de traza `traceId` y validación granular por campo.\n",
+    "description": "REST API construida en **Go 1.25** siguiendo los principios de **Arquitectura Hexagonal (Ports & Adapters)** y **Domain-Driven Design (DDD)**.\nExpone la gestión integral de activos financieros, posiciones de inversión (holdings), plataformas/entidades, cálculo de patrimonio neto en USD, variaciones de rendimiento YTD, desglose de liquidez, serie histórica de snapshots y motor de proyecciones financieras con interés compuesto.\n\n### Seguridad y Autenticación\nTodos los endpoints bajo `/api/v1/**` (excepto `/api/v1/health`) requieren un token Bearer JWT emitido por **Supabase Auth**.\nEl backend extrae la identidad del usuario a partir del claim `sub` del JWT y aplica aislamiento multi-tenant estricto.\n\n### Formato de Errores\nTodos los errores siguen el estándar **RFC 9457 / RFC 7807** (`application/problem+json`) incluyendo identificador de traza `traceId` y validación granular por campo.\n",
     "version": "1.0.0",
     "contact": {
       "name": "BASE Wealth Team"
@@ -12,10 +12,6 @@
     {
       "url": "http://localhost:8080",
       "description": "Servidor local de desarrollo"
-    },
-    {
-      "url": "https://api.wealth.base.dev",
-      "description": "Servidor de producción (ejemplo)"
     }
   ],
   "tags": [
@@ -77,7 +73,7 @@
           "Wealth"
         ],
         "summary": "Resumen consolidado del patrimonio neto",
-        "description": "Calcula el patrimonio neto total del usuario autenticado en USD y en ARS (mediante tipo de cambio configurado),\nla cantidad de posiciones registradas, el crecimiento YTD (año en curso contra el primer snapshot del año o el más antiguo),\nel porcentaje de liquidez (líquido vs ilíquido) y los desgloses porcentuales por clase de activo y por plataforma.\n\n**Nota:** Incluye plataformas activas aunque su valor actual sea $0.00.\n",
+        "description": "Calcula el patrimonio neto total del usuario autenticado en USD,\nla cantidad de posiciones registradas, el crecimiento YTD (año en curso contra el primer snapshot del año o el más antiguo),\nel porcentaje de liquidez (líquido vs ilíquido) y los desgloses porcentuales por clase de activo y por plataforma.\n\n**Nota:** Una plataforma existe mientras al menos un holding la use (se elimina al borrar su último holding).\n",
         "operationId": "getWealthSummary",
         "security": [
           {
@@ -94,14 +90,7 @@
                 },
                 "example": {
                   "netWorth": {
-                    "usd": 84250.0,
-                    "ars": 88462500.0,
-                    "fxRate": {
-                      "available": true,
-                      "value": 1050.0,
-                      "asOf": "2026-09-27T18:00:00Z",
-                      "source": "FIXED_CONFIG"
-                    }
+                    "usd": 84250.0
                   },
                   "holdingsCount": 8,
                   "ytd": {
@@ -195,7 +184,7 @@
           "Wealth"
         ],
         "summary": "Proyección de interés compuesto y progreso de hitos financieros",
-        "description": "Calcula la evolución de la riqueza año a año aplicando interés compuesto mensual ($FV = P(1+r)^n + PMT\\frac{(1+r)^n - 1}{r}$)\ny determina el tiempo estimado en meses (y fecha objetivo `YYYY-MM`) para alcanzar hasta 5 metas o hitos patrimoniales.\n\n**Características clave:**\n- Respuesta cacheable del lado cliente/proxy con header `Cache-Control: private, max-age=30`.\n- Si no se envía `principal`, utiliza automáticamente el patrimonio neto actual del usuario.\n- Si no se especifican `milestones`, utiliza por defecto `[150000.0, 250000.0]`.\n- Devuelve $N+1$ puntos en la serie anual (desde el año 0 hasta el año especificado).\n",
+        "description": "Calcula la evolución año a año con interés compuesto mensual partiendo del patrimonio neto actual del usuario, y evalúa los hitos fijos `[150000, 250000]` (los dos que muestra la vista Estimate).\n\nDevuelve N+1 puntos en la serie anual (año 0 a año N). Sin `Cache-Control`: el principal cambia con cada holding.",
         "operationId": "getWealthEstimate",
         "security": [
           {
@@ -238,48 +227,11 @@
               "maximum": 50,
               "example": 12
             }
-          },
-          {
-            "name": "milestones",
-            "in": "query",
-            "required": false,
-            "description": "Metas financieras a evaluar en USD. Se pueden pasar separadas por comas (ej. `100000,200000`) o como parámetros repetidos.\nMáximo 5 metas no negativas.\n",
-            "schema": {
-              "type": "array",
-              "items": {
-                "type": "number",
-                "minimum": 0.0
-              },
-              "maxItems": 5,
-              "example": [
-                150000.0,
-                250000.0
-              ]
-            }
-          },
-          {
-            "name": "principal",
-            "in": "query",
-            "required": false,
-            "description": "Monto de capital inicial en USD. Si se omite, se utiliza el patrimonio neto actual del usuario.",
-            "schema": {
-              "type": "number",
-              "minimum": 0.0,
-              "example": 84250.0
-            }
           }
         ],
         "responses": {
           "200": {
             "description": "Estimación financiera proyectada",
-            "headers": {
-              "Cache-Control": {
-                "schema": {
-                  "type": "string",
-                  "example": "private, max-age=30"
-                }
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -311,30 +263,6 @@
         "security": [
           {
             "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "from",
-            "in": "query",
-            "required": false,
-            "description": "Fecha inicial de captura (inclusive) en formato `YYYY-MM-DD`",
-            "schema": {
-              "type": "string",
-              "format": "date",
-              "example": "2026-01-01"
-            }
-          },
-          {
-            "name": "to",
-            "in": "query",
-            "required": false,
-            "description": "Fecha final de captura (inclusive) en formato `YYYY-MM-DD`",
-            "schema": {
-              "type": "string",
-              "format": "date",
-              "example": "2026-12-31"
-            }
           }
         ],
         "responses": {
@@ -431,28 +359,6 @@
             "bearerAuth": []
           }
         ],
-        "parameters": [
-          {
-            "name": "assetClass",
-            "in": "query",
-            "required": false,
-            "description": "Filtra por clase de activo exacta (case-sensitive)",
-            "schema": {
-              "type": "string",
-              "example": "Equity"
-            }
-          },
-          {
-            "name": "platform",
-            "in": "query",
-            "required": false,
-            "description": "Filtra por nombre de plataforma (case-insensitive)",
-            "schema": {
-              "type": "string",
-              "example": "Balanz"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Lista de posiciones de inversión",
@@ -530,113 +436,6 @@
       }
     },
     "/api/v1/holdings/{id}": {
-      "get": {
-        "tags": [
-          "Holdings"
-        ],
-        "summary": "Obtiene una posición por su ID",
-        "description": "Retorna el detalle completo de un holding por su identificador UUID.",
-        "operationId": "getHoldingById",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "Identificador UUID de la posición",
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "example": "f3b890a5-2962-4217-b714-3d07e60fa7e2"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Posición encontrada",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HoldingResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/UnauthorizedError"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFoundError"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalServerError"
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "Holdings"
-        ],
-        "summary": "Actualiza parcialmente una posición existente",
-        "description": "Permite modificar el nombre, clase de activo, plataforma o valor en USD. Solo se actualizan los campos provistos.",
-        "operationId": "updateHolding",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "description": "Identificador UUID de la posición",
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "example": "f3b890a5-2962-4217-b714-3d07e60fa7e2"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateHoldingRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Posición actualizada exitosamente",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HoldingResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ValidationError"
-          },
-          "401": {
-            "$ref": "#/components/responses/UnauthorizedError"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFoundError"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalServerError"
-          }
-        }
-      },
       "delete": {
         "tags": [
           "Holdings"
@@ -707,166 +506,6 @@
           },
           "401": {
             "$ref": "#/components/responses/UnauthorizedError"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalServerError"
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "Platforms"
-        ],
-        "summary": "Crea una nueva plataforma financiera explícitamente",
-        "description": "Crea una plataforma para el usuario autenticado.\n\n**Regla de unicidad:**\nEl nombre es único por usuario de forma insensible a mayúsculas/minúsculas (`lower(name)`). Si se intenta crear una plataforma con un nombre existente (ej. `\"binance\"` existiendo `\"Binance\"`), responde `409 Conflict`.\n",
-        "operationId": "createPlatform",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreatePlatformRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Plataforma creada",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlatformResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ValidationError"
-          },
-          "401": {
-            "$ref": "#/components/responses/UnauthorizedError"
-          },
-          "409": {
-            "$ref": "#/components/responses/ConflictError"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalServerError"
-          }
-        }
-      }
-    },
-    "/api/v1/platforms/{name}": {
-      "patch": {
-        "tags": [
-          "Platforms"
-        ],
-        "summary": "Renombra o actualiza el tipo de una plataforma",
-        "description": "Modifica el nombre o tipo de la plataforma existente.\nSi se modifica el nombre, las posiciones vinculadas se actualizan en cascada automáticamente.\nSi el nuevo nombre colisiona con otra plataforma existente del mismo usuario, responde `409 Conflict`.\n",
-        "operationId": "patchPlatform",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "description": "Nombre actual de la plataforma",
-            "schema": {
-              "type": "string",
-              "example": "Binance"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PatchPlatformRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Plataforma actualizada",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlatformResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ValidationError"
-          },
-          "401": {
-            "$ref": "#/components/responses/UnauthorizedError"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFoundError"
-          },
-          "409": {
-            "$ref": "#/components/responses/ConflictError"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalServerError"
-          }
-        }
-      },
-      "delete": {
-        "tags": [
-          "Platforms"
-        ],
-        "summary": "Elimina una plataforma financiera",
-        "description": "Elimina la plataforma especificada.\n\n**Regla de integridad:**\nSi la plataforma todavía tiene una o más posiciones (`holdings`) asociadas, el servidor **rechaza la eliminación** respondiendo `409 Conflict` (`Platform '...' still has N holdings`). Para eliminarla, el usuario debe reasignar o eliminar primero sus posiciones.\n",
-        "operationId": "deletePlatform",
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "description": "Nombre de la plataforma a eliminar",
-            "schema": {
-              "type": "string",
-              "example": "Binance"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Plataforma eliminada satisfactoriamente (sin contenido)"
-          },
-          "401": {
-            "$ref": "#/components/responses/UnauthorizedError"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFoundError"
-          },
-          "409": {
-            "description": "La plataforma aún contiene posiciones asociadas",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetail"
-                }
-              }
-            }
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
@@ -973,40 +612,10 @@
           }
         }
       },
-      "FxRateDTO": {
-        "type": "object",
-        "required": [
-          "available"
-        ],
-        "properties": {
-          "available": {
-            "type": "boolean",
-            "description": "Indica si el tipo de cambio está disponible",
-            "example": true
-          },
-          "value": {
-            "type": "number",
-            "description": "Valor de 1 USD en moneda local (ARS)",
-            "example": 1050.0
-          },
-          "asOf": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Timestamp de la cotización",
-            "example": "2026-09-27T18:00:00Z"
-          },
-          "source": {
-            "type": "string",
-            "description": "Origen de la tasa (ej. FIXED_CONFIG)",
-            "example": "FIXED_CONFIG"
-          }
-        }
-      },
       "NetWorthDTO": {
         "type": "object",
         "required": [
-          "usd",
-          "fxRate"
+          "usd"
         ],
         "properties": {
           "usd": {
@@ -1014,16 +623,6 @@
             "format": "double",
             "description": "Patrimonio neto total expresado en USD (escala 2)",
             "example": 84250.0
-          },
-          "ars": {
-            "type": "number",
-            "format": "double",
-            "nullable": true,
-            "description": "Patrimonio neto convertido a ARS según el tipo de cambio (null si no está disponible)",
-            "example": 88462500.0
-          },
-          "fxRate": {
-            "$ref": "#/components/schemas/FxRateDTO"
           }
         }
       },
@@ -1239,7 +838,9 @@
         "type": "object",
         "required": [
           "amountUsd",
-          "status"
+          "status",
+          "monthsRequired",
+          "targetMonth"
         ],
         "properties": {
           "amountUsd": {
@@ -1320,7 +921,8 @@
         "required": [
           "id",
           "capturedAt",
-          "totalValueUsd"
+          "totalValueUsd",
+          "changePctFromPrevious"
         ],
         "properties": {
           "id": {
@@ -1385,36 +987,6 @@
           }
         }
       },
-      "UpdateHoldingRequest": {
-        "type": "object",
-        "description": "Todos los campos son opcionales. Solo se actualizan los provistos.",
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 120,
-            "example": "NVIDIA Corp"
-          },
-          "assetClass": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 60,
-            "example": "Equity"
-          },
-          "platform": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 120,
-            "example": "Interactive Brokers"
-          },
-          "valueUsd": {
-            "type": "number",
-            "format": "double",
-            "minimum": 0.0,
-            "example": 12500.0
-          }
-        }
-      },
       "HoldingResponse": {
         "type": "object",
         "required": [
@@ -1458,48 +1030,6 @@
             "type": "string",
             "format": "date-time",
             "example": "2026-09-27T18:00:00Z"
-          }
-        }
-      },
-      "CreatePlatformRequest": {
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 120,
-            "description": "Nombre de la plataforma o broker",
-            "example": "Binance"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 40,
-            "default": "Other",
-            "description": "Tipo de entidad (ej. Broker, Wallet, Exchange, Bank, Other)",
-            "example": "Exchange"
-          }
-        }
-      },
-      "PatchPlatformRequest": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 120,
-            "description": "Nuevo nombre (si se cambia, se actualizan los holdings asociados en cascada)",
-            "example": "Binance Global"
-          },
-          "type": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 40,
-            "description": "Nuevo tipo de entidad",
-            "example": "Crypto Exchange"
           }
         }
       },
@@ -1707,24 +1237,6 @@
               "detail": "No se encontró el holding con ID: f3b890a5-2962-4217-b714-3d07e60fa7e2",
               "instance": "/api/v1/holdings/f3b890a5-2962-4217-b714-3d07e60fa7e2",
               "traceId": "6a9e115c-3c3b-4560-84cf-ea73ba93a8e1"
-            }
-          }
-        }
-      },
-      "ConflictError": {
-        "description": "Conflicto de unicidad o integridad referencial",
-        "content": {
-          "application/problem+json": {
-            "schema": {
-              "$ref": "#/components/schemas/ProblemDetail"
-            },
-            "example": {
-              "type": "https://base.wealth/errors/conflict",
-              "title": "Conflict",
-              "status": 409,
-              "detail": "Platform 'Binance' already exists",
-              "instance": "/api/v1/platforms",
-              "traceId": "1e82845c-e5ff-4ab5-a50d-dfbeac028c21"
             }
           }
         }

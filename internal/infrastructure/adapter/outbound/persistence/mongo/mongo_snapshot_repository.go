@@ -35,24 +35,9 @@ var _ outbound.SnapshotRepository = (*MongoSnapshotRepository)(nil)
 func (r *MongoSnapshotRepository) FindAll(
 	ctx context.Context,
 	userId model.UserId,
-	from *time.Time,
-	to *time.Time,
 ) ([]model.NetWorthSnapshot, error) {
-	filter := bson.M{"user_id": userId.UUID().String()}
-
-	dateFilter := bson.M{}
-	if from != nil {
-		dateFilter["$gte"] = *from
-	}
-	if to != nil {
-		dateFilter["$lte"] = *to
-	}
-	if len(dateFilter) > 0 {
-		filter["captured_at"] = dateFilter
-	}
-
 	opts := options.Find().SetSort(bson.D{{Key: "captured_at", Value: 1}})
-	cursor, err := r.coll.Find(ctx, filter, opts)
+	cursor, err := r.coll.Find(ctx, bson.M{"user_id": userId.UUID().String()}, opts)
 	if err != nil {
 		return nil, err
 	}

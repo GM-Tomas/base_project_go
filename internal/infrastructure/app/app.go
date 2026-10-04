@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -28,17 +29,18 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 		cleanup          func() = func() {}
 	)
 
+	// A failed connection is returned, not swallowed: repositories holding a nil pool would turn
+	// every request into a panic. Callers decide whether to exit (cmd/api) or retry (api/index.go).
 	if cfg.DBType == "mongodb" {
 		log.Printf("Connecting to MongoDB (database: %s)...", cfg.MongoDBName)
 		mongoDB, err := mongopersistence.NewMongoDB(ctx, cfg.MongoDBURI, cfg.MongoDBName)
 		if err != nil {
-			log.Printf("WARNING: MongoDB connection could not be established immediately (%v). Running with deferred connection...", err)
-		} else {
-			cleanup = func() {
-				_ = mongoDB.Close(context.Background())
-			}
-			log.Println("MongoDB connection established successfully.")
+			return nil, fmt.Errorf("connecting to MongoDB: %w", err)
 		}
+		cleanup = func() {
+			_ = mongoDB.Close(context.Background())
+		}
+		log.Println("MongoDB connection established successfully.")
 
 		holdingRepo = mongopersistence.NewMongoHoldingRepository(mongoDB)
 		platformRepo = mongopersistence.NewMongoPlatformRepository(mongoDB)
@@ -48,13 +50,12 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 		log.Println("Connecting to PostgreSQL...")
 		db, err := persistence.NewDB(ctx, cfg.DatabaseURL)
 		if err != nil {
-			log.Printf("WARNING: PostgreSQL connection could not be established immediately (%v). Running with deferred connection...", err)
-		} else {
-			cleanup = func() {
-				db.Close()
-			}
-			log.Println("PostgreSQL connection pool established successfully.")
+			return nil, fmt.Errorf("connecting to PostgreSQL: %w", err)
 		}
+		cleanup = func() {
+			db.Close()
+		}
+		log.Println("PostgreSQL connection pool established successfully.")
 
 		holdingRepo = persistence.NewPostgresHoldingRepository(db)
 		platformRepo = persistence.NewPostgresPlatformRepository(db)
@@ -64,7 +65,7 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// Application Services
 	holdingService := appService.NewHoldingService(holdingRepo, platformRepo, appService.RealClock)
-	platformService := appService.NewPlatformService(platformRepo, appService.RealClock)
+	platformService := appService.NewPlatformService(platformRepo)
 	assetClassService := appService.NewAssetClassService(holdingRepo, cfg.DefaultAssetClasses)
 	snapshotService := appService.NewSnapshotService(snapshotRepo, wealthAggAdapter, appService.RealClock)
 	projectionService := appService.NewProjectionService(wealthAggAdapter, appService.RealClock)
@@ -73,7 +74,6 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 		snapshotRepo,
 		appService.RealClock,
 		cfg.LiquidAssetClasses,
-		cfg.DefaultFxUsdArs,
 	)
 
 	// HTTP Handlers
@@ -85,12 +85,16 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 	swaggerHandler := appHttp.NewSwaggerHandler()
 
 	// Supabase JWT Validator
-	jwtValidator := middleware.NewSupabaseJWTValidator(
+	jwtValidator, err := middleware.NewSupabaseJWTValidator(
 		ctx,
 		cfg.JWKSetURI,
 		cfg.AuthIssuer,
 		cfg.AuthAudience,
 	)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("configuring JWT validation: %w", err)
+	}
 
 	// Router
 	router := appHttp.NewRouter(appHttp.RouterParams{

@@ -24,7 +24,7 @@ internal/
 ├── infrastructure/                       # CAPA DE INFRAESTRUCTURA (Detalles de IO y adaptadores)
 │   ├── adapter/
 │   │   ├── inbound/                      # Adaptadores HTTP (Chi Router, Handlers y Middlewares)
-│   │   └── outbound/                     # Adaptadores de Persistencia (PostgreSQL con pgx)
+│   │   └── outbound/                     # Adaptadores de Persistencia (PostgreSQL con pgx, MongoDB)
 │   ├── app/                              # Bootstrapper compartido (local & serverless Vercel)
 │   └── config/                           # Configuración y variables de entorno
 └── errors/                               # Errores tipados de la aplicación
@@ -58,46 +58,43 @@ go build -o bin/api.exe ./cmd/api
 
 ---
 
-## 📖 Documentación OpenAPI y Guía para Frontend / Agentes de IA
+## 📖 Contrato API
 
-En la carpeta [`docs/`](docs/) encontrarás:
-1. **[`docs/openapi.yaml`](docs/openapi.yaml)** y **[`docs/openapi.json`](docs/openapi.json)**: Especificación formal OpenAPI 3.1.0 completa con esquemas de validación, ejemplos y formato de errores RFC 9457.
-2. **[`docs/FRONTEND_AGENT_GUIDE.md`](docs/FRONTEND_AGENT_GUIDE.md)**: Guía exhaustiva diseñada para que cualquier Agente de IA o desarrollador frontend conecte el cliente Next.js (`base_project_fe`) sin ambigüedades (incluye reglas de negocio, flujos de autenticación con Supabase, tipos TypeScript y hooks de TanStack Query listos para usar).
+El contrato es exactamente lo que consume el frontend (`base_project_fe/src/lib/api.ts`), ni más ni menos.
+La especificación OpenAPI 3.1 vive embebida en el binario
+([`internal/infrastructure/adapter/inbound/http/openapi.json`](internal/infrastructure/adapter/inbound/http/openapi.json))
+y se sirve en `/api/v1/openapi.json` y `/swagger`.
 
 ---
 
 ## ☁️ Despliegue en Vercel (Serverless Go)
 
-El proyecto incluye soporte nativo listo para desplegar en **Vercel Serverless Functions**:
-- **`api/index.go`**: Punto de entrada serverless estándar de Vercel (`func Handler(w http.ResponseWriter, r *http.Request)`).
-- **`vercel.json`**: Configuración de enrutamiento que redirige todas las rutas hacia la función serverless de Go.
+- **`api/index.go`**: entrypoint serverless. Construye la app una vez por instancia caliente; si la inicialización
+  falla (p. ej. DB inalcanzable en el cold start) responde `503` y reintenta en el siguiente request.
+- **`vercel.json`**: reescribe todas las rutas hacia la función.
 
-Para desplegar en Vercel con la CLI:
-```bash
-vercel
-```
-O simplemente conecta el repositorio de GitHub [GM-Tomas/base_project_go](https://github.com/GM-Tomas/base_project_go) en tu panel de Vercel. Configura las variables de entorno (`SUPABASE_URL`, `DATABASE_URL`, etc.) en el dashboard del proyecto en Vercel.
+### Variables de entorno (Project Settings → Environment Variables)
+
+| Variable | Requerida | Valor |
+|---|---|---|
+| `SUPABASE_URL` | Sí | `https://<ref>.supabase.co` — el **mismo** proyecto que usa el frontend. De acá se derivan JWKS e issuer. |
+| `DATABASE_URL` (o `SUPABASE_DB_URL`) | Sí (Postgres) | Connection string del **Session pooler** de Supabase (`postgres://postgres.<ref>:<pwd>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require`). Sin `sslmode=require` pgx usa `prefer`, que acepta caer a texto plano. La conexión directa es solo IPv6 (Vercel no la alcanza); el Session pooler además es compatible con los prepared statements que usa pgx por defecto. |
+| `MONGODB_URI` | Sí (Mongo) | Si está presente se usa MongoDB en lugar de Postgres (`DB_TYPE` lo fuerza explícitamente). |
+| `FRONTEND_ORIGIN` | Recomendada en producción | Orígenes CORS separados por coma. Default: `localhost:3000` y `https://*.vercel.app` (cualquier sitio de Vercel). En producción: la URL exacta del frontend. |
+
+El proyecto de Supabase debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
+valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request da `401`.
+
+Antes del primer deploy, aplicar [`db/migrations/000002_wealth_tables.up.sql`](db/migrations/000002_wealth_tables.up.sql)
+en el SQL Editor de Supabase.
 
 ---
 
-## 🗄️ Persistencia: ¿KVS, PostgreSQL o MongoDB?
+## 🗄️ Persistencia: PostgreSQL o MongoDB
 
-### 1. ¿Funciona con un Key-Value Store (KVS)?
-**No.** En las primeras plantillas de prueba existía una tabla `kv_store`, pero fue explícitamente eliminada porque una aplicación de gestión patrimonial requiere:
-- Claves foráneas e integridad referencial (`holdings` vinculados a `platforms`).
-- Precisión decimal fija para saldos financieros (`NUMERIC(20,2)`).
-- Row Level Security (RLS) en Supabase para aislamiento multi-tenant estricto.
-- Unicidad insensible a mayúsculas (`lower(name)`).
-- Agregaciones (`SUM`, `COUNT`, `LEFT JOIN` para incluir plataformas con saldo cero).
-
-### 2. ¿Se puede conectar con MongoDB?
-**¡Sí!** Gracias a la **Arquitectura Hexagonal**, el dominio y la lógica de aplicación dependen únicamente de interfaces (puertos outbound en `internal/domain/port/outbound/`):
-- `HoldingRepository`
-- `PlatformRepository`
-- `SnapshotRepository`
-- `WealthAggregationPort`
-
-Para usar MongoDB en lugar de PostgreSQL, solo se requiere implementar un adaptador que satisfaga estas 4 interfaces contra colecciones de MongoDB (`holdings`, `platforms`, `snapshots`), sin tocar una sola línea de código del dominio o los controladores.
+Ambos adaptadores implementan los mismos puertos outbound (`internal/domain/port/outbound/`):
+`HoldingRepository`, `PlatformRepository`, `SnapshotRepository` y `WealthAggregationPort`. La elección es
+solo de configuración (ver tabla anterior); dominio y handlers no cambian.
 
 ---
 
@@ -117,22 +114,16 @@ Authorization: Bearer <session.access_token>
 
 ## 🌐 Catálogo de Endpoints REST
 
-| Método | Endpoint | Descripción | Auth Requerida |
+| Método | Endpoint | Lo usa (frontend) | Auth |
 |---|---|---|---|
-| `GET` | `/swagger` o `/docs` | Interfaz interactiva de Swagger UI | No |
-| `GET` | `/api/v1/openapi.json` | Especificación OpenAPI 3.1 en formato JSON | No |
-| `GET` | `/api/v1/health` | Estado operativo del servicio | No |
-| `GET` | `/api/v1/holdings` | Lista posiciones del usuario (filtro opcional `assetClass`, `platform`) | Sí |
-| `POST` | `/api/v1/holdings` | Crea una posición (alta implícita de plataforma) | Sí |
-| `GET` | `/api/v1/holdings/{id}` | Obtiene una posición por su UUID | Sí |
-| `PATCH` | `/api/v1/holdings/{id}` | Actualización parcial de una posición | Sí |
-| `DELETE` | `/api/v1/holdings/{id}` | Elimina una posición | Sí |
-| `GET` | `/api/v1/platforms` | Lista plataformas del usuario (incluyendo saldo 0) | Sí |
-| `POST` | `/api/v1/platforms` | Crea una plataforma (`409` si el nombre ya existe) | Sí |
-| `PATCH` | `/api/v1/platforms/{name}` | Renombra o recategoriza una plataforma | Sí |
-| `DELETE` | `/api/v1/platforms/{name}` | Elimina una plataforma (`409` si tiene posiciones asociadas) | Sí |
-| `GET` | `/api/v1/asset-classes` | Clases de activo disponibles (defaults ∪ en uso) | Sí |
-| `GET` | `/api/v1/wealth/summary` | Resumen consolidado del patrimonio (USD, ARS, YTD, liquidez, distribución) | Sí |
-| `GET` | `/api/v1/wealth/estimate` | Proyección de interés compuesto e hitos (`Cache-Control: private, max-age=30`) | Sí |
-| `GET` | `/api/v1/wealth/snapshots` | Serie histórica de snapshots con variación porcentual | Sí |
-| `POST` | `/api/v1/wealth/snapshots` | Captura un snapshot instantáneo en el servidor (`409` si ya existe en el segundo) | Sí |
+| `GET` | `/api/v1/health` | — (monitoreo) | No |
+| `GET` | `/swagger`, `/api/v1/openapi.json` | — (documentación) | No |
+| `GET` | `/api/v1/wealth/summary` | Dashboard, Platforms (net worth, YTD, liquidez, desgloses) | Sí |
+| `GET` | `/api/v1/holdings` | Assets, drill-down de Platforms, contador | Sí |
+| `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva) | Sí |
+| `DELETE` | `/api/v1/holdings/{id}` | Assets (borra también la plataforma si quedó vacía) | Sí |
+| `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts" | Sí |
+| `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets | Sí |
+| `GET` | `/api/v1/wealth/estimate?contribution&yieldPct&years` | Estimate (hitos fijos 150k/250k) | Sí |
+| `GET` | `/api/v1/wealth/snapshots` | History | Sí |
+| `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (`409` si ya hay uno en ese segundo) | Sí |

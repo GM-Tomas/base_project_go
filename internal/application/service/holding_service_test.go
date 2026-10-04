@@ -25,29 +25,14 @@ func newMockHoldingRepo() *mockHoldingRepo {
 	}
 }
 
-func (m *mockHoldingRepo) FindAll(ctx context.Context, userId model.UserId, assetClass *model.AssetClass, platform *model.PlatformName) ([]model.Holding, error) {
+func (m *mockHoldingRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.Holding, error) {
 	var list []model.Holding
 	for _, h := range m.holdings {
-		if h.UserId.UUID() != userId.UUID() {
-			continue
+		if h.UserId.UUID() == userId.UUID() {
+			list = append(list, h)
 		}
-		if assetClass != nil && h.AssetClass.Value() != assetClass.Value() {
-			continue
-		}
-		if platform != nil && h.Platform.Value() != platform.Value() {
-			continue
-		}
-		list = append(list, h)
 	}
 	return list, nil
-}
-
-func (m *mockHoldingRepo) FindById(ctx context.Context, userId model.UserId, id model.HoldingId) (*model.Holding, error) {
-	h, ok := m.holdings[id.String()]
-	if !ok || h.UserId.UUID() != userId.UUID() {
-		return nil, nil
-	}
-	return &h, nil
 }
 
 func (m *mockHoldingRepo) Save(ctx context.Context, holding model.Holding) (model.Holding, error) {
@@ -70,13 +55,13 @@ func (m *mockHoldingRepo) AssetClassesInUse(ctx context.Context, userId model.Us
 
 type mockPlatformRepo struct {
 	platforms map[string]model.Platform
-	holdings  map[string]int
+	holdings  *mockHoldingRepo // to know which platforms are still referenced
 }
 
-func newMockPlatformRepo() *mockPlatformRepo {
+func newMockPlatformRepo(holdings *mockHoldingRepo) *mockPlatformRepo {
 	return &mockPlatformRepo{
 		platforms: make(map[string]model.Platform),
-		holdings:  make(map[string]int),
+		holdings:  holdings,
 	}
 }
 
@@ -90,117 +75,71 @@ func (m *mockPlatformRepo) FindAll(ctx context.Context, userId model.UserId) ([]
 	return list, nil
 }
 
-func (m *mockPlatformRepo) FindByName(ctx context.Context, userId model.UserId, name model.PlatformName) (*model.Platform, error) {
+func (m *mockPlatformRepo) EnsureExists(ctx context.Context, userId model.UserId, name model.PlatformName, now time.Time) (model.PlatformName, error) {
 	for _, p := range m.platforms {
 		if p.UserId.UUID() == userId.UUID() && strings.EqualFold(p.Name.Value(), name.Value()) {
-			return &p, nil
+			return p.Name, nil
 		}
 	}
-	return nil, nil
-}
-
-func (m *mockPlatformRepo) EnsureExists(ctx context.Context, userId model.UserId, name model.PlatformName, now time.Time) (model.PlatformName, error) {
-	existing, _ := m.FindByName(ctx, userId, name)
-	if existing != nil {
-		return existing.Name, nil
-	}
-	p := model.NewPlatform(userId, name, model.PlatformTypeOther, now)
-	m.platforms[name.Value()] = p
+	m.platforms[name.Value()] = model.NewPlatform(userId, name, model.PlatformTypeOther, now)
 	return name, nil
 }
 
-func (m *mockPlatformRepo) Save(ctx context.Context, platform model.Platform) (model.Platform, error) {
-	m.platforms[platform.Name.Value()] = platform
-	return platform, nil
-}
-
-func (m *mockPlatformRepo) Update(ctx context.Context, userId model.UserId, currentName model.PlatformName, newName *model.PlatformName, newType *model.PlatformType) (*model.Platform, error) {
-	p, _ := m.FindByName(ctx, userId, currentName)
-	if p == nil {
-		return nil, nil
+func (m *mockPlatformRepo) DeleteUnused(ctx context.Context, userId model.UserId) error {
+	used := map[string]bool{}
+	for _, h := range m.holdings.holdings {
+		used[h.Platform.Value()] = true
 	}
-	delete(m.platforms, p.Name.Value())
-	if newName != nil {
-		p.Name = *newName
+	for name, p := range m.platforms {
+		if p.UserId.UUID() == userId.UUID() && !used[name] {
+			delete(m.platforms, name)
+		}
 	}
-	if newType != nil {
-		p.Type = *newType
-	}
-	m.platforms[p.Name.Value()] = *p
-	return p, nil
-}
-
-func (m *mockPlatformRepo) DeleteByName(ctx context.Context, userId model.UserId, name model.PlatformName) (bool, error) {
-	p, _ := m.FindByName(ctx, userId, name)
-	if p == nil {
-		return false, nil
-	}
-	delete(m.platforms, p.Name.Value())
-	return true, nil
-}
-
-func (m *mockPlatformRepo) CountHoldings(ctx context.Context, userId model.UserId, name model.PlatformName) (int, error) {
-	return m.holdings[name.Value()], nil
+	return nil
 }
 
 func fixedClock(t time.Time) service.Clock {
 	return func() time.Time { return t }
 }
 
-func TestHoldingService_CRUD(t *testing.T) {
+func TestHoldingService_Lifecycle(t *testing.T) {
 	holdingRepo := newMockHoldingRepo()
-	platformRepo := newMockPlatformRepo()
+	platformRepo := newMockPlatformRepo(holdingRepo)
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(now))
 
 	userId := model.NewUserId(uuid.New())
 	ctx := context.Background()
 
-	// 1. Create holding (auto-creates platform)
-	created, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{
-		UserId:     userId,
-		Name:       "NVDA",
-		AssetClass: "Equity",
-		Platform:   "Balanz",
-		ValueUsd:   10557.00,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "NVDA", created.Name)
-	assert.Equal(t, "Equity", created.AssetClass.Value())
-	assert.Equal(t, "Balanz", created.Platform.Value())
-	assert.Equal(t, "10557.00", created.Value.String())
+	create := func(name, platform string) model.Holding {
+		h, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{
+			UserId: userId, Name: name, AssetClass: "Equity", Platform: platform, ValueUsd: 10557.00,
+		})
+		require.NoError(t, err)
+		return h
+	}
 
-	// Platform should exist
-	p, err := platformRepo.FindByName(ctx, userId, model.MustPlatformName("Balanz"))
-	require.NoError(t, err)
-	require.NotNil(t, p)
-	assert.Equal(t, "Other", p.Type.Value())
+	// 1. Create reuses an existing platform case-insensitively, else auto-creates it.
+	nvda := create("NVDA", "Balanz")
+	assert.Equal(t, "NVDA", nvda.Name)
+	assert.Equal(t, "10557.00", nvda.Value.String())
+	aapl := create("AAPL", "balanz")
+	assert.Equal(t, "Balanz", aapl.Platform.Value())
+	assert.Len(t, platformRepo.platforms, 1)
+	assert.Equal(t, "Other", platformRepo.platforms["Balanz"].Type.Value())
 
-	// 2. Get holding by ID
-	fetched, err := svc.GetHoldingById(ctx, userId, created.Id)
+	all, err := svc.GetAllHoldings(ctx, userId)
 	require.NoError(t, err)
-	assert.Equal(t, created.Id, fetched.Id)
+	assert.Len(t, all, 2)
 
-	// 3. GetAllHoldings
-	all, err := svc.GetAllHoldings(ctx, userId, nil, nil)
-	require.NoError(t, err)
-	assert.Len(t, all, 1)
+	// 2. Deleting one holding keeps the platform while another holding still uses it.
+	require.NoError(t, svc.DeleteHolding(ctx, userId, nvda.Id))
+	assert.Len(t, platformRepo.platforms, 1)
 
-	// 4. Update holding
-	newVal := 12000.00
-	updated, err := svc.UpdateHolding(ctx, inbound.PatchHoldingCommand{
-		UserId:   userId,
-		Id:       created.Id,
-		ValueUsd: &newVal,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "12000.00", updated.Value.String())
+	// 3. Deleting the last one prunes the platform (the UI has no way to delete it).
+	require.NoError(t, svc.DeleteHolding(ctx, userId, aapl.Id))
+	assert.Empty(t, platformRepo.platforms)
 
-	// 5. Delete holding
-	err = svc.DeleteHolding(ctx, userId, created.Id)
-	require.NoError(t, err)
-
-	// 6. Delete again -> 404
-	err = svc.DeleteHolding(ctx, userId, created.Id)
-	assert.Error(t, err)
+	// 4. Delete again -> not found
+	assert.Error(t, svc.DeleteHolding(ctx, userId, aapl.Id))
 }

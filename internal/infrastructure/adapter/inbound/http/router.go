@@ -50,24 +50,12 @@ func NewRouter(params RouterParams) http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthMiddleware(params.JWTValidator))
 
-			// Holdings
-			r.Route("/holdings", func(r chi.Router) {
-				r.Get("/", params.HoldingHandler.GetAllHoldings)
-				r.Post("/", params.HoldingHandler.CreateHolding)
-				r.Get("/{id}", params.HoldingHandler.GetHoldingById)
-				r.Patch("/{id}", params.HoldingHandler.UpdateHolding)
-				r.Delete("/{id}", params.HoldingHandler.DeleteHolding)
-			})
+			// Exactly the surface the frontend consumes (base_project_fe/src/lib/api.ts).
+			r.Get("/holdings", params.HoldingHandler.GetAllHoldings)
+			r.Post("/holdings", params.HoldingHandler.CreateHolding)
+			r.Delete("/holdings/{id}", params.HoldingHandler.DeleteHolding)
 
-			// Platforms
-			r.Route("/platforms", func(r chi.Router) {
-				r.Get("/", params.PlatformHandler.GetAllPlatforms)
-				r.Post("/", params.PlatformHandler.CreatePlatform)
-				r.Patch("/{name}", params.PlatformHandler.PatchPlatform)
-				r.Delete("/{name}", params.PlatformHandler.DeletePlatform)
-			})
-
-			// Asset Classes
+			r.Get("/platforms", params.PlatformHandler.GetAllPlatforms)
 			r.Get("/asset-classes", params.AssetClassHandler.GetAvailableAssetClasses)
 
 			// Wealth

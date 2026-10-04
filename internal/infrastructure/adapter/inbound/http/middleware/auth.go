@@ -3,6 +3,8 @@ package middleware
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -17,58 +19,50 @@ type JWTValidator interface {
 }
 
 type SupabaseJWTValidator struct {
-	jwkSetURI string
-	issuer    string
-	audience  string
-	keySet    jwk.Set
-	autoFetch bool
+	keys     func(ctx context.Context) (jwk.Set, error)
+	issuer   string
+	audience string
 }
 
-func NewSupabaseJWTValidator(ctx context.Context, jwkSetURI, issuer, audience string) *SupabaseJWTValidator {
-	v := &SupabaseJWTValidator{
-		jwkSetURI: jwkSetURI,
-		issuer:    issuer,
-		audience:  audience,
-		autoFetch: true,
+// NewSupabaseJWTValidator verifies tokens against the Supabase JWKS (asymmetric signing keys).
+// The set is cached and refreshed in the background, so key rotation is picked up without a restart.
+func NewSupabaseJWTValidator(ctx context.Context, jwkSetURI, issuer, audience string) (*SupabaseJWTValidator, error) {
+	cache := jwk.NewCache(ctx)
+	err := cache.Register(jwkSetURI,
+		jwk.WithMinRefreshInterval(15*time.Minute),
+		jwk.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
+	)
+	if err != nil {
+		return nil, err
 	}
-	return v
+	return &SupabaseJWTValidator{
+		keys:     func(ctx context.Context) (jwk.Set, error) { return cache.Get(ctx, jwkSetURI) },
+		issuer:   issuer,
+		audience: audience,
+	}, nil
 }
 
 func NewStaticJWTValidator(keySet jwk.Set, issuer, audience string) *SupabaseJWTValidator {
 	return &SupabaseJWTValidator{
-		keySet:    keySet,
-		issuer:    issuer,
-		audience:  audience,
-		autoFetch: false,
+		keys:     func(context.Context) (jwk.Set, error) { return keySet, nil },
+		issuer:   issuer,
+		audience: audience,
 	}
 }
 
 func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error) {
-	var parseOptions []jwt.ParseOption
-
-	if v.autoFetch && v.keySet == nil && v.jwkSetURI != "" {
-		set, err := jwk.Fetch(ctx, v.jwkSetURI)
-		if err == nil {
-			v.keySet = set
-		}
+	// No keys means no verification is possible: reject, never fall back to an unverified parse.
+	keySet, err := v.keys(ctx)
+	if err != nil {
+		return model.UserId{}, fmt.Errorf("fetching JWKS: %w", err)
 	}
 
-	if v.keySet != nil {
-		parseOptions = append(parseOptions, jwt.WithKeySet(v.keySet))
-	} else {
-		// If JWKS is not reachable or not supplied, try parsing without verification only in insecure/test fallback
-		parseOptions = append(parseOptions, jwt.WithVerify(false))
-	}
-
-	if v.issuer != "" {
-		parseOptions = append(parseOptions, jwt.WithIssuer(v.issuer))
-	}
-	if v.audience != "" {
-		parseOptions = append(parseOptions, jwt.WithAudience(v.audience))
-	}
-	parseOptions = append(parseOptions, jwt.WithAcceptableSkew(time.Minute))
-
-	tok, err := jwt.Parse([]byte(tokenStr), parseOptions...)
+	tok, err := jwt.Parse([]byte(tokenStr),
+		jwt.WithKeySet(keySet),
+		jwt.WithIssuer(v.issuer),
+		jwt.WithAudience(v.audience),
+		jwt.WithAcceptableSkew(time.Minute),
+	)
 	if err != nil {
 		return model.UserId{}, err
 	}
@@ -109,6 +103,7 @@ func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
 
 			userId, err := validator.ValidateToken(r.Context(), tokenStr)
 			if err != nil {
+				log.Printf("auth: rejected token [traceId=%s]: %v", GetTraceID(r.Context()), err)
 				WriteUnauthorized(w, r, "Missing or invalid access token")
 				return
 			}

@@ -30,7 +30,6 @@ func TestWealthHandler_Summary(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 12345.67, summary.NetWorth.Usd)
-	assert.True(t, summary.NetWorth.FxRate.Available)
 }
 
 func TestWealthHandler_Estimate(t *testing.T) {
@@ -44,7 +43,7 @@ func TestWealthHandler_Estimate(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "private, max-age=30", rec.Header().Get("Cache-Control"))
+	assert.Empty(t, rec.Header().Get("Cache-Control")) // principal changes with every holding mutation
 
 	var proj dto.ProjectionResponse
 	err := json.NewDecoder(rec.Body).Decode(&proj)
@@ -84,17 +83,21 @@ func TestWealthHandler_Snapshots(t *testing.T) {
 	assert.Equal(t, http.StatusConflict, rec.Code)
 
 	// 3. Get Snapshots
-	req = httptest.NewRequest("GET", "/api/v1/wealth/snapshots?from=2026-01-01&to=2026-12-31", nil)
+	req = httptest.NewRequest("GET", "/api/v1/wealth/snapshots", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	rec = httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-	var list []dto.SnapshotResponse
+	var list []map[string]any
 	err = json.NewDecoder(rec.Body).Decode(&list)
 	require.NoError(t, err)
-	assert.Len(t, list, 1)
+	require.Len(t, list, 1)
+	// HistoryView renders "—" only for an explicit null; a missing key would crash formatPercentage.
+	change, present := list[0]["changePctFromPrevious"]
+	assert.True(t, present)
+	assert.Nil(t, change)
 }
 
 func TestWealthHandler_EstimateValidation(t *testing.T) {

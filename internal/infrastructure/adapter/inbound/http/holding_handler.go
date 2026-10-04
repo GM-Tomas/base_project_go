@@ -13,6 +13,9 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// Keeps sums well inside the NUMERIC(20,2) column instead of surfacing a DB overflow as a 500.
+const maxHoldingValueUsd = 1e15
+
 type HoldingHandler struct {
 	holdingUseCase inbound.HoldingUseCase
 }
@@ -30,27 +33,7 @@ func (h *HoldingHandler) GetAllHoldings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var assetClass *model.AssetClass
-	if acParam := strings.TrimSpace(r.URL.Query().Get("assetClass")); acParam != "" {
-		ac, err := model.NewAssetClass(acParam)
-		if err != nil {
-			middleware.HandleError(w, r, err)
-			return
-		}
-		assetClass = &ac
-	}
-
-	var platform *model.PlatformName
-	if platParam := strings.TrimSpace(r.URL.Query().Get("platform")); platParam != "" {
-		pn, err := model.NewPlatformName(platParam)
-		if err != nil {
-			middleware.HandleError(w, r, err)
-			return
-		}
-		platform = &pn
-	}
-
-	holdings, err := h.holdingUseCase.GetAllHoldings(r.Context(), userId, assetClass, platform)
+	holdings, err := h.holdingUseCase.GetAllHoldings(r.Context(), userId)
 	if err != nil {
 		middleware.HandleError(w, r, err)
 		return
@@ -64,31 +47,6 @@ func (h *HoldingHandler) GetAllHoldings(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(res)
-}
-
-func (h *HoldingHandler) GetHoldingById(w http.ResponseWriter, r *http.Request) {
-	userId, err := middleware.GetUserFromContext(r.Context())
-	if err != nil {
-		middleware.WriteUnauthorized(w, r, "")
-		return
-	}
-
-	idStr := chi.URLParam(r, "id")
-	holdingId, err := model.ParseHoldingId(idStr)
-	if err != nil {
-		middleware.HandleError(w, r, errors.NewResourceNotFoundError("No se encontró el holding con ID: "+idStr))
-		return
-	}
-
-	holding, err := h.holdingUseCase.GetHoldingById(r.Context(), userId, holdingId)
-	if err != nil {
-		middleware.HandleError(w, r, err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(toHoldingResponse(holding))
 }
 
 func (h *HoldingHandler) CreateHolding(w http.ResponseWriter, r *http.Request) {
@@ -106,16 +64,18 @@ func (h *HoldingHandler) CreateHolding(w http.ResponseWriter, r *http.Request) {
 
 	var valErrors []errors.ValidationError
 	if strings.TrimSpace(req.Name) == "" {
-		valErrors = append(valErrors, errors.ValidationError{Field: "name", Message: "El nombre del activo no puede estar vacío"})
+		valErrors = append(valErrors, errors.ValidationError{Field: "name", Message: "Name is required"})
 	}
 	if strings.TrimSpace(req.AssetClass) == "" {
-		valErrors = append(valErrors, errors.ValidationError{Field: "assetClass", Message: "La clase de activo es obligatoria"})
+		valErrors = append(valErrors, errors.ValidationError{Field: "assetClass", Message: "Asset class is required"})
 	}
 	if strings.TrimSpace(req.Platform) == "" {
-		valErrors = append(valErrors, errors.ValidationError{Field: "platform", Message: "La plataforma es obligatoria"})
+		valErrors = append(valErrors, errors.ValidationError{Field: "platform", Message: "Platform is required"})
 	}
 	if req.ValueUsd < 0 {
-		valErrors = append(valErrors, errors.ValidationError{Field: "valueUsd", Message: "El valor no puede ser negativo"})
+		valErrors = append(valErrors, errors.ValidationError{Field: "valueUsd", Message: "Value must not be negative"})
+	} else if req.ValueUsd > maxHoldingValueUsd {
+		valErrors = append(valErrors, errors.ValidationError{Field: "valueUsd", Message: "Value is too large"})
 	}
 
 	if len(valErrors) > 0 {
@@ -143,46 +103,6 @@ func (h *HoldingHandler) CreateHolding(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(toHoldingResponse(created))
 }
 
-func (h *HoldingHandler) UpdateHolding(w http.ResponseWriter, r *http.Request) {
-	userId, err := middleware.GetUserFromContext(r.Context())
-	if err != nil {
-		middleware.WriteUnauthorized(w, r, "")
-		return
-	}
-
-	idStr := chi.URLParam(r, "id")
-	holdingId, err := model.ParseHoldingId(idStr)
-	if err != nil {
-		middleware.HandleError(w, r, errors.NewResourceNotFoundError("No se encontró el holding con ID: "+idStr))
-		return
-	}
-
-	var req dto.UpdateHoldingRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		middleware.WriteProblem(w, r, http.StatusBadRequest, "bad-request", "Bad Request", "Malformed JSON body", nil)
-		return
-	}
-
-	cmd := inbound.PatchHoldingCommand{
-		UserId:     userId,
-		Id:         holdingId,
-		Name:       req.Name,
-		AssetClass: req.AssetClass,
-		Platform:   req.Platform,
-		ValueUsd:   req.ValueUsd,
-	}
-
-	updated, err := h.holdingUseCase.UpdateHolding(r.Context(), cmd)
-	if err != nil {
-		middleware.HandleError(w, r, err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(toHoldingResponse(updated))
-}
-
 func (h *HoldingHandler) DeleteHolding(w http.ResponseWriter, r *http.Request) {
 	userId, err := middleware.GetUserFromContext(r.Context())
 	if err != nil {
@@ -193,7 +113,7 @@ func (h *HoldingHandler) DeleteHolding(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	holdingId, err := model.ParseHoldingId(idStr)
 	if err != nil {
-		middleware.HandleError(w, r, errors.NewResourceNotFoundError("No se encontró el holding con ID: "+idStr))
+		middleware.HandleError(w, r, errors.NewResourceNotFoundError("Holding "+idStr+" not found"))
 		return
 	}
 

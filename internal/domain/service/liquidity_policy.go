@@ -39,13 +39,11 @@ func (lp LiquidityPolicy) Breakdown(valueByClass map[string]model.Money) Liquidi
 	}
 
 	pct := liquidValue.PercentOf(total)
-	var liquidPct decimal.Decimal
 	if pct == nil {
-		liquidPct = zeroPercent
-	} else {
-		liquidPct = pct.Round(1)
+		// Nothing owned: neither liquid nor locked in (the dashboard would otherwise read "100% locked").
+		return LiquidityBreakdown{LiquidPct: zeroPercent, IlliquidPct: zeroPercent}
 	}
-
+	liquidPct := pct.Round(1)
 	illiquidPct := hundredDecimal.Sub(liquidPct).Round(1)
 
 	return LiquidityBreakdown{

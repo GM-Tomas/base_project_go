@@ -36,10 +36,10 @@ const (
 )
 
 var (
-	MaxYieldPct            = decimal.NewFromInt(100)
-	ErrYearsOutOfRange     = fmt.Errorf("years must be between 1 and %d", MaxProjectionYears)
-	ErrYieldOutOfRange     = errors.New("yieldPct must be between 0 and 100")
-	ErrTooManyMilestones   = fmt.Errorf("at most %d milestones", MaxProjectionMilestones)
+	MaxYieldPct          = decimal.NewFromInt(100)
+	ErrYearsOutOfRange   = fmt.Errorf("years must be between 1 and %d", MaxProjectionYears)
+	ErrYieldOutOfRange   = errors.New("yieldPct must be between 0 and 100")
+	ErrTooManyMilestones = fmt.Errorf("at most %d milestones", MaxProjectionMilestones)
 )
 
 type ProjectionParams struct {

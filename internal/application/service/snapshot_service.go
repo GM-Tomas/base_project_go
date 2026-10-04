@@ -63,10 +63,8 @@ func (s *SnapshotService) CreateSnapshot(
 func (s *SnapshotService) GetSnapshots(
 	ctx context.Context,
 	userId model.UserId,
-	from *time.Time,
-	to *time.Time,
 ) ([]inbound.SnapshotWithChange, error) {
-	snapshots, err := s.snapshotRepo.FindAll(ctx, userId, from, to)
+	snapshots, err := s.snapshotRepo.FindAll(ctx, userId)
 	if err != nil {
 		return nil, err
 	}

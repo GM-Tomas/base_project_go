@@ -8,7 +8,6 @@ import (
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
-	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -68,7 +67,7 @@ func (r *MongoPlatformRepository) FindAll(
 	return platforms, nil
 }
 
-func (r *MongoPlatformRepository) FindByName(
+func (r *MongoPlatformRepository) findByName(
 	ctx context.Context,
 	userId model.UserId,
 	name model.PlatformName,
@@ -100,7 +99,7 @@ func (r *MongoPlatformRepository) EnsureExists(
 	name model.PlatformName,
 	now time.Time,
 ) (model.PlatformName, error) {
-	existing, err := r.FindByName(ctx, userId, name)
+	existing, err := r.findByName(ctx, userId, name)
 	if err != nil {
 		return model.PlatformName{}, err
 	}
@@ -115,11 +114,11 @@ func (r *MongoPlatformRepository) EnsureExists(
 		CreatedAt: now,
 	}
 
-	_, err = r.Save(ctx, newPlatform)
+	err = r.insert(ctx, newPlatform)
 	if err != nil {
 		// If duplicate concurrent insert occurred, return existing
 		if mongo.IsDuplicateKeyError(err) {
-			found, findErr := r.FindByName(ctx, userId, name)
+			found, findErr := r.findByName(ctx, userId, name)
 			if findErr == nil && found != nil {
 				return found.Name, nil
 			}
@@ -130,135 +129,28 @@ func (r *MongoPlatformRepository) EnsureExists(
 	return name, nil
 }
 
-func (r *MongoPlatformRepository) Save(
-	ctx context.Context,
-	platform model.Platform,
-) (model.Platform, error) {
-	doc := platformDoc{
+// insert returns the raw driver error so EnsureExists can recognise a concurrent duplicate insert.
+func (r *MongoPlatformRepository) insert(ctx context.Context, platform model.Platform) error {
+	_, err := r.platformsColl.InsertOne(ctx, platformDoc{
 		ID:        uuid.New().String(),
 		UserID:    platform.UserId.UUID().String(),
 		Name:      platform.Name.Value(),
 		LowerName: strings.ToLower(platform.Name.Value()),
 		Type:      platform.Type.Value(),
 		CreatedAt: platform.CreatedAt,
-	}
-
-	_, err := r.platformsColl.InsertOne(ctx, doc)
-	if err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return model.Platform{}, appErrors.DuplicateResourceError{
-				Message: "Platform '" + platform.Name.Value() + "' already exists",
-			}
-		}
-		return model.Platform{}, err
-	}
-
-	return platform, nil
+	})
+	return err
 }
 
-func (r *MongoPlatformRepository) Update(
-	ctx context.Context,
-	userId model.UserId,
-	currentName model.PlatformName,
-	newName *model.PlatformName,
-	newType *model.PlatformType,
-) (*model.Platform, error) {
-	existing, err := r.FindByName(ctx, userId, currentName)
-	if err != nil {
-		return nil, err
+func (r *MongoPlatformRepository) DeleteUnused(ctx context.Context, userId model.UserId) error {
+	uid := userId.UUID().String()
+	var inUse []string
+	if err := r.holdingsColl.Distinct(ctx, "platform_name", bson.M{"user_id": uid}).Decode(&inUse); err != nil {
+		return err
 	}
-	if existing == nil {
-		return nil, nil
-	}
-
-	updateFields := bson.M{}
-	updatedName := existing.Name
-	updatedType := existing.Type
-
-	if newName != nil {
-		updateFields["name"] = newName.Value()
-		updateFields["lower_name"] = strings.ToLower(newName.Value())
-		updatedName = *newName
-	}
-	if newType != nil {
-		updateFields["type"] = newType.Value()
-		updatedType = *newType
-	}
-
-	if len(updateFields) == 0 {
-		return existing, nil
-	}
-
-	filter := bson.M{
-		"user_id":    userId.UUID().String(),
-		"lower_name": strings.ToLower(currentName.Value()),
-	}
-
-	_, err = r.platformsColl.UpdateOne(ctx, filter, bson.M{"$set": updateFields})
-	if err != nil {
-		if mongo.IsDuplicateKeyError(err) {
-			return nil, appErrors.DuplicateResourceError{
-				Message: "Platform '" + updatedName.Value() + "' already exists",
-			}
-		}
-		return nil, err
-	}
-
-	// Cascading update on holdings if platform name changed
-	if newName != nil && currentName.Value() != newName.Value() {
-		hFilter := bson.M{
-			"user_id":       userId.UUID().String(),
-			"platform_name": currentName.Value(),
-		}
-		hUpdate := bson.M{
-			"$set": bson.M{
-				"platform_name": newName.Value(),
-				"updated_at":    time.Now().UTC(),
-			},
-		}
-		_, _ = r.holdingsColl.UpdateMany(ctx, hFilter, hUpdate)
-	}
-
-	return &model.Platform{
-		UserId:    userId,
-		Name:      updatedName,
-		Type:      updatedType,
-		CreatedAt: existing.CreatedAt,
-	}, nil
-}
-
-func (r *MongoPlatformRepository) DeleteByName(
-	ctx context.Context,
-	userId model.UserId,
-	name model.PlatformName,
-) (bool, error) {
-	filter := bson.M{
-		"user_id":    userId.UUID().String(),
-		"lower_name": strings.ToLower(name.Value()),
-	}
-
-	res, err := r.platformsColl.DeleteOne(ctx, filter)
-	if err != nil {
-		return false, err
-	}
-	return res.DeletedCount > 0, nil
-}
-
-func (r *MongoPlatformRepository) CountHoldings(
-	ctx context.Context,
-	userId model.UserId,
-	name model.PlatformName,
-) (int, error) {
-	filter := bson.M{
-		"user_id":       userId.UUID().String(),
-		"platform_name": name.Value(),
-	}
-
-	count, err := r.holdingsColl.CountDocuments(ctx, filter)
-	if err != nil {
-		return 0, err
-	}
-	return int(count), nil
+	// ponytail: not atomic with a concurrent holding insert; fine for a single-user dashboard.
+	_, err := r.platformsColl.DeleteMany(ctx, bson.M{"user_id": uid, "name": bson.M{"$nin": inUse}})
+	return err
 }
 
 func mapDocToPlatform(doc platformDoc) (model.Platform, error) {

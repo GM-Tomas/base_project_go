@@ -2,17 +2,8 @@ package dto
 
 import "time"
 
-type FxRateDTO struct {
-	Available bool       `json:"available"`
-	Value     *float64   `json:"value,omitempty"`
-	AsOf      *time.Time `json:"asOf,omitempty"`
-	Source    *string    `json:"source,omitempty"`
-}
-
 type NetWorthDTO struct {
-	Usd    float64   `json:"usd"`
-	Ars    *float64  `json:"ars,omitempty"`
-	FxRate FxRateDTO `json:"fxRate"`
+	Usd float64 `json:"usd"`
 }
 
 type YtdDTO struct {

@@ -34,7 +34,8 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 	defer pingCancel()
 
 	if err := client.Ping(pingCtx, nil); err != nil {
-		log.Printf("MongoDB ping warning: %v (running with deferred connection)", err)
+		_ = client.Disconnect(context.Background())
+		return nil, err
 	}
 
 	database := client.Database(dbName)

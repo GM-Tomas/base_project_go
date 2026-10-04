@@ -34,19 +34,9 @@ func (s *ProjectionService) Project(
 	ctx context.Context,
 	request inbound.ProjectionRequest,
 ) (inbound.ProjectionResult, error) {
-	var principal model.Money
-	if request.PrincipalOverride != nil {
-		p, err := model.NewMoneyFromFloat(*request.PrincipalOverride)
-		if err != nil {
-			return inbound.ProjectionResult{}, err
-		}
-		principal = p
-	} else {
-		nw, err := s.wealthAggregationPort.NetWorth(ctx, request.UserId)
-		if err != nil {
-			return inbound.ProjectionResult{}, err
-		}
-		principal = nw
+	principal, err := s.wealthAggregationPort.NetWorth(ctx, request.UserId)
+	if err != nil {
+		return inbound.ProjectionResult{}, err
 	}
 
 	monthlyContribution, err := model.NewMoneyFromFloat(request.MonthlyContribution)
