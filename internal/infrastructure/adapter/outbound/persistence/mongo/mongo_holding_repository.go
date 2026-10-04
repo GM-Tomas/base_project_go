@@ -39,15 +39,8 @@ func (r *MongoHoldingRepository) FindAll(
 	ctx context.Context,
 	userId model.UserId,
 ) ([]model.Holding, error) {
-	opts := options.Find().SetSort(holdingsOldestFirst)
-	cursor, err := r.coll.Find(ctx, bson.M{"user_id": userId.UUID().String()}, opts)
+	docs, err := readHoldings(ctx, r.coll, userId) // every field
 	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	var docs []holdingDoc
-	if err := cursor.All(ctx, &docs); err != nil {
 		return nil, err
 	}
 

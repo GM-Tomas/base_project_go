@@ -63,7 +63,7 @@ func (r *MongoPlatformRepository) Canonical(
 ) (model.PlatformName, error) {
 	cursor, err := r.holdingsColl.Find(ctx,
 		bson.M{"user_id": userId.UUID().String()},
-		options.Find().SetProjection(bson.M{"platform_name": 1}).SetSort(holdingsOldestFirst),
+		options.Find().SetProjection(bson.M{"platform_name": 1}).SetSort(holdingsOldestFirst).SetBatchSize(holdingsPerReply),
 	)
 	if err != nil {
 		return model.PlatformName{}, err
@@ -185,8 +185,8 @@ func holdingsWithTypes(
 	return docs, types, nil
 }
 
-// readHoldings reads the user's holdings, just the given fields, oldest first (the spelling rule's order),
-// all of them in the first reply rather than in batches of 101: one round trip.
+// readHoldings reads the user's holdings, just the given fields (all of them if none), oldest first (the
+// spelling rule's order), all of them in the first reply rather than in batches of 101: one round trip.
 func readHoldings(ctx context.Context, holdings *mongo.Collection, userId model.UserId, fields ...string) ([]holdingDoc, error) {
 	projection := bson.M{}
 	for _, field := range fields {

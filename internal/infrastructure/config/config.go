@@ -41,8 +41,17 @@ func LoadConfig() Config {
 		DevUserID:           devUserID(),
 		DocsPassword:        os.Getenv("DOCS_PASSWORD"),
 		HideDocs:            os.Getenv("VERCEL") != "" && os.Getenv("DOCS_PASSWORD") == "",
-		Preview:             os.Getenv("VERCEL_ENV") == "preview",
+		Preview:             vercelTarget() == "preview",
 	}
+}
+
+// vercelTarget is the Vercel environment a deployment belongs to: production, preview, or the name of a
+// custom environment (which VERCEL_ENV reports as "preview", so it's only the fallback).
+func vercelTarget() string {
+	if target := os.Getenv("VERCEL_TARGET_ENV"); target != "" {
+		return target
+	}
+	return os.Getenv("VERCEL_ENV")
 }
 
 // devUserID is ignored when VERCEL is set (Vercel injects it into every deployment), so a stray

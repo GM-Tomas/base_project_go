@@ -4,15 +4,14 @@ package parallel
 import (
 	"context"
 	"fmt"
-	"log"
 	"runtime/debug"
 	"sync"
 )
 
 // Run calls every fn at once and waits for all of them. The context they get is canceled as soon as one
-// fails, and that first error is the one returned. A panic in one is recovered (and logged with its
-// stack) and returned as an error: it fails the request, as a panic in the request's own goroutine does,
-// rather than the whole process.
+// fails, and that first error is the one returned. That much is errgroup.WithContext; the difference is a
+// panic: errgroup lets it crash the process, Run returns it as an error carrying the stack, so it fails
+// the request (logged with its traceId) as a panic in the request's own goroutine would.
 func Run(ctx context.Context, fns ...func(context.Context) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -41,8 +40,7 @@ func Run(ctx context.Context, fns ...func(context.Context) error) error {
 func call(ctx context.Context, fn func(context.Context) error) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("panic: %v\n%s", p, debug.Stack())
-			err = fmt.Errorf("panic: %v", p)
+			err = fmt.Errorf("panic: %v\n%s", p, debug.Stack())
 		}
 	}()
 	return fn(ctx)
