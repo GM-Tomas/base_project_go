@@ -20,19 +20,18 @@ type App struct {
 }
 
 func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
+	// What every deployment's router has, previews included.
+	routes := appHttp.RouterParams{
+		AllowedOrigins: cfg.AllowedOrigins,
+		HealthHandler:  appHttp.NewHealthHandler(),
+		DocsPassword:   cfg.DocsPassword,
+		HideDocs:       cfg.HideDocs,
+	}
 	if cfg.Preview {
 		// MONGODB_URI is production's: a preview never connects, whatever reaches it.
 		log.Println("Vercel preview: not connecting to MongoDB; API routes answer 503.")
-		return &App{
-			Handler: appHttp.NewRouter(appHttp.RouterParams{
-				AllowedOrigins: cfg.AllowedOrigins,
-				HealthHandler:  appHttp.NewHealthHandler(),
-				DocsPassword:   cfg.DocsPassword,
-				HideDocs:       cfg.HideDocs,
-				NoData:         true,
-			}),
-			Cleanup: func() {},
-		}, nil
+		routes.NoData = true
+		return &App{Handler: appHttp.NewRouter(routes), Cleanup: func() {}}, nil
 	}
 
 	// A failed connection is returned, not swallowed: cmd/api (also the Vercel entrypoint) exits on it.
@@ -65,12 +64,11 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 	)
 
 	// HTTP Handlers
-	healthHandler := appHttp.NewHealthHandler()
-	holdingHandler := appHttp.NewHoldingHandler(holdingService)
-	platformHandler := appHttp.NewPlatformHandler(platformService)
-	assetClassHandler := appHttp.NewAssetClassHandler(assetClassService)
-	wealthHandler := appHttp.NewWealthHandler(wealthService, snapshotService, projectionService)
-	swaggerHandler := appHttp.NewSwaggerHandler()
+	routes.HoldingHandler = appHttp.NewHoldingHandler(holdingService)
+	routes.PlatformHandler = appHttp.NewPlatformHandler(platformService)
+	routes.AssetClassHandler = appHttp.NewAssetClassHandler(assetClassService)
+	routes.WealthHandler = appHttp.NewWealthHandler(wealthService, snapshotService, projectionService)
+	routes.SwaggerHandler = appHttp.NewSwaggerHandler()
 
 	// Supabase JWT validation. The JWKS is fetched lazily, so this works offline too.
 	supabaseValidator, err := middleware.NewSupabaseJWTValidator(
@@ -93,22 +91,10 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 		jwtValidator = middleware.DevValidator{UserId: devUser, Tokens: supabaseValidator}
 	}
 
-	// Router
-	router := appHttp.NewRouter(appHttp.RouterParams{
-		AllowedOrigins:    cfg.AllowedOrigins,
-		JWTValidator:      jwtValidator,
-		HealthHandler:     healthHandler,
-		HoldingHandler:    holdingHandler,
-		PlatformHandler:   platformHandler,
-		AssetClassHandler: assetClassHandler,
-		WealthHandler:     wealthHandler,
-		SwaggerHandler:    swaggerHandler,
-		DocsPassword:      cfg.DocsPassword,
-		HideDocs:          cfg.HideDocs,
-	})
+	routes.JWTValidator = jwtValidator
 
 	return &App{
-		Handler: router,
+		Handler: appHttp.NewRouter(routes),
 		Cleanup: cleanup,
 	}, nil
 }

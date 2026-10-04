@@ -106,7 +106,7 @@ falta): la API **nunca se conecta a MongoDB**, aunque
 `MONGODB_URI` le llegue (hoy en Vercel apunta a Preview y Production; se puede destildar Preview). Los endpoints de
 datos responden `503` (`.../preview-without-data`); `GET /api/v1/health` sigue respondiendo. Los previews del frontend
 corren con datos de demo en el navegador, así que no la necesitan. Solo producción usa la base real (un entorno custom
-de Vercel, como "staging", no cuenta como preview).
+de Vercel, como "staging", no cuenta como preview: Vercel pone su nombre en `VERCEL_TARGET_ENV`).
 
 Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
 valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request con token da `503`.
