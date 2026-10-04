@@ -89,6 +89,7 @@ func isDomainValidationError(err error) bool {
 		model.ErrBlankLabel,
 		model.ErrLabelTooLong,
 		model.ErrNegativeMoney,
+		model.ErrNonFiniteMoney,
 		model.ErrInvalidUUID,
 		model.ErrYearsOutOfRange,
 		model.ErrYieldOutOfRange,

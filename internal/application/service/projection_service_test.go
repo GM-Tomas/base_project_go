@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -38,4 +39,19 @@ func TestProjectionService_Project(t *testing.T) {
 	assert.Len(t, result.Milestones, 2)
 	assert.Equal(t, model.MilestoneStatusReachable, result.Milestones[0].Status)
 	assert.Equal(t, model.MilestoneStatusReachable, result.Milestones[1].Status)
+}
+
+func TestProjectionService_RejectsNonFiniteInputsInsteadOfPanicking(t *testing.T) {
+	svc := service.NewProjectionService(&mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(time.Now()))
+	base := inbound.ProjectionRequest{UserId: model.NewUserId(uuid.New()), MonthlyContribution: 100, AnnualYieldPct: 5, Years: 1}
+
+	nan := base
+	nan.AnnualYieldPct = math.NaN()
+	_, err := svc.Project(context.Background(), nan)
+	assert.ErrorIs(t, err, model.ErrYieldOutOfRange)
+
+	inf := base
+	inf.MonthlyContribution = math.Inf(1)
+	_, err = svc.Project(context.Background(), inf)
+	assert.ErrorIs(t, err, model.ErrNonFiniteMoney)
 }

@@ -3,14 +3,16 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	"github.com/shopspring/decimal"
 )
 
 var (
-	ErrNegativeMoney = errors.New("money must not be negative")
-	hundred          = decimal.NewFromInt(100)
-	ZeroMoney        = Money{amount: decimal.NewFromInt(0).Truncate(2)}
+	ErrNegativeMoney  = errors.New("money must not be negative")
+	ErrNonFiniteMoney = errors.New("money must be a finite number")
+	hundred           = decimal.NewFromInt(100)
+	ZeroMoney         = Money{amount: decimal.NewFromInt(0).Truncate(2)}
 )
 
 // Money represents a non-negative USD amount, always scale 2.
@@ -35,8 +37,11 @@ func MustMoney(amount decimal.Decimal) Money {
 	return m
 }
 
-// NewMoneyFromFloat creates a Money from a float64.
+// NewMoneyFromFloat creates a Money from a float64. NaN and ±Inf are errors (decimal.NewFromFloat panics on them).
 func NewMoneyFromFloat(val float64) (Money, error) {
+	if math.IsNaN(val) || math.IsInf(val, 0) {
+		return ZeroMoney, fmt.Errorf("%w: %v", ErrNonFiniteMoney, val)
+	}
 	return NewMoney(decimal.NewFromFloat(val))
 }
 

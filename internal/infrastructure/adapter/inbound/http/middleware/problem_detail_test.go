@@ -51,6 +51,7 @@ func TestHandleError_MapsErrorsToStatus(t *testing.T) {
 		{"blank label", fmt.Errorf("Holding name %w", model.ErrBlankLabel), http.StatusBadRequest, "bad-request", "Holding name must not be blank"},
 		{"label too long", fmt.Errorf("x %w", model.ErrLabelTooLong), http.StatusBadRequest, "bad-request", "x exceeds max length"},
 		{"negative money", model.ErrNegativeMoney, http.StatusBadRequest, "bad-request", model.ErrNegativeMoney.Error()},
+		{"non-finite money", model.ErrNonFiniteMoney, http.StatusBadRequest, "bad-request", model.ErrNonFiniteMoney.Error()},
 		{"invalid uuid", model.ErrInvalidUUID, http.StatusBadRequest, "bad-request", model.ErrInvalidUUID.Error()},
 		{"years out of range", model.ErrYearsOutOfRange, http.StatusBadRequest, "bad-request", model.ErrYearsOutOfRange.Error()},
 		{"yield out of range", model.ErrYieldOutOfRange, http.StatusBadRequest, "bad-request", model.ErrYieldOutOfRange.Error()},

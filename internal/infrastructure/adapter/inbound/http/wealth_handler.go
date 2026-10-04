@@ -15,6 +15,14 @@ import (
 // The Estimate view shows exactly two milestones ("next" and "bigger").
 var estimateMilestones = []float64{150000.0, 250000.0}
 
+const maxMonthlyContributionUsd = 1000000000.0
+
+// inRange also rejects NaN: strconv.ParseFloat accepts "NaN", every < / > comparison lets it
+// through, and decimal.NewFromFloat panics on it.
+func inRange(v, min, max float64) bool {
+	return v >= min && v <= max
+}
+
 type WealthHandler struct {
 	wealthUseCase     inbound.WealthUseCase
 	snapshotUseCase   inbound.SnapshotUseCase
@@ -68,7 +76,7 @@ func (h *WealthHandler) GetEstimate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contribution, err := strconv.ParseFloat(contributionStr, 64)
-	if err != nil || contribution < 0 || contribution > 1000000000.0 {
+	if err != nil || !inRange(contribution, 0, maxMonthlyContributionUsd) {
 		middleware.HandleError(w, r, errors.NewValidationErrors([]errors.ValidationError{
 			{Field: "contribution", Message: "contribution must be between 0 and 1000000000"},
 		}))
@@ -83,7 +91,7 @@ func (h *WealthHandler) GetEstimate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	yieldPct, err := strconv.ParseFloat(yieldPctStr, 64)
-	if err != nil || yieldPct < 0 || yieldPct > 100.0 {
+	if err != nil || !inRange(yieldPct, 0, 100.0) {
 		middleware.HandleError(w, r, errors.NewValidationErrors([]errors.ValidationError{
 			{Field: "yieldPct", Message: "yieldPct must be between 0 and 100"},
 		}))

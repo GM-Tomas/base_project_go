@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"math"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
@@ -44,6 +45,10 @@ func (s *ProjectionService) Project(
 		return inbound.ProjectionResult{}, err
 	}
 
+	// decimal.NewFromFloat panics on NaN/±Inf.
+	if math.IsNaN(request.AnnualYieldPct) || math.IsInf(request.AnnualYieldPct, 0) {
+		return inbound.ProjectionResult{}, model.ErrYieldOutOfRange
+	}
 	annualYieldPct := decimal.NewFromFloat(request.AnnualYieldPct)
 
 	milestones := make([]model.Money, len(request.Milestones))

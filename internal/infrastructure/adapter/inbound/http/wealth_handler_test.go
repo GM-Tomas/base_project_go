@@ -104,12 +104,31 @@ func TestWealthHandler_EstimateValidation(t *testing.T) {
 	userId := model.NewUserId(uuid.New())
 	router, _, _, _, _ := setupTestRouter(userId)
 
-	req := httptest.NewRequest("GET", "/api/v1/wealth/estimate?contribution=-10&yieldPct=9&years=12", nil)
-	req.Header.Set("Authorization", "Bearer token")
-	rec := httptest.NewRecorder()
+	for _, query := range []string{
+		"contribution=-10&yieldPct=9&years=12",
+		"yieldPct=9&years=12",
+		"contribution=abc&yieldPct=9&years=12",
+		"contribution=1e10&yieldPct=9&years=12",
+		"contribution=900&years=12",
+		"contribution=900&yieldPct=101&years=12",
+		"contribution=900&yieldPct=9",
+		"contribution=900&yieldPct=9&years=0",
+		"contribution=900&yieldPct=9&years=51",
+		"contribution=900&yieldPct=9&years=1.5",
+		// ParseFloat accepts these, and NaN slips through every < / > check: it used to reach
+		// decimal.NewFromFloat and panic (500).
+		"contribution=NaN&yieldPct=9&years=12",
+		"contribution=900&yieldPct=NaN&years=12",
+		"contribution=Inf&yieldPct=9&years=12",
+		"contribution=900&yieldPct=-Inf&years=12",
+	} {
+		req := httptest.NewRequest("GET", "/api/v1/wealth/estimate?"+query, nil)
+		req.Header.Set("Authorization", "Bearer token")
+		rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
+		router.ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Header().Get("Content-Type"), "application/problem+json")
+		assert.Equal(t, http.StatusBadRequest, rec.Code, query)
+		assert.Contains(t, rec.Header().Get("Content-Type"), "application/problem+json", query)
+	}
 }

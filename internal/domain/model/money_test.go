@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -78,4 +79,11 @@ func TestMoney_GrowthPctFromComputesSignedChange(t *testing.T) {
 	down := m900.GrowthPctFrom(baseline)
 	require.NotNil(t, down)
 	assert.Equal(t, "-10.0", down.StringFixed(1))
+}
+
+func TestMoney_FromFloatRejectsNonFinite(t *testing.T) {
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		_, err := model.NewMoneyFromFloat(v)
+		assert.ErrorIs(t, err, model.ErrNonFiniteMoney)
+	}
 }
