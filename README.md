@@ -39,11 +39,11 @@ internal/
 # MongoDB local (mongodb://localhost:27017, el default de MONGODB_URI)
 docker compose up -d
 
-# AUTH_DEV_USER_ID apaga la validación JWT: cualquier "Bearer <algo>" actúa como ese usuario.
+# AUTH_DEV_USER_ID apaga la autenticación: todo request (con o sin token) actúa como ese usuario.
 $env:AUTH_DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 go run ./cmd/api
 ```
-En Swagger: **Authorize** → cualquier valor (p. ej. `dev`). Sin `AUTH_DEV_USER_ID` la API exige JWT reales de Supabase.
+Swagger y el "Skip login (dev)" del frontend funcionan sin token. Sin `AUTH_DEV_USER_ID` la API exige JWT reales de Supabase.
 En Vercel se ignora siempre (la variable `VERCEL` la desactiva).
 - API REST: `http://localhost:8080`
 - **Swagger UI Interactivo**: `http://localhost:8080/swagger` o `http://localhost:8080/docs`

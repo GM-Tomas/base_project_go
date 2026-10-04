@@ -50,7 +50,7 @@ func NewStaticJWTValidator(keySet jwk.Set, issuer, audience string) *SupabaseJWT
 	}
 }
 
-// DevValidator accepts any token as a fixed user. Local only: config refuses it on Vercel.
+// DevValidator makes every request (token or not) a fixed user. Local only: config refuses it on Vercel.
 type DevValidator struct{ UserId model.UserId }
 
 func (v DevValidator) ValidateToken(context.Context, string) (model.UserId, error) {
@@ -90,6 +90,12 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Dev mode needs no token at all, so the frontend's "Skip login" and Swagger work as-is.
+			if dev, ok := validator.(DevValidator); ok {
+				next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), dev.UserId)))
+				return
+			}
+
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
 				WriteUnauthorized(w, r, "Missing or invalid access token")

@@ -65,7 +65,7 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 			cleanup()
 			return nil, fmt.Errorf("AUTH_DEV_USER_ID: %w", err)
 		}
-		log.Printf("WARNING: auth disabled, any Bearer token acts as user %s (AUTH_DEV_USER_ID)", cfg.DevUserID)
+		log.Printf("WARNING: auth disabled, every request acts as user %s (AUTH_DEV_USER_ID)", cfg.DevUserID)
 		jwtValidator = middleware.DevValidator{UserId: devUser}
 	} else {
 		jwtValidator, err = middleware.NewSupabaseJWTValidator(
