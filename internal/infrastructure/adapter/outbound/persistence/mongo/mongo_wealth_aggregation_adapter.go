@@ -5,7 +5,7 @@ import (
 	"context"
 	"maps"
 	"slices"
-	"sort"
+	"strings"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
@@ -102,24 +102,30 @@ func (a *MongoWealthAggregationAdapter) ByAssetClass(
 		acc.count++
 	}
 
-	var list []outbound.AssetClassAggregate
+	type classRow struct {
+		outbound.AssetClassAggregate
+		sortName string
+	}
+	rows := make([]classRow, 0, len(accMap))
 	for ac, acc := range accMap {
-		list = append(list, outbound.AssetClassAggregate{
-			AssetClass: ac,
-			Value:      acc.total,
-			Count:      acc.count,
+		rows = append(rows, classRow{
+			AssetClassAggregate: outbound.AssetClassAggregate{AssetClass: ac, Value: acc.total, Count: acc.count},
+			sortName:            sortName(ac.Value()),
 		})
 	}
 
-	// Sort descending by value, then ascending by class name
-	sort.Slice(list, func(i, j int) bool {
-		cmp := list[i].Value.Amount().Cmp(list[j].Value.Amount())
-		if cmp != 0 {
-			return cmp > 0
-		}
-		return list[i].AssetClass.Value() < list[j].AssetClass.Value()
+	// By value, largest first, then by name as platforms are (classes differing only in case stay apart).
+	slices.SortFunc(rows, func(x, y classRow) int {
+		return cmp.Or(
+			y.Value.Amount().Cmp(x.Value.Amount()),
+			strings.Compare(x.sortName, y.sortName),
+			strings.Compare(x.AssetClass.Value(), y.AssetClass.Value()),
+		)
 	})
-
+	var list []outbound.AssetClassAggregate
+	for _, row := range rows {
+		list = append(list, row.AssetClassAggregate)
+	}
 	return list, nil
 }
 

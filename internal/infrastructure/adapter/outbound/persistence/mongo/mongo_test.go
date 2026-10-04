@@ -209,6 +209,31 @@ func TestHoldingRepository_AssetClassesInUseListsEachClassOnce(t *testing.T) {
 	assert.ElementsMatch(t, []model.AssetClass{model.MustAssetClass("Caf\u00e9"), model.MustAssetClass("Equity")}, classes)
 }
 
+func TestWealthAggregation_ByAssetClassBreaksTiesLikeAPerson(t *testing.T) {
+	db := testDB(t)
+	holdings := NewMongoHoldingRepository(db)
+	ctx := context.Background()
+	user := newUser()
+	for _, h := range []model.Holding{
+		holding(user, "a", "Bonds", "Bank", 5, at(1)),
+		holding(user, "b", "Ácciones", "Bank", 5, at(1)),
+		holding(user, "c", "cash", "Bank", 5, at(1)),
+		holding(user, "d", "Cash", "Bank", 5, at(1)),
+	} {
+		_, err := holdings.Save(ctx, h)
+		require.NoError(t, err)
+	}
+
+	byClass, err := NewMongoWealthAggregationAdapter(db).ByAssetClass(ctx, user)
+
+	require.NoError(t, err)
+	var classes []string
+	for _, r := range byClass {
+		classes = append(classes, r.AssetClass.Value())
+	}
+	assert.Equal(t, []string{"Ácciones", "Bonds", "Cash", "cash"}, classes, "accents and case ignored, as for platforms")
+}
+
 func TestWealthAggregation_ByAssetClassReadsClassesLikeTheDomain(t *testing.T) {
 	db := testDB(t)
 	user := newUser()
@@ -809,10 +834,11 @@ func TestEnsureIndexes_HoldingsOldestFirstNeedsNoSort(t *testing.T) {
 		}
 		return nil
 	}
-	planner, _ := field(explained, "queryPlanner").(bson.D)
+	planner, ok := field(explained, "queryPlanner").(bson.D)
+	require.True(t, ok, "explain: %v", explained)
 	walk(field(planner, "winningPlan"))
-	assert.Contains(t, stages, "IXSCAN")
-	assert.NotContains(t, stages, "SORT", "plan: %v", stages)
+	assert.Contains(t, stages, "IXSCAN", "explain: %v", explained)
+	assert.NotContains(t, stages, "SORT", "explain: %v", explained)
 }
 
 func TestEnsureIndexes_CoversEveryPerUserQuery(t *testing.T) {

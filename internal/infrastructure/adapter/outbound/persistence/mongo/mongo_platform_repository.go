@@ -17,8 +17,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"golang.org/x/text/cases"
-	"golang.org/x/text/runes"
-	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -145,15 +143,17 @@ func byName(a, b *platformGroup) int {
 	return cmp.Or(strings.Compare(a.sortName, b.sortName), strings.Compare(a.key, b.key))
 }
 
-func sortName(name model.PlatformName) string {
-	stripAccents := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
-	stripped, _, err := transform.String(stripAccents, name.Value())
-	if err != nil {
-		stripped = name.Value()
-	}
+// sortName is how a label sorts as a person reads it: case and accents ignored.
+func sortName(label string) string {
+	unaccented := strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return r
+	}, norm.NFD.String(label))
 	folder := folders.Get().(*cases.Caser)
 	defer folders.Put(folder)
-	return folder.String(stripped)
+	return folder.String(norm.NFC.String(unaccented))
 }
 
 // platformsWithTypes reads the user's platforms and the types earlier versions stored at the same time:
@@ -215,7 +215,7 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 		name, key := spellings.spell(stored)
 		g, ok := groups[key]
 		if !ok {
-			g = &platformGroup{key: key, name: name, sortName: sortName(name), firstUsed: doc.CreatedAt, total: model.ZeroMoney}
+			g = &platformGroup{key: key, name: name, sortName: sortName(name.Value()), firstUsed: doc.CreatedAt, total: model.ZeroMoney}
 			groups[key] = g
 		}
 		amount, err := decimal.NewFromString(doc.ValueUSD)
