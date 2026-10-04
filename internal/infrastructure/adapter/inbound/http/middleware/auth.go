@@ -18,6 +18,10 @@ type JWTValidator interface {
 	ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error)
 }
 
+// ErrSigningKeysUnavailable means the JWKS couldn't be fetched. The token may well be valid, so it's
+// answered with 503 (our problem) rather than 401, which makes the frontend sign the user out.
+var ErrSigningKeysUnavailable = errors.New("signing keys unavailable")
+
 type SupabaseJWTValidator struct {
 	keys     func(ctx context.Context) (jwk.Set, error)
 	issuer   string
@@ -50,18 +54,26 @@ func NewStaticJWTValidator(keySet jwk.Set, issuer, audience string) *SupabaseJWT
 	}
 }
 
-// DevValidator makes every request (token or not) a fixed user. Local only: config refuses it on Vercel.
-type DevValidator struct{ UserId model.UserId }
+// DevValidator makes requests that carry no token at all act as a fixed user, so "Skip login (dev)" and
+// Swagger work offline. A token that is sent is still verified by Tokens: signed-in accounts keep their
+// own data in dev mode too, instead of all collapsing into one user. Local only: config refuses it on Vercel.
+type DevValidator struct {
+	UserId model.UserId
+	Tokens JWTValidator
+}
 
-func (v DevValidator) ValidateToken(context.Context, string) (model.UserId, error) {
-	return v.UserId, nil
+func (v DevValidator) ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error) {
+	if v.Tokens == nil {
+		return model.UserId{}, errors.New("dev mode has no token validator")
+	}
+	return v.Tokens.ValidateToken(ctx, tokenStr)
 }
 
 func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr string) (model.UserId, error) {
 	// No keys means no verification is possible: reject, never fall back to an unverified parse.
 	keySet, err := v.keys(ctx)
 	if err != nil {
-		return model.UserId{}, fmt.Errorf("fetching JWKS: %w", err)
+		return model.UserId{}, fmt.Errorf("%w: fetching JWKS: %v", ErrSigningKeysUnavailable, err)
 	}
 
 	tok, err := jwt.Parse([]byte(tokenStr),
@@ -95,14 +107,13 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Dev mode needs no token at all, so the frontend's "Skip login" and Swagger work as-is.
-			if dev, ok := validator.(DevValidator); ok {
-				next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), dev.UserId)))
-				return
-			}
-
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
+				// Dev mode only: no token at all is the fixed local user ("Skip login", Swagger).
+				if dev, ok := validator.(DevValidator); ok {
+					next.ServeHTTP(w, r.WithContext(WithUser(r.Context(), dev.UserId)))
+					return
+				}
 				WriteUnauthorized(w, r, "Missing or invalid access token")
 				return
 			}
@@ -122,6 +133,11 @@ func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
 			userId, err := validator.ValidateToken(r.Context(), tokenStr)
 			if err != nil {
 				log.Printf("auth: rejected token [traceId=%s]: %v", GetTraceID(r.Context()), err)
+				if errors.Is(err, ErrSigningKeysUnavailable) {
+					WriteProblem(w, r, http.StatusServiceUnavailable, "auth-unavailable", "Service Unavailable",
+						"Your sign-in can't be verified right now. Please try again shortly.", nil)
+					return
+				}
 				WriteUnauthorized(w, r, "Missing or invalid access token")
 				return
 			}

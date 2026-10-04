@@ -57,27 +57,26 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 	wealthHandler := appHttp.NewWealthHandler(wealthService, snapshotService, projectionService)
 	swaggerHandler := appHttp.NewSwaggerHandler()
 
-	// Supabase JWT Validator, or a fixed user for fully offline local runs.
-	var jwtValidator middleware.JWTValidator
+	// Supabase JWT validation. The JWKS is fetched lazily, so this works offline too.
+	supabaseValidator, err := middleware.NewSupabaseJWTValidator(
+		ctx,
+		cfg.JWKSetURI,
+		cfg.AuthIssuer,
+		cfg.AuthAudience,
+	)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("configuring JWT validation: %w", err)
+	}
+	var jwtValidator middleware.JWTValidator = supabaseValidator
 	if cfg.DevUserID != "" {
 		devUser, err := model.ParseUserId(cfg.DevUserID)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("AUTH_DEV_USER_ID: %w", err)
 		}
-		log.Printf("WARNING: auth disabled, every request acts as user %s (AUTH_DEV_USER_ID)", cfg.DevUserID)
-		jwtValidator = middleware.DevValidator{UserId: devUser}
-	} else {
-		jwtValidator, err = middleware.NewSupabaseJWTValidator(
-			ctx,
-			cfg.JWKSetURI,
-			cfg.AuthIssuer,
-			cfg.AuthAudience,
-		)
-		if err != nil {
-			cleanup()
-			return nil, fmt.Errorf("configuring JWT validation: %w", err)
-		}
+		log.Printf("WARNING: requests without a token act as user %s (AUTH_DEV_USER_ID); tokens are still verified", cfg.DevUserID)
+		jwtValidator = middleware.DevValidator{UserId: devUser, Tokens: supabaseValidator}
 	}
 
 	// Router

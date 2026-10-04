@@ -165,5 +165,15 @@ func TestSupabaseJWTValidator_RemoteJWKS(t *testing.T) {
 	down, err := middleware.NewSupabaseJWTValidator(ctx, jwksDown.URL, issuer, "authenticated")
 	require.NoError(t, err)
 	_, err = down.ValidateToken(ctx, string(signed))
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
+
+	// ...and it's a 503, not a 401: the frontend signs the user out on 401.
+	req := httptest.NewRequest("GET", "/api/v1/holdings", nil)
+	req.Header.Set("Authorization", "Bearer "+string(signed))
+	rec := httptest.NewRecorder()
+	called := false
+	middleware.AuthMiddleware(down)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Contains(t, rec.Header().Get("Content-Type"), "application/problem+json")
+	assert.False(t, called)
 }

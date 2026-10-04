@@ -132,15 +132,62 @@ func TestValidateToken_NonUUIDSubIsInvalidUUID(t *testing.T) {
 	assert.ErrorIs(t, err, model.ErrInvalidUUID)
 }
 
-func TestDevValidator_ReturnsFixedUserForAnyToken(t *testing.T) {
-	user := model.NewUserId(uuid.New())
-	v := middleware.DevValidator{UserId: user}
+func TestDevValidator_StillVerifiesTokensThatAreSent(t *testing.T) {
+	priv, set := newKey(t)
+	devUser := model.NewUserId(uuid.New())
+	v := middleware.DevValidator{UserId: devUser, Tokens: middleware.NewStaticJWTValidator(set, testIssuer, testAudience)}
+
+	sub := uuid.New()
+	got, err := v.ValidateToken(context.Background(), sign(t, priv, func(b *jwt.Builder) *jwt.Builder { return b.Subject(sub.String()) }))
+	require.NoError(t, err)
+	assert.Equal(t, sub, got.UUID(), "a signed-in account is itself, not the dev user")
 
 	for _, token := range []string{"", "anything", "not.a.jwt"} {
-		got, err := v.ValidateToken(context.Background(), token)
-		require.NoError(t, err)
-		assert.Equal(t, user, got)
+		_, err := v.ValidateToken(context.Background(), token)
+		assert.Error(t, err, "a bad token is never upgraded to the dev user")
 	}
+
+	_, err = middleware.DevValidator{UserId: devUser}.ValidateToken(context.Background(), "anything")
+	assert.Error(t, err, "no token validator fails closed")
+}
+
+func TestAuthMiddleware_DevModeKeepsAccountsApart(t *testing.T) {
+	priv, set := newKey(t)
+	devUser := model.NewUserId(uuid.New())
+	mw := middleware.AuthMiddleware(middleware.DevValidator{UserId: devUser, Tokens: middleware.NewStaticJWTValidator(set, testIssuer, testAudience)})
+
+	whoAmI := func(header string) (int, model.UserId) {
+		var got model.UserId
+		req := httptest.NewRequest("GET", "/api/v1/holdings", nil)
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		rec := httptest.NewRecorder()
+		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got, _ = middleware.GetUserFromContext(r.Context())
+		})).ServeHTTP(rec, req)
+		return rec.Code, got
+	}
+
+	alice, bob := uuid.New(), uuid.New()
+	token := func(sub uuid.UUID) string {
+		return "Bearer " + sign(t, priv, func(b *jwt.Builder) *jwt.Builder { return b.Subject(sub.String()) })
+	}
+
+	code, got := whoAmI("")
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, devUser, got)
+
+	code, got = whoAmI(token(alice))
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, alice, got.UUID())
+
+	code, got = whoAmI(token(bob))
+	assert.Equal(t, http.StatusOK, code)
+	assert.Equal(t, bob, got.UUID())
+
+	code, _ = whoAmI("Bearer forged")
+	assert.Equal(t, http.StatusUnauthorized, code)
 }
 
 func TestAuthMiddleware_DevValidatorNeedsNoHeader(t *testing.T) {
