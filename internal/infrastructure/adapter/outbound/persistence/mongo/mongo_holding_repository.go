@@ -60,10 +60,11 @@ func (r *MongoHoldingRepository) FindAll(
 		}
 		// Every holding names its platform as the platform list does: as on its earliest holding (see
 		// platformGroups), so clients can match platforms exactly.
-		if spelled, ok := spellings[platformKey(h.Platform)]; ok {
+		key := platformKey(h.Platform) // h.Platform went through NewPlatformName, as in platformOf
+		if spelled, ok := spellings[key]; ok {
 			h.Platform = spelled
 		} else {
-			spellings[platformKey(h.Platform)] = h.Platform
+			spellings[key] = h.Platform
 		}
 		holdings = append(holdings, h)
 	}

@@ -123,11 +123,7 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 	userId model.UserId,
 ) ([]outbound.PlatformAggregate, error) {
 	// The same platforms as PlatformRepository.FindAll, so the breakdown matches the platform list.
-	groups, err := platformGroups(ctx, a.holdingsColl, userId)
-	if err != nil {
-		return nil, err
-	}
-	types, err := legacyPlatformTypes(ctx, a.platformsColl, userId)
+	groups, types, err := platformsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId)
 	if err != nil {
 		return nil, err
 	}

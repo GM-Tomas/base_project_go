@@ -401,7 +401,7 @@
           "Holdings"
         ],
         "summary": "Crea una nueva posición financiera",
-        "description": "Registra una nueva posición de inversión.\n\n**Plataforma:** no hace falta crearla antes. Si el usuario ya tiene holdings en esa plataforma escrita con otras mayúsculas (\"binance\" vs \"Binance\"), el holding toma esa grafía y la respuesta la refleja; si es nueva, queda como se envió y aparece en `GET /platforms` (tipo `\"Other\"`).\n",
+        "description": "Registra una nueva posición de inversión.\n\n**Plataforma:** no hace falta crearla antes. Si el usuario ya tiene holdings en esa plataforma escrita con otras mayúsculas (\"binance\" vs \"Binance\"), el holding toma esa grafía y la respuesta la refleja; si es nueva, queda como se envió y aparece en `GET /platforms` con tipo `\"Other\"` (o el que versiones anteriores, que permitían elegirlo, le hayan dado a ese nombre).\n",
         "operationId": "createHolding",
         "security": [
           {
@@ -522,7 +522,7 @@
           "Platforms"
         ],
         "summary": "Lista todas las plataformas del usuario",
-        "description": "Retorna las plataformas que usan los holdings del usuario, ordenadas por nombre. Se comparan sin distinguir mayúsculas (\"Binance\" y \"binance\" son una, escrita como en su holding más antiguo); una plataforma existe mientras al menos un holding la use (aparece con el primero y desaparece con el último).",
+        "description": "Retorna las plataformas que usan los holdings del usuario, ordenadas por nombre. Se comparan sin distinguir mayúsculas (\"Binance\" y \"binance\" son una, escrita como en su holding más antiguo); una plataforma existe mientras al menos un holding la use (aparece con el primero y desaparece con el último). Tipo: `\"Other\"`, salvo el que versiones anteriores (que permitían elegirlo) le hayan dado a ese nombre. Orden alfabético sin distinguir mayúsculas ni acentos.",
         "operationId": "getAllPlatforms",
         "security": [
           {

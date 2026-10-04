@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
@@ -12,6 +13,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 // MongoPlatformRepository derives the user's platforms from their holdings: a platform is a name holdings
@@ -30,11 +34,7 @@ var _ outbound.PlatformRepository = (*MongoPlatformRepository)(nil)
 
 // FindAll lists the user's platforms alphabetically, each created when its first holding was.
 func (r *MongoPlatformRepository) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
-	groups, err := platformGroups(ctx, r.holdingsColl, userId)
-	if err != nil {
-		return nil, err
-	}
-	types, err := legacyPlatformTypes(ctx, r.platformsColl, userId)
+	groups, types, err := platformsWithTypes(ctx, r.holdingsColl, r.platformsColl, userId)
 	if err != nil {
 		return nil, err
 	}
@@ -51,42 +51,49 @@ func (r *MongoPlatformRepository) FindAll(ctx context.Context, userId model.User
 	return platforms, nil
 }
 
-// Canonical returns the spelling the user's holdings already use for this platform, or name itself for a
-// new one. (Two creates racing on a new platform in different cases can each keep their spelling; every
-// view treats them as one, spelled as the earliest.)
+// Canonical returns the spelling the user's holdings already use for this platform (as on the earliest of
+// them, like every view), or name itself for a new one. One query: each stored spelling with its earliest
+// holding. (Two creates racing on a new platform in different cases can each keep their spelling; every
+// view still shows them as one.)
 func (r *MongoPlatformRepository) Canonical(
 	ctx context.Context,
 	userId model.UserId,
 	name model.PlatformName,
 ) (model.PlatformName, error) {
-	uid := userId.UUID().String()
-	var used []string
-	if err := r.holdingsColl.Distinct(ctx, "platform_name", bson.M{"user_id": uid}).Decode(&used); err != nil {
-		return model.PlatformName{}, err
-	}
-	var spellings []string
-	for _, s := range used {
-		if strings.ToLower(s) == platformKey(name) {
-			spellings = append(spellings, s)
-		}
-	}
-	switch len(spellings) {
-	case 0:
-		return name, nil
-	case 1:
-		return model.NewPlatformName(spellings[0])
-	}
-	var earliest holdingDoc
-	err := r.holdingsColl.FindOne(ctx,
-		bson.M{"user_id": uid, "platform_name": bson.M{"$in": spellings}},
-		options.FindOne().
-			SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}).
-			SetProjection(bson.M{"platform_name": 1}),
-	).Decode(&earliest)
+	cursor, err := r.holdingsColl.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{"user_id": userId.UUID().String()}}},
+		{{Key: "$sort", Value: bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":     "$platform_name",
+			"firstAt": bson.M{"$first": "$created_at"},
+			"firstId": bson.M{"$first": "$_id"},
+		}}},
+	})
 	if err != nil {
 		return model.PlatformName{}, err
 	}
-	return model.NewPlatformName(earliest.PlatformName)
+	var spellings []struct {
+		Name    string    `bson:"_id"`
+		FirstAt time.Time `bson:"firstAt"`
+		FirstID string    `bson:"firstId"`
+	}
+	if err := cursor.All(ctx, &spellings); err != nil {
+		return model.PlatformName{}, err
+	}
+
+	canonical, found := name, false
+	var at time.Time
+	var id string
+	for _, sp := range spellings {
+		spelled, key, ok := platformOf(sp.Name)
+		if !ok || key != platformKey(name) {
+			continue
+		}
+		if !found || sp.FirstAt.Before(at) || (sp.FirstAt.Equal(at) && sp.FirstID < id) {
+			canonical, at, id, found = spelled, sp.FirstAt, sp.FirstID, true
+		}
+	}
+	return canonical, nil
 }
 
 // platformGroup is one platform: the holdings whose platform names match case-insensitively.
@@ -97,14 +104,66 @@ type platformGroup struct {
 	count     int
 }
 
+// platformKey is what makes two platform names the same platform.
 func platformKey(name model.PlatformName) string { return strings.ToLower(name.Value()) }
 
-// lessPlatformName orders platforms alphabetically regardless of case.
+// platformOf reads a stored platform name the way the domain does (trimmed, inner whitespace collapsed),
+// with its key. ok is false for a name the domain rejects (only writable outside the API). Every view and
+// Canonical key platforms through here, so they always agree.
+func platformOf(stored string) (name model.PlatformName, key string, ok bool) {
+	name, err := model.NewPlatformName(stored)
+	if err != nil {
+		return model.PlatformName{}, "", false
+	}
+	return name, platformKey(name), true
+}
+
+// lessPlatformName orders platforms as a person reads them: ignoring case and accents, so "Álamo" sorts
+// with the A's rather than after "Zurich".
 func lessPlatformName(a, b model.PlatformName) bool {
+	if ka, kb := foldedForSorting(a), foldedForSorting(b); ka != kb {
+		return ka < kb
+	}
 	if ka, kb := platformKey(a), platformKey(b); ka != kb {
 		return ka < kb
 	}
 	return a.Value() < b.Value()
+}
+
+func foldedForSorting(name model.PlatformName) string {
+	stripAccents := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+	folded, _, err := transform.String(stripAccents, name.Value())
+	if err != nil {
+		folded = name.Value()
+	}
+	return strings.ToLower(folded)
+}
+
+// platformsWithTypes reads the user's platforms and the types earlier versions stored at the same time:
+// two independent queries, so a page load waits for one round trip rather than two.
+func platformsWithTypes(
+	ctx context.Context,
+	holdings, platforms *mongo.Collection,
+	userId model.UserId,
+) (map[string]*platformGroup, map[string]model.PlatformType, error) {
+	type result struct {
+		types map[string]model.PlatformType
+		err   error
+	}
+	legacy := make(chan result, 1)
+	go func() {
+		types, err := legacyPlatformTypes(ctx, platforms, userId)
+		legacy <- result{types, err}
+	}()
+	groups, err := platformGroups(ctx, holdings, userId)
+	res := <-legacy
+	if err != nil {
+		return nil, nil, err
+	}
+	if res.err != nil {
+		return nil, nil, res.err
+	}
+	return groups, res.types, nil
 }
 
 // platformGroups groups the user's holdings by platform, keyed by platformKey. Holdings whose stored
@@ -126,14 +185,14 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 
 	groups := make(map[string]*platformGroup)
 	for _, doc := range docs {
-		name, err := model.NewPlatformName(doc.PlatformName)
-		if err != nil {
+		name, key, ok := platformOf(doc.PlatformName)
+		if !ok {
 			continue
 		}
-		g, ok := groups[platformKey(name)]
+		g, ok := groups[key]
 		if !ok {
 			g = &platformGroup{name: name, firstUsed: doc.CreatedAt, total: model.ZeroMoney}
-			groups[platformKey(name)] = g
+			groups[key] = g
 		}
 		amount, err := decimal.NewFromString(doc.ValueUSD)
 		if err != nil {
@@ -150,8 +209,9 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 }
 
 // legacyPlatformTypes maps platform keys to the types earlier versions stored in the platforms collection,
-// when users could still pick one (Broker, Wallet...). Nothing writes there anymore: any other platform is
-// plain Other. Unusable entries are skipped rather than failing the listing.
+// when users could still pick one (Broker, Wallet...). Nothing writes there anymore: the type stays with
+// that name (also if the platform is used again after its last holding went), any other one is plain
+// Other. Unusable entries are skipped rather than failing the listing.
 func legacyPlatformTypes(ctx context.Context, platforms *mongo.Collection, userId model.UserId) (map[string]model.PlatformType, error) {
 	cursor, err := platforms.Find(ctx,
 		bson.M{"user_id": userId.UUID().String()},

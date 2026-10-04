@@ -118,7 +118,8 @@ colecciones `holdings` y `net_worth_snapshots`. Los montos se guardan como decim
 Las plataformas no se guardan aparte: son los nombres que usan los holdings del usuario, sin distinguir mayúsculas
 ("Binance" y "binance" son la misma, escrita como en su holding más antiguo, y así la muestran todos los endpoints).
 Aparecen con el primer holding y desaparecen con el último. La colección `platforms` de versiones anteriores solo se lee,
-para conservar el tipo (Broker, Wallet...) que se eligió entonces; nada escribe en ella.
+para conservar el tipo (Broker, Wallet...) que se eligió entonces para cada nombre, también si esa plataforma se vuelve a
+usar más adelante; nada escribe en ella. Las demás son de tipo `Other`.
 
 ---
 

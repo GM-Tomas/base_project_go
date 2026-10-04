@@ -359,6 +359,59 @@ func TestPlatformRepository_KeepsTypesEarlierVersionsStoredAndSortsAlphabeticall
 	assert.Equal(t, []string{"balanz/Broker", "Nexo/Other", "abank/Other"}, rows)
 }
 
+func TestPlatformRepository_ReadsStoredNamesLikeTheDomainAndSortsLikeAPerson(t *testing.T) {
+	db := testDB(t)
+	repo := NewMongoPlatformRepository(db)
+	holdings := NewMongoHoldingRepository(db)
+	ctx := context.Background()
+	user := newUser()
+
+	// Written by an older version, with a double space the domain would have collapsed.
+	insertRaw(t, db, "holdings", bson.M{
+		"_id": uuid.NewString(), "user_id": user.String(), "name": "MP", "asset_class": "Cash",
+		"platform_name": "Mercado  Pago", "value_usd": "1.00", "created_at": at(1), "updated_at": at(1),
+	})
+	name, err := repo.Canonical(ctx, user, model.MustPlatformName("mercado pago"))
+	require.NoError(t, err)
+	assert.Equal(t, "Mercado Pago", name.Value(), "the same platform as the views show, not a new variant")
+
+	for _, h := range []model.Holding{
+		holding(user, "z", "Cash", "Zurich", 1, at(2)),
+		holding(user, "a", "Cash", "Álamo", 1, at(3)),
+		holding(user, "n", "Cash", "Ñandú", 1, at(4)),
+		holding(user, "x", "Cash", "nexo", 1, at(5)),
+	} {
+		_, err := holdings.Save(ctx, h)
+		require.NoError(t, err)
+	}
+	platforms, err := repo.FindAll(ctx, user)
+	require.NoError(t, err)
+	var names []string
+	for _, p := range platforms {
+		names = append(names, p.Name.Value())
+	}
+	assert.Equal(t, []string{"Álamo", "Mercado Pago", "Ñandú", "nexo", "Zurich"}, names, "ignoring case and accents")
+}
+
+func TestPlatformRepository_CanonicalAgreesWithTheViewsOnTies(t *testing.T) {
+	db := testDB(t)
+	repo := NewMongoPlatformRepository(db)
+	holdings := NewMongoHoldingRepository(db)
+	ctx := context.Background()
+	user := newUser()
+
+	for _, spelling := range []string{"kraken", "Kraken", "KRAKEN"} {
+		_, err := holdings.Save(ctx, holding(user, spelling, "Cash", spelling, 1, at(1))) // same instant
+		require.NoError(t, err)
+	}
+	platforms, err := repo.FindAll(ctx, user)
+	require.NoError(t, err)
+	require.Len(t, platforms, 1)
+	name, err := repo.Canonical(ctx, user, model.MustPlatformName("kraKEN"))
+	require.NoError(t, err)
+	assert.Equal(t, platforms[0].Name, name)
+}
+
 func TestPlatformRepository_Errors(t *testing.T) {
 	db := testDB(t)
 	repo := NewMongoPlatformRepository(db)
