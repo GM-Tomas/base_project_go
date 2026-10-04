@@ -216,7 +216,7 @@ func TestMultiUser_EachAccountOnlySeesAndChangesItsOwnData(t *testing.T) {
 	assert.Equal(t, []string{"BTC", "Savings"}, e.holdingNames(asAlice))
 	assert.Equal(t, []string{"ETH", "Gold bar"}, e.holdingNames(asBob))
 	assert.Equal(t, []string{"Bank A", "Binance"}, e.platformNames(asAlice))
-	assert.Equal(t, []string{"Vault", "binance"}, e.platformNames(asBob))
+	assert.Equal(t, []string{"binance", "Vault"}, e.platformNames(asBob))
 
 	var aliceClasses, bobClasses struct{ InUse []string }
 	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/asset-classes", nil, &aliceClasses))
@@ -272,7 +272,7 @@ func TestMultiUser_EachAccountOnlySeesAndChangesItsOwnData(t *testing.T) {
 	// Alice deleting her own holding doesn't touch Bob's same-named platform.
 	assert.Equal(t, http.StatusNoContent, e.do(asAlice, "DELETE", "/api/v1/holdings/"+aliceBTC.Id, nil, nil))
 	assert.Equal(t, []string{"Bank A"}, e.platformNames(asAlice))
-	assert.Equal(t, []string{"Vault", "binance"}, e.platformNames(asBob))
+	assert.Equal(t, []string{"binance", "Vault"}, e.platformNames(asBob))
 	assert.Equal(t, 500.0, e.summary(asAlice).NetWorth.Usd)
 	assert.Equal(t, 501.0, e.summary(asBob).NetWorth.Usd)
 }

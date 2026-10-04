@@ -39,7 +39,7 @@ func (r *MongoHoldingRepository) FindAll(
 	ctx context.Context,
 	userId model.UserId,
 ) ([]model.Holding, error) {
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}})
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}})
 	cursor, err := r.coll.Find(ctx, bson.M{"user_id": userId.UUID().String()}, opts)
 	if err != nil {
 		return nil, err
@@ -52,10 +52,18 @@ func (r *MongoHoldingRepository) FindAll(
 	}
 
 	holdings := make([]model.Holding, 0, len(docs))
+	spellings := make(map[string]model.PlatformName)
 	for _, doc := range docs {
 		h, err := mapDocToHolding(doc)
 		if err != nil {
 			return nil, err
+		}
+		// Every holding names its platform as the platform list does: as on its earliest holding (see
+		// platformGroups), so clients can match platforms exactly.
+		if spelled, ok := spellings[platformKey(h.Platform)]; ok {
+			h.Platform = spelled
+		} else {
+			spellings[platformKey(h.Platform)] = h.Platform
 		}
 		holdings = append(holdings, h)
 	}

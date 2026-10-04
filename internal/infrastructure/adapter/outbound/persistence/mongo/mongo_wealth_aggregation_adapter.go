@@ -12,11 +12,12 @@ import (
 )
 
 type MongoWealthAggregationAdapter struct {
-	holdingsColl *mongo.Collection
+	holdingsColl  *mongo.Collection
+	platformsColl *mongo.Collection // read-only, see legacyPlatformTypes
 }
 
 func NewMongoWealthAggregationAdapter(db *MongoDB) *MongoWealthAggregationAdapter {
-	return &MongoWealthAggregationAdapter{holdingsColl: db.Holdings}
+	return &MongoWealthAggregationAdapter{holdingsColl: db.Holdings, platformsColl: db.Platforms}
 }
 
 var _ outbound.WealthAggregationPort = (*MongoWealthAggregationAdapter)(nil)
@@ -126,12 +127,16 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 	if err != nil {
 		return nil, err
 	}
+	types, err := legacyPlatformTypes(ctx, a.platformsColl, userId)
+	if err != nil {
+		return nil, err
+	}
 
 	list := make([]outbound.PlatformAggregate, 0, len(groups))
-	for _, g := range groups {
+	for key, g := range groups {
 		list = append(list, outbound.PlatformAggregate{
 			Name:  g.name,
-			Type:  model.PlatformTypeOther,
+			Type:  typeOf(types, key),
 			Value: g.total,
 			Count: g.count,
 		})
@@ -143,7 +148,7 @@ func (a *MongoWealthAggregationAdapter) ByPlatform(
 		if cmp != 0 {
 			return cmp > 0
 		}
-		return list[i].Name.Value() < list[j].Name.Value()
+		return lessPlatformName(list[i].Name, list[j].Name)
 	})
 
 	return list, nil

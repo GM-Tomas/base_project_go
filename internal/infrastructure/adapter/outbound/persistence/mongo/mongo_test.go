@@ -311,6 +311,52 @@ func TestPlatformRepository_CaseVariantsAreOnePlatform(t *testing.T) {
 	assert.Equal(t, "Kraken", byPlatform[0].Name.Value())
 	assert.Equal(t, "16.00", byPlatform[0].Value.String())
 	assert.Equal(t, 3, byPlatform[0].Count)
+
+	// And every holding comes back under that spelling, so clients can match platforms exactly.
+	list, err := holdings.FindAll(ctx, user)
+	require.NoError(t, err)
+	for _, h := range list {
+		assert.Equal(t, "Kraken", h.Platform.Value(), h.Name)
+	}
+}
+
+func TestPlatformRepository_KeepsTypesEarlierVersionsStoredAndSortsAlphabetically(t *testing.T) {
+	db := testDB(t)
+	repo := NewMongoPlatformRepository(db)
+	agg := NewMongoWealthAggregationAdapter(db)
+	holdings := NewMongoHoldingRepository(db)
+	ctx := context.Background()
+	user := newUser()
+
+	// Back when platforms had their own CRUD, users picked a type.
+	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "name": "Balanz", "lower_name": "balanz", "type": "Broker"})
+	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "lower_name": "nexo", "type": 5})
+	insertRaw(t, db, "platforms", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "lower_name": "gone", "type": "Wallet"})
+	for _, h := range []model.Holding{
+		holding(user, "a", "Equity", "balanz", 30, at(1)),
+		holding(user, "b", "Crypto", "Nexo", 20, at(2)),
+		holding(user, "c", "Cash", "abank", 10, at(3)),
+	} {
+		_, err := holdings.Save(ctx, h)
+		require.NoError(t, err)
+	}
+
+	platforms, err := repo.FindAll(ctx, user)
+	require.NoError(t, err)
+	var listed []string
+	for _, p := range platforms {
+		listed = append(listed, p.Name.Value()+"/"+p.Type.Value())
+	}
+	assert.Equal(t, []string{"abank/Other", "balanz/Broker", "Nexo/Other"}, listed,
+		"alphabetical regardless of case; a stored type kept, an unusable one Other; no holdings, no platform")
+
+	byPlatform, err := agg.ByPlatform(ctx, user)
+	require.NoError(t, err)
+	var rows []string
+	for _, p := range byPlatform {
+		rows = append(rows, p.Name.Value()+"/"+p.Type.Value())
+	}
+	assert.Equal(t, []string{"balanz/Broker", "Nexo/Other", "abank/Other"}, rows)
 }
 
 func TestPlatformRepository_Errors(t *testing.T) {

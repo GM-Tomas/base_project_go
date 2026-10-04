@@ -15,52 +15,78 @@ import (
 )
 
 // MongoPlatformRepository derives the user's platforms from their holdings: a platform is a name holdings
-// use, matched case-insensitively. Nothing is stored for it, so nothing can drift out of sync with them.
+// use, matched case-insensitively and spelled as on its earliest holding. Nothing is written for it, so
+// nothing can drift out of sync with them.
 type MongoPlatformRepository struct {
-	holdingsColl *mongo.Collection
+	holdingsColl  *mongo.Collection
+	platformsColl *mongo.Collection // read-only, see legacyPlatformTypes
 }
 
 func NewMongoPlatformRepository(db *MongoDB) *MongoPlatformRepository {
-	return &MongoPlatformRepository{holdingsColl: db.Holdings}
+	return &MongoPlatformRepository{holdingsColl: db.Holdings, platformsColl: db.Platforms}
 }
 
 var _ outbound.PlatformRepository = (*MongoPlatformRepository)(nil)
 
-// FindAll lists the user's platforms sorted by name, each created when its first holding was.
+// FindAll lists the user's platforms alphabetically, each created when its first holding was.
 func (r *MongoPlatformRepository) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
 	groups, err := platformGroups(ctx, r.holdingsColl, userId)
 	if err != nil {
 		return nil, err
 	}
+	types, err := legacyPlatformTypes(ctx, r.platformsColl, userId)
+	if err != nil {
+		return nil, err
+	}
 	platforms := make([]model.Platform, 0, len(groups))
-	for _, g := range groups {
+	for key, g := range groups {
 		platforms = append(platforms, model.Platform{
 			UserId:    userId,
 			Name:      g.name,
-			Type:      model.PlatformTypeOther,
+			Type:      typeOf(types, key),
 			CreatedAt: g.firstUsed,
 		})
 	}
-	sort.Slice(platforms, func(i, j int) bool { return platforms[i].Name.Value() < platforms[j].Name.Value() })
+	sort.Slice(platforms, func(i, j int) bool { return lessPlatformName(platforms[i].Name, platforms[j].Name) })
 	return platforms, nil
 }
 
 // Canonical returns the spelling the user's holdings already use for this platform, or name itself for a
 // new one. (Two creates racing on a new platform in different cases can each keep their spelling; every
-// view groups them case-insensitively all the same.)
+// view treats them as one, spelled as the earliest.)
 func (r *MongoPlatformRepository) Canonical(
 	ctx context.Context,
 	userId model.UserId,
 	name model.PlatformName,
 ) (model.PlatformName, error) {
-	groups, err := platformGroups(ctx, r.holdingsColl, userId)
+	uid := userId.UUID().String()
+	var used []string
+	if err := r.holdingsColl.Distinct(ctx, "platform_name", bson.M{"user_id": uid}).Decode(&used); err != nil {
+		return model.PlatformName{}, err
+	}
+	var spellings []string
+	for _, s := range used {
+		if strings.ToLower(s) == platformKey(name) {
+			spellings = append(spellings, s)
+		}
+	}
+	switch len(spellings) {
+	case 0:
+		return name, nil
+	case 1:
+		return model.NewPlatformName(spellings[0])
+	}
+	var earliest holdingDoc
+	err := r.holdingsColl.FindOne(ctx,
+		bson.M{"user_id": uid, "platform_name": bson.M{"$in": spellings}},
+		options.FindOne().
+			SetSort(bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}).
+			SetProjection(bson.M{"platform_name": 1}),
+	).Decode(&earliest)
 	if err != nil {
 		return model.PlatformName{}, err
 	}
-	if g, ok := groups[platformKey(name)]; ok {
-		return g.name, nil
-	}
-	return name, nil
+	return model.NewPlatformName(earliest.PlatformName)
 }
 
 // platformGroup is one platform: the holdings whose platform names match case-insensitively.
@@ -72,6 +98,14 @@ type platformGroup struct {
 }
 
 func platformKey(name model.PlatformName) string { return strings.ToLower(name.Value()) }
+
+// lessPlatformName orders platforms alphabetically regardless of case.
+func lessPlatformName(a, b model.PlatformName) bool {
+	if ka, kb := platformKey(a), platformKey(b); ka != kb {
+		return ka < kb
+	}
+	return a.Value() < b.Value()
+}
 
 // platformGroups groups the user's holdings by platform, keyed by platformKey. Holdings whose stored
 // platform name the domain rejects (only writable outside the API) are left out.
@@ -113,4 +147,37 @@ func platformGroups(ctx context.Context, holdings *mongo.Collection, userId mode
 		g.count++
 	}
 	return groups, nil
+}
+
+// legacyPlatformTypes maps platform keys to the types earlier versions stored in the platforms collection,
+// when users could still pick one (Broker, Wallet...). Nothing writes there anymore: any other platform is
+// plain Other. Unusable entries are skipped rather than failing the listing.
+func legacyPlatformTypes(ctx context.Context, platforms *mongo.Collection, userId model.UserId) (map[string]model.PlatformType, error) {
+	cursor, err := platforms.Find(ctx,
+		bson.M{"user_id": userId.UUID().String()},
+		options.Find().SetProjection(bson.M{"lower_name": 1, "type": 1}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var docs []bson.M
+	if err := cursor.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	types := make(map[string]model.PlatformType, len(docs))
+	for _, doc := range docs {
+		key, _ := doc["lower_name"].(string)
+		raw, _ := doc["type"].(string)
+		if pt, err := model.NewPlatformType(raw); err == nil && key != "" {
+			types[key] = pt
+		}
+	}
+	return types, nil
+}
+
+func typeOf(types map[string]model.PlatformType, key string) model.PlatformType {
+	if pt, ok := types[key]; ok {
+		return pt
+	}
+	return model.PlatformTypeOther
 }

@@ -17,6 +17,8 @@ type MongoDB struct {
 	Database  *mongo.Database
 	Holdings  *mongo.Collection
 	Snapshots *mongo.Collection
+	// Platforms is only read, for the types that earlier versions stored (Broker, Wallet...).
+	Platforms *mongo.Collection
 }
 
 func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error) {
@@ -41,12 +43,12 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 	}
 
 	database := client.Database(dbName)
-	// Platforms are derived from holdings: a "platforms" collection left by earlier versions is unused.
 	db := &MongoDB{
 		Client:    client,
 		Database:  database,
 		Holdings:  database.Collection("holdings"),
 		Snapshots: database.Collection("net_worth_snapshots"),
+		Platforms: database.Collection("platforms"),
 	}
 
 	// Synchronous on purpose: a background goroutine can be frozen on Vercel before it finishes, and
