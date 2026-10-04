@@ -155,14 +155,14 @@ func TestSupabaseJWTValidator_RemoteJWKS(t *testing.T) {
 
 	ctx := context.Background()
 
-	ok, err := middleware.NewSupabaseJWTValidator(ctx, jwksUp.URL, issuer, "authenticated")
+	ok, err := middleware.NewSupabaseJWTValidator(jwksUp.URL, issuer, "authenticated")
 	require.NoError(t, err)
 	got, err := ok.ValidateToken(ctx, string(signed))
 	require.NoError(t, err)
 	assert.Equal(t, userId.String(), got.String())
 
 	// Regression: an unreachable JWKS used to disable signature verification entirely.
-	down, err := middleware.NewSupabaseJWTValidator(ctx, jwksDown.URL, issuer, "authenticated")
+	down, err := middleware.NewSupabaseJWTValidator(jwksDown.URL, issuer, "authenticated")
 	require.NoError(t, err)
 	_, err = down.ValidateToken(ctx, string(signed))
 	assert.ErrorIs(t, err, middleware.ErrSigningKeysUnavailable)

@@ -132,7 +132,12 @@ Authorization: Bearer <session.access_token>
 ```
 
 - La validación se realiza contra el endpoint JWKS del proyecto de Supabase (`SUPABASE_URL`), verificando firma, `issuer`, expiración y audiencia `authenticated`. Las sesiones anónimas se rechazan.
-- Si el JWKS no se puede obtener (Supabase caído o inalcanzable), la API responde `503`, no `401`: el token puede ser válido y el frontend solo cierra la sesión ante un `401`.
+- La API guarda el JWKS en memoria y lo vuelve a pedir cuando tiene más de 10 minutos, lo que Supabase recomienda
+  (su edge lo cachea otros 10). Si Supabase no responde, sigue usando las últimas claves que obtuvo; si todavía no
+  tiene ninguna, responde `503`, no `401`: el token puede ser válido y el frontend solo cierra la sesión ante un `401`.
+- Un token firmado con una clave que la API todavía no conoce da `401`. Para **rotar claves** en Supabase
+  (Authentication → JWT Keys): crear la nueva como *standby*, esperar al menos 20 minutos (así toda instancia de la
+  API ya la tiene) y recién entonces rotar. Revocar una clave también tarda hasta 20 minutos en llegar a la API.
 - La identidad del usuario (`sub` del JWT) es la **única fuente** del `userId` en el backend. Ningún endpoint acepta un identificador de usuario en body, path o query (aislamiento estricto multi-tenant; si se envía, se ignora).
 - Respuestas de error estructuradas conforme a la especificación **RFC 9457 / RFC 7807** (`application/problem+json`) con identificador de traza `traceId` / `X-Request-Id`.
 

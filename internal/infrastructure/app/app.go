@@ -59,7 +59,6 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// Supabase JWT validation. The JWKS is fetched lazily, so this works offline too.
 	supabaseValidator, err := middleware.NewSupabaseJWTValidator(
-		ctx,
 		cfg.JWKSetURI,
 		cfg.AuthIssuer,
 		cfg.AuthAudience,

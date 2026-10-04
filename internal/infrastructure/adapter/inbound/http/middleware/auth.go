@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
 
@@ -26,73 +25,37 @@ const statusClientClosedRequest = 499
 
 var (
 	ErrMissingToken = errors.New("missing access token")
-	// ErrSigningKeysUnavailable means the JWKS couldn't be fetched. The token may well be valid, so it's
-	// answered with 503 (our problem) rather than 401, which makes the frontend sign the user out.
+	// ErrSigningKeysUnavailable means there are no keys to verify with: the JWKS couldn't be fetched, nor
+	// was it before. The token may well be valid, so it's answered with 503 (our problem) rather than 401,
+	// which makes the frontend sign the user out.
 	ErrSigningKeysUnavailable = errors.New("signing keys unavailable")
 )
 
-// A token whose key the cached JWKS lacks (just rotated in) makes the validator re-fetch it, at most once
-// per keyFetchInterval after a successful fetch (made-up key ids can't make the API hammer Supabase; a key
-// missing from a fetch that recent is truly unknown: 401), and once per keyFetchRetryBackoff after a failed
-// one (meanwhile the keys are "unavailable": 503).
-const (
-	keyFetchInterval     = 5 * time.Second
-	keyFetchRetryBackoff = 5 * time.Second
-)
-
-var errKeyFetchAborted = errors.New("JWKS fetch aborted")
-
 type SupabaseJWTValidator struct {
 	keys     func(ctx context.Context) (jwk.Set, error)
-	refresh  func(ctx context.Context) (jwk.Set, error) // re-fetches, bypassing the cache
 	issuer   string
 	audience string
-
-	fetchInterval, retryBackoff time.Duration
-
-	mu        sync.Mutex
-	inFlight  *keyFetch // the re-fetch under way, which concurrent callers wait for
-	nextFetch time.Time // no new re-fetch before this
-	lastErr   error     // why the last re-fetch failed, if it did
 }
 
-type keyFetch struct {
-	done chan struct{}
-	set  jwk.Set
-	err  error
-}
-
-// NewSupabaseJWTValidator verifies tokens against the Supabase JWKS (asymmetric signing keys).
-// The set is cached and refreshed in the background; a token signed by a key the cache doesn't know yet
-// (just rotated in) makes it re-fetch, so the token isn't rejected and its user signed out.
-func NewSupabaseJWTValidator(ctx context.Context, jwkSetURI, issuer, audience string) (*SupabaseJWTValidator, error) {
-	cache := jwk.NewCache(ctx)
-	err := cache.Register(jwkSetURI,
-		jwk.WithMinRefreshInterval(15*time.Minute),
-		jwk.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
-	)
-	if err != nil {
-		return nil, err
+// NewSupabaseJWTValidator verifies tokens against the Supabase JWKS (asymmetric signing keys), fetched
+// on first use and kept as jwksCache describes, so key rotation is picked up without a restart (rotate
+// through a standby key, see the README, so the new key is known before tokens use it).
+func NewSupabaseJWTValidator(jwkSetURI, issuer, audience string) (*SupabaseJWTValidator, error) {
+	if u, err := url.Parse(jwkSetURI); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, fmt.Errorf("invalid JWKS URL %q", jwkSetURI)
 	}
 	return &SupabaseJWTValidator{
-		keys:          func(ctx context.Context) (jwk.Set, error) { return cache.Get(ctx, jwkSetURI) },
-		refresh:       func(ctx context.Context) (jwk.Set, error) { return cache.Refresh(ctx, jwkSetURI) },
-		issuer:        issuer,
-		audience:      audience,
-		fetchInterval: keyFetchInterval,
-		retryBackoff:  keyFetchRetryBackoff,
+		keys:     newJWKSCache(fetchJWKS(&http.Client{}, jwkSetURI)).Get,
+		issuer:   issuer,
+		audience: audience,
 	}, nil
 }
 
 func NewStaticJWTValidator(keySet jwk.Set, issuer, audience string) *SupabaseJWTValidator {
-	static := func(context.Context) (jwk.Set, error) { return keySet, nil }
 	return &SupabaseJWTValidator{
-		keys:          static,
-		refresh:       static,
-		issuer:        issuer,
-		audience:      audience,
-		fetchInterval: keyFetchInterval,
-		retryBackoff:  keyFetchRetryBackoff,
+		keys:     func(context.Context) (jwk.Set, error) { return keySet, nil },
+		issuer:   issuer,
+		audience: audience,
 	}
 }
 
@@ -121,9 +84,6 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 
 	// No keys means no verification is possible: reject, never fall back to an unverified parse.
 	keySet, err := v.keys(ctx)
-	if err == nil && !hasKey(keySet, tokenStr) {
-		keySet, err = v.refreshedKeys(ctx, keySet)
-	}
 	if err != nil {
 		// A caller that hung up says nothing about the keys.
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -158,66 +118,6 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 	}
 
 	return userId, nil
-}
-
-// hasKey reports whether the token names a key the set has. A token that names none, or can't be parsed,
-// counts as known: re-fetching keys can't help it, and verification rejects it anyway.
-func hasKey(keySet jwk.Set, tokenStr string) bool {
-	msg, err := jws.Parse([]byte(tokenStr))
-	if err != nil || len(msg.Signatures()) == 0 {
-		return true
-	}
-	kid := msg.Signatures()[0].ProtectedHeaders().KeyID()
-	if kid == "" {
-		return true
-	}
-	_, ok := keySet.LookupKeyID(kid)
-	return ok
-}
-
-// refreshedKeys returns the key set to verify a token whose key the cached set lacks: a freshly fetched one
-// when a re-fetch is due or already under way (concurrent callers share it, so none is judged against the
-// stale set meanwhile). Otherwise the cached set, fetched moments ago, or the error that fetch failed with.
-func (v *SupabaseJWTValidator) refreshedKeys(ctx context.Context, cached jwk.Set) (jwk.Set, error) {
-	v.mu.Lock()
-	if fetch := v.inFlight; fetch != nil {
-		v.mu.Unlock()
-		select {
-		case <-fetch.done:
-			return fetch.set, fetch.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	if time.Now().Before(v.nextFetch) {
-		err := v.lastErr
-		v.mu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		return cached, nil
-	}
-	fetch := &keyFetch{done: make(chan struct{}), err: errKeyFetchAborted}
-	v.inFlight = fetch
-	v.mu.Unlock()
-
-	// Whatever happens to the fetch, even a panic, the waiters are released and the next one can start.
-	defer func() {
-		v.mu.Lock()
-		v.inFlight = nil
-		v.lastErr = fetch.err
-		if fetch.err != nil {
-			v.nextFetch = time.Now().Add(v.retryBackoff)
-		} else {
-			v.nextFetch = time.Now().Add(v.fetchInterval)
-		}
-		v.mu.Unlock()
-		close(fetch.done)
-	}()
-	// Run by this request, for everyone waiting on it: detached from its cancellation (its client may hang
-	// up), but not left to a background goroutine, which a serverless host can freeze mid-fetch.
-	fetch.set, fetch.err = v.refresh(context.WithoutCancel(ctx))
-	return fetch.set, fetch.err
 }
 
 func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {
