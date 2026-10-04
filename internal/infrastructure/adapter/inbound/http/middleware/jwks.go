@@ -37,12 +37,13 @@ const (
 // attempt failed: Supabase isn't answering, so no point). Keys stay usable until maxStale, so a failed
 // fetch costs nothing until then; past it, or before the first fetch works, requests fail.
 type jwksCache struct {
-	fetch      func(ctx context.Context) (jwk.Set, error)
-	maxAge     time.Duration
-	maxStale   time.Duration
-	staleWait  time.Duration
-	retryAfter time.Duration
-	now        func() time.Time
+	fetch        func(ctx context.Context) (jwk.Set, error)
+	fetchTimeout time.Duration
+	maxAge       time.Duration
+	maxStale     time.Duration
+	staleWait    time.Duration
+	retryAfter   time.Duration
+	now          func() time.Time
 
 	mu        sync.Mutex
 	set       jwk.Set
@@ -54,12 +55,13 @@ type jwksCache struct {
 
 func newJWKSCache(fetch func(ctx context.Context) (jwk.Set, error)) *jwksCache {
 	return &jwksCache{
-		fetch:      fetch,
-		maxAge:     jwksMaxAge,
-		maxStale:   jwksMaxStale,
-		staleWait:  jwksStaleWait,
-		retryAfter: jwksRetryAfter,
-		now:        time.Now,
+		fetch:        fetch,
+		fetchTimeout: jwksFetchTimeout,
+		maxAge:       jwksMaxAge,
+		maxStale:     jwksMaxStale,
+		staleWait:    jwksStaleWait,
+		retryAfter:   jwksRetryAfter,
+		now:          time.Now,
 	}
 }
 
@@ -129,8 +131,10 @@ func (c *jwksCache) runFetch(done chan struct{}) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("fetching JWKS panicked: %v", p)
-		} else if err == nil && set == nil {
-			err = errors.New("fetching JWKS returned no key set")
+		} else if err == nil && (set == nil || set.Len() == 0) {
+			// Not a usable answer (a project still on the legacy HS256 secret, or Supabase misbehaving):
+			// keep the keys from before, if any, rather than reject every token with none.
+			err = errors.New("the JWKS has no keys")
 		}
 		c.mu.Lock()
 		if err == nil {
@@ -142,7 +146,7 @@ func (c *jwksCache) runFetch(done chan struct{}) {
 		c.mu.Unlock()
 		close(done)
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), jwksFetchTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), c.fetchTimeout)
 	defer cancel()
 	set, err = c.fetch(ctx)
 }
@@ -179,15 +183,6 @@ func fetchJWKS(client *http.Client, url string) func(ctx context.Context) (jwk.S
 		if err != nil {
 			return nil, err
 		}
-		set, err := jwk.Parse(body)
-		if err != nil {
-			return nil, err
-		}
-		// Not a usable answer (a project still on the legacy HS256 secret, or Supabase misbehaving): keep
-		// the keys from before, if any, rather than reject every token with them.
-		if set.Len() == 0 {
-			return nil, fmt.Errorf("GET %s: no keys", url)
-		}
-		return set, nil
+		return jwk.Parse(body)
 	}
 }

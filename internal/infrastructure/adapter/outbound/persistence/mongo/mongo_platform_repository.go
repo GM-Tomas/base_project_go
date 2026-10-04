@@ -71,19 +71,15 @@ func (r *MongoPlatformRepository) Canonical(
 	}
 	defer cursor.Close(ctx)
 
+	// Oldest first, so the first holding of this platform is the one that spells it (platformSpellings).
 	want := platformKey(name)
-	spellings := platformSpellings{}
 	for cursor.Next(ctx) {
 		var doc holdingDoc
 		if err := cursor.Decode(&doc); err != nil {
 			return model.PlatformName{}, err
 		}
-		stored, ok := storedPlatformName(doc)
-		if !ok {
-			continue
-		}
-		if spelled, key := spellings.spell(stored); key == want {
-			return spelled, nil
+		if stored, ok := storedPlatformName(doc); ok && platformKey(stored) == want {
+			return stored, nil
 		}
 	}
 	if err := cursor.Err(); err != nil {

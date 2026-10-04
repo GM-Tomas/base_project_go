@@ -318,10 +318,47 @@ func TestJWKSCache_SurvivesAPanickingFetch(t *testing.T) {
 	assert.Equal(t, keys, got)
 }
 
-func TestJWKSCache_NoKeySetIsAFailure(t *testing.T) {
+func TestJWKSCache_NoKeysIsAFailedFetch(t *testing.T) {
 	c := newJWKSCache(func(context.Context) (jwk.Set, error) { return nil, nil })
 	_, err := c.Get(context.Background())
 	assert.Error(t, err)
+
+	// An empty set doesn't replace good keys: tokens would all be rejected, signing everyone out.
+	c, f, clock := newTestJWKSCache(time.Hour)
+	ctx := context.Background()
+	keys := keySet(t, "a")
+	answer(f, fetchOutcome{set: keys})
+	_, err = c.Get(ctx)
+	require.NoError(t, err)
+
+	clock.Advance(jwksMaxAge)
+	answer(f, fetchOutcome{set: jwk.NewSet()})
+	got, err := c.Get(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, keys, got)
+
+	clock.Advance(jwksMaxStale)
+	answer(f, fetchOutcome{set: jwk.NewSet()})
+	_, err = c.Get(ctx)
+	assert.EqualError(t, err, "the JWKS has no keys")
+}
+
+func TestJWKSCache_AHungSupabaseHoldsTheFetchingRequestOnlyUntilTheTimeout(t *testing.T) {
+	c, f, clock := newTestJWKSCache(time.Hour)
+	c.fetchTimeout = 20 * time.Millisecond
+	ctx := context.Background()
+
+	start := time.Now()
+	_, err := c.Get(ctx) // nobody answers: the fetch gives up at the timeout
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), 5*time.Second)
+
+	clock.Advance(jwksRetryAfter)
+	keys := keySet(t, "a")
+	answer(f, fetchOutcome{set: keys})
+	got, err := c.Get(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, keys, got)
 }
 
 func TestFetchJWKS(t *testing.T) {
@@ -343,8 +380,6 @@ func TestFetchJWKS(t *testing.T) {
 	assert.True(t, found)
 
 	for name, url := range map[string]string{
-		// A project still on the legacy HS256 secret publishes an empty set: no keys to keep.
-		"no keys":      serve(http.StatusOK, `{"keys":[]}`),
 		"error status": serve(http.StatusInternalServerError, `{"keys":[]}`),
 		"not a JWKS":   serve(http.StatusOK, `<html>maintenance</html>`),
 		"too large":    serve(http.StatusOK, `{"keys":[],"pad":"`+strings.Repeat("a", jwksMaxBytes)+`"}`),
