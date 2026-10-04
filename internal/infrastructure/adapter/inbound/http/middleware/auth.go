@@ -7,10 +7,12 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
 
@@ -29,14 +31,23 @@ var (
 	ErrSigningKeysUnavailable = errors.New("signing keys unavailable")
 )
 
+// minForcedRefreshInterval throttles re-fetching the JWKS for a token whose key isn't in the cached set:
+// enough to pick up a rotated key right away, too rare for made-up key ids to hammer Supabase.
+const minForcedRefreshInterval = time.Minute
+
 type SupabaseJWTValidator struct {
 	keys     func(ctx context.Context) (jwk.Set, error)
+	refresh  func(ctx context.Context) (jwk.Set, error) // re-fetches, bypassing the cache
 	issuer   string
 	audience string
+
+	mu            sync.Mutex
+	lastRefreshAt time.Time
 }
 
 // NewSupabaseJWTValidator verifies tokens against the Supabase JWKS (asymmetric signing keys).
-// The set is cached and refreshed in the background, so key rotation is picked up without a restart.
+// The set is cached and refreshed in the background; a token signed by a key the cache doesn't know yet
+// (just rotated in) makes it re-fetch, so the token isn't rejected and its user signed out.
 func NewSupabaseJWTValidator(ctx context.Context, jwkSetURI, issuer, audience string) (*SupabaseJWTValidator, error) {
 	cache := jwk.NewCache(ctx)
 	err := cache.Register(jwkSetURI,
@@ -48,14 +59,17 @@ func NewSupabaseJWTValidator(ctx context.Context, jwkSetURI, issuer, audience st
 	}
 	return &SupabaseJWTValidator{
 		keys:     func(ctx context.Context) (jwk.Set, error) { return cache.Get(ctx, jwkSetURI) },
+		refresh:  func(ctx context.Context) (jwk.Set, error) { return cache.Refresh(ctx, jwkSetURI) },
 		issuer:   issuer,
 		audience: audience,
 	}, nil
 }
 
 func NewStaticJWTValidator(keySet jwk.Set, issuer, audience string) *SupabaseJWTValidator {
+	static := func(context.Context) (jwk.Set, error) { return keySet, nil }
 	return &SupabaseJWTValidator{
-		keys:     func(context.Context) (jwk.Set, error) { return keySet, nil },
+		keys:     static,
+		refresh:  static,
 		issuer:   issuer,
 		audience: audience,
 	}
@@ -86,6 +100,9 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 
 	// No keys means no verification is possible: reject, never fall back to an unverified parse.
 	keySet, err := v.keys(ctx)
+	if err == nil && !hasKey(keySet, tokenStr) {
+		keySet, err = v.refreshedKeys(ctx, keySet)
+	}
 	if err != nil {
 		// A caller that hung up says nothing about the keys.
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -120,6 +137,36 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 	}
 
 	return userId, nil
+}
+
+// hasKey reports whether the token names a key the set has. A token that names none, or can't be parsed,
+// counts as known: re-fetching keys can't help it, and verification rejects it anyway.
+func hasKey(keySet jwk.Set, tokenStr string) bool {
+	msg, err := jws.Parse([]byte(tokenStr))
+	if err != nil || len(msg.Signatures()) == 0 {
+		return true
+	}
+	kid := msg.Signatures()[0].ProtectedHeaders().KeyID()
+	if kid == "" {
+		return true
+	}
+	_, ok := keySet.LookupKeyID(kid)
+	return ok
+}
+
+// refreshedKeys re-fetches the JWKS for a token signed by a key the cached set lacks, at most once per
+// minForcedRefreshInterval; in between, the cached set is used (and the token rejected if it's a made-up kid).
+func (v *SupabaseJWTValidator) refreshedKeys(ctx context.Context, cached jwk.Set) (jwk.Set, error) {
+	v.mu.Lock()
+	due := time.Since(v.lastRefreshAt) >= minForcedRefreshInterval
+	if due {
+		v.lastRefreshAt = time.Now()
+	}
+	v.mu.Unlock()
+	if !due {
+		return cached, nil
+	}
+	return v.refresh(ctx)
 }
 
 func AuthMiddleware(validator JWTValidator) func(http.Handler) http.Handler {

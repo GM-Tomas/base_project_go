@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -292,3 +293,106 @@ func TestAuthMiddleware_BearerSchemeIsCaseInsensitive(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
+
+// rotatingJWKS serves whatever key set it currently holds (or a 500 when down), counting fetches.
+type rotatingJWKS struct {
+	*httptest.Server
+	set  atomic.Pointer[jwk.Set]
+	down atomic.Bool
+	hits atomic.Int32
+}
+
+func newRotatingJWKS(t *testing.T, initial jwk.Set) *rotatingJWKS {
+	t.Helper()
+	j := &rotatingJWKS{}
+	j.set.Store(&initial)
+	j.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		j.hits.Add(1)
+		if j.down.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(*j.set.Load())
+	}))
+	t.Cleanup(j.Close)
+	return j
+}
+
+func keyWithKid(t *testing.T, kid string) (*rsa.PrivateKey, jwk.Key) {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	pub, err := jwk.FromRaw(priv.Public())
+	require.NoError(t, err)
+	require.NoError(t, pub.Set(jwk.KeyIDKey, kid))
+	require.NoError(t, pub.Set(jwk.AlgorithmKey, jwa.RS256))
+	return priv, pub
+}
+
+func signWithKid(t *testing.T, priv *rsa.PrivateKey, kid string) string {
+	t.Helper()
+	tok, err := jwt.NewBuilder().Issuer(testIssuer).Audience([]string{testAudience}).
+		Subject(uuid.NewString()).Expiration(time.Now().Add(time.Hour)).Build()
+	require.NoError(t, err)
+	hdrs := jws.NewHeaders()
+	require.NoError(t, hdrs.Set(jws.KeyIDKey, kid))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, priv, jws.WithProtectedHeaders(hdrs)))
+	require.NoError(t, err)
+	return string(signed)
+}
+
+func setOf(t *testing.T, keys ...jwk.Key) jwk.Set {
+	t.Helper()
+	set := jwk.NewSet()
+	for _, k := range keys {
+		require.NoError(t, set.AddKey(k))
+	}
+	return set
+}
+
+func TestSupabaseJWTValidator_AcceptsAKeyRotatedInSinceTheLastFetch(t *testing.T) {
+	oldPriv, oldKey := keyWithKid(t, "old")
+	newPriv, newKey := keyWithKid(t, "new")
+	jwks := newRotatingJWKS(t, setOf(t, oldKey))
+	ctx := context.Background()
+	v, err := middleware.NewSupabaseJWTValidator(ctx, jwks.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+
+	_, err = v.ValidateToken(ctx, signWithKid(t, oldPriv, "old"))
+	require.NoError(t, err)
+	fetched := jwks.hits.Load()
+
+	// Supabase rotates: tokens now come signed by a key the cached set has never seen.
+	jwks.set.Store(ptr(setOf(t, oldKey, newKey)))
+	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "new"))
+	require.NoError(t, err, "re-fetched instead of a 401 that would sign the user out")
+	assert.Equal(t, fetched+1, jwks.hits.Load())
+
+	// Made-up key ids can't make it hammer Supabase: at most one forced fetch a minute.
+	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "made-up"))
+	assert.Error(t, err)
+	assert.NotErrorIs(t, err, middleware.ErrSigningKeysUnavailable)
+	assert.Equal(t, fetched+1, jwks.hits.Load())
+}
+
+func TestSupabaseJWTValidator_UnknownKeyWhileSupabaseIsDownIsAnOutage(t *testing.T) {
+	oldPriv, oldKey := keyWithKid(t, "old")
+	newPriv, _ := keyWithKid(t, "new")
+	jwks := newRotatingJWKS(t, setOf(t, oldKey))
+	ctx := context.Background()
+	v, err := middleware.NewSupabaseJWTValidator(ctx, jwks.URL, testIssuer, testAudience)
+	require.NoError(t, err)
+	_, err = v.ValidateToken(ctx, signWithKid(t, oldPriv, "old"))
+	require.NoError(t, err)
+
+	jwks.down.Store(true)
+	_, err = v.ValidateToken(ctx, signWithKid(t, newPriv, "new"))
+	assert.ErrorIs(t, err, middleware.ErrSigningKeysUnavailable, "the token may well be valid: 503, not 401")
+
+	// Keys already cached keep working through the outage.
+	_, err = v.ValidateToken(ctx, signWithKid(t, oldPriv, "old"))
+	assert.NoError(t, err)
+}
+
+func ptr[T any](v T) *T { return &v }
