@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/shopspring/decimal"
@@ -41,6 +42,19 @@ var (
 	ErrYieldOutOfRange   = errors.New("yieldPct must be between 0 and 100")
 	ErrTooManyMilestones = fmt.Errorf("at most %d milestones", MaxProjectionMilestones)
 )
+
+// YieldPctFromFloat converts an annual yield percentage, refusing NaN/±Inf (decimal.NewFromFloat panics on
+// them) and anything outside 0–100.
+func YieldPctFromFloat(v float64) (decimal.Decimal, error) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return decimal.Zero, ErrYieldOutOfRange
+	}
+	pct := decimal.NewFromFloat(v)
+	if pct.IsNegative() || pct.GreaterThan(MaxYieldPct) {
+		return decimal.Zero, ErrYieldOutOfRange
+	}
+	return pct, nil
+}
 
 type ProjectionParams struct {
 	Principal           Money

@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -60,4 +61,15 @@ func TestProjectionParams_SortsMilestones(t *testing.T) {
 	assert.Equal(t, "100.00", params.Milestones[0].String())
 	assert.Equal(t, "300.00", params.Milestones[1].String())
 	assert.Equal(t, "500.00", params.Milestones[2].String())
+}
+
+func TestYieldPctFromFloat(t *testing.T) {
+	pct, err := model.YieldPctFromFloat(9.5)
+	require.NoError(t, err)
+	assert.Equal(t, "9.5", pct.String())
+
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -0.1, 100.1} {
+		_, err := model.YieldPctFromFloat(v)
+		assert.ErrorIs(t, err, model.ErrYieldOutOfRange, "%v", v)
+	}
 }
