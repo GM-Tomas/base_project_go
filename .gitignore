@@ -28,3 +28,4 @@ go.work
 # Environment variables
 .env
 .env.local
+coverage.html

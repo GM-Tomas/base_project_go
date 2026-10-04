@@ -54,6 +54,14 @@ En Vercel se ignora siempre (la variable `VERCEL` la desactiva).
 go test -v ./...
 ```
 
+Los tests de Mongo (`persistence/mongo`, `app`) se saltan si no hay `MONGO_TEST_URI`. Para correrlos y medir coverage (mínimo 85%):
+```powershell
+docker run -d --rm --name base-wealth-test-mongo -p 27018:27017 mongo:7
+$env:MONGO_TEST_URI = "mongodb://localhost:27018"; go test ./... -coverprofile=coverage.out; go tool cover -func=coverage.out | Select-Object -Last 1
+docker stop base-wealth-test-mongo
+```
+(`make test-coverage` hace lo mismo y falla por debajo del 85%.)
+
 ### 3. Compilar el Binario
 ```powershell
 go build -o bin/api.exe ./cmd/api
