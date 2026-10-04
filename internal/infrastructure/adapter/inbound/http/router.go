@@ -34,6 +34,12 @@ func NewRouter(params RouterParams) http.Handler {
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(middleware.CorsMiddleware(params.AllowedOrigins))
+	// Per-user financial data: never cached by Vercel/proxies/browsers, never sniffed or framed.
+	r.Use(chimiddleware.SetHeader("Cache-Control", "no-store"))
+	r.Use(chimiddleware.SetHeader("X-Content-Type-Options", "nosniff"))
+	r.Use(chimiddleware.SetHeader("X-Frame-Options", "DENY"))
+	r.Use(chimiddleware.SetHeader("Referrer-Policy", "no-referrer"))
+	r.Use(chimiddleware.RequestSize(64 << 10)) // largest real body (a holding) is well under 1 KB
 
 	// Documentation & Swagger UI: public locally; on Vercel only behind DOCS_PASSWORD.
 	if !params.HideDocs {

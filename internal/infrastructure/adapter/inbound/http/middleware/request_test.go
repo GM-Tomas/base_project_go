@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http/middleware"
@@ -34,6 +35,19 @@ func TestRequestIDMiddleware_KeepsIncomingID(t *testing.T) {
 
 	assert.Equal(t, "abc-123", traceID)
 	assert.Equal(t, "abc-123", rec.Header().Get(middleware.RequestIDHeader))
+}
+
+func TestRequestIDMiddleware_ReplacesUnsafeIncomingID(t *testing.T) {
+	for _, bad := range []string{strings.Repeat("a", 65), "abc def", "abc	injected", "<script>"} {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set(middleware.RequestIDHeader, bad)
+		rec := httptest.NewRecorder()
+
+		middleware.RequestIDMiddleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).ServeHTTP(rec, req)
+
+		_, err := uuid.Parse(rec.Header().Get(middleware.RequestIDHeader))
+		assert.NoError(t, err, bad)
+	}
 }
 
 func TestGetTraceID_EmptyWithoutMiddleware(t *testing.T) {

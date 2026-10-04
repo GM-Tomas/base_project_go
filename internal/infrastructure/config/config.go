@@ -28,8 +28,8 @@ func LoadConfig() Config {
 		Port:        getEnv("PORT", "8080"),
 		MongoDBURI:  getEnv("MONGODB_URI", "mongodb://localhost:27017"), // local default matches compose.yaml
 		MongoDBName: getEnv("MONGODB_DATABASE", "base_wealth"),
-		// Preview deployments of the frontend live under *.vercel.app; set FRONTEND_ORIGIN to lock it down.
-		AllowedOrigins:      splitList(getEnv("FRONTEND_ORIGIN", "http://localhost:3000,http://127.0.0.1:3000,https://*.vercel.app")),
+		// Never "*.vercel.app": anyone can deploy there. FRONTEND_ORIGIN overrides (e.g. a custom domain).
+		AllowedOrigins:      splitList(getEnv("FRONTEND_ORIGIN", "http://localhost:3000,http://127.0.0.1:3000,https://base-project-fe.vercel.app")),
 		DefaultAssetClasses: splitList(getEnv("WEALTH_DEFAULT_ASSET_CLASSES", "Cash,Fixed Income,Index Fund,Equity,Crypto")),
 		LiquidAssetClasses:  splitList(getEnv("WEALTH_LIQUID_ASSET_CLASSES", "Cash,Equity,Crypto,Index Fund")),
 		AuthAudience:        getEnv("SUPABASE_AUDIENCE", "authenticated"),

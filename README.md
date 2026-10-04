@@ -1,6 +1,6 @@
 # BASE Wealth Management - Backend API (Go)
 
-API REST moderna, eficiente y testeable construida en **Go 1.25** siguiendo los principios de **Arquitectura Hexagonal (Ports & Adapters)**, **Domain-Driven Design (DDD)** y las mejores prácticas de la industria.
+API REST moderna, eficiente y testeable construida en **Go 1.26** siguiendo los principios de **Arquitectura Hexagonal (Ports & Adapters)**, **Domain-Driven Design (DDD)** y las mejores prácticas de la industria.
 
 El frontend (Next.js) vive en el repositorio: [GM-Tomas/base_project_fe](https://github.com/GM-Tomas/base_project_fe).
 
@@ -88,7 +88,7 @@ después de cambiar `DOCS_PASSWORD` hay que redeployar. En local sigue abierta s
 | `MONGODB_DATABASE` | No | Default `base_wealth`. |
 | `SUPABASE_URL` | Sí | `https://<ref>.supabase.co`: el **mismo** proyecto que usa el frontend para el login. Solo se usa para validar los JWT (JWKS e issuer). |
 | `DOCS_PASSWORD` | No | Protege `/docs`, `/swagger` y `openapi.json` con basic auth (usuario `docs`). En Vercel, sin ella esas rutas dan `404`. |
-| `FRONTEND_ORIGIN` | Recomendada en producción | Orígenes CORS separados por coma. Default: `localhost:3000` y `https://*.vercel.app` (cualquier sitio de Vercel). En producción: la URL exacta del frontend. |
+| `FRONTEND_ORIGIN` | Opcional | Orígenes CORS separados por coma. Default: `localhost:3000` y `https://base-project-fe.vercel.app`. Nunca `https://*.vercel.app`: cualquiera puede desplegar ahí. |
 
 Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
 valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request da `401`.

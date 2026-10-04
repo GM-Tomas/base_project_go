@@ -142,6 +142,23 @@ func TestHoldingHandler_ValidationErrors(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestRouter_CapsRequestBodyAndSetsSecurityHeaders(t *testing.T) {
+	router, holdingRepo, _, _, _ := setupTestRouter(model.NewUserId(uuid.New()))
+
+	// 1 MB name: the body is cut off at the cap before validation ever sees it.
+	rec := do(t, router, "POST", "/api/v1/holdings", dto.CreateHoldingRequest{Name: string(bytes.Repeat([]byte("a"), 1<<20)), AssetClass: "Cash", Platform: "Bank"})
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	var prob middleware.ProblemDetail
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&prob))
+	assert.Equal(t, "Malformed JSON body", prob.Detail)
+	assert.Empty(t, holdingRepo.holdings)
+
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, "DENY", rec.Header().Get("X-Frame-Options"))
+}
+
 func TestRouter_OnlyExposesWhatTheFrontendUses(t *testing.T) {
 	router, _, _, _, _ := setupTestRouter(model.NewUserId(uuid.New()))
 	id := uuid.New().String()

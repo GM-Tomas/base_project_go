@@ -89,6 +89,7 @@ func TestValidateToken_Rejects(t *testing.T) {
 		"signed by unknown key": sign(t, otherPriv, nil),
 		"missing sub":           sign(t, priv, func(b *jwt.Builder) *jwt.Builder { return b.Subject("") }),
 		"sub is not a uuid":     sign(t, priv, func(b *jwt.Builder) *jwt.Builder { return b.Subject("not-a-uuid") }),
+		"anonymous session":     sign(t, priv, func(b *jwt.Builder) *jwt.Builder { return b.Claim("is_anonymous", true) }),
 		"garbage":               "not.a.jwt",
 		"empty":                 "",
 	}

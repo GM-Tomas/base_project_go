@@ -74,6 +74,11 @@ func (v *SupabaseJWTValidator) ValidateToken(ctx context.Context, tokenStr strin
 		return model.UserId{}, err
 	}
 
+	// Anonymous sign-ins are off in Supabase; refuse their tokens anyway in case that setting ever flips.
+	if anon, ok := tok.Get("is_anonymous"); ok && anon == true {
+		return model.UserId{}, errors.New("anonymous sessions are not allowed")
+	}
+
 	sub := tok.Subject()
 	if sub == "" {
 		return model.UserId{}, errors.New("jwt missing sub claim")

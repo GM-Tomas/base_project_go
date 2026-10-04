@@ -43,7 +43,7 @@ func TestWealthHandler_Estimate(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Empty(t, rec.Header().Get("Cache-Control")) // principal changes with every holding mutation
+	assert.Equal(t, "no-store", rec.Header().Get("Cache-Control")) // principal changes with every holding mutation
 
 	var proj dto.ProjectionResponse
 	err := json.NewDecoder(rec.Body).Decode(&proj)
