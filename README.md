@@ -4,6 +4,10 @@ API REST moderna, eficiente y testeable construida en **Go 1.26** siguiendo los 
 
 El frontend (Next.js) vive en el repositorio: [GM-Tomas/base_project_fe](https://github.com/GM-Tomas/base_project_fe).
 
+Las **specs** de producto y de API (desarrollo guiado por specs, fase por fase) también viven ahí:
+[`base_project_fe/specs`](https://github.com/GM-Tomas/base_project_fe/tree/main/specs). Cada cambio de este
+repo sigue la spec de su fase.
+
 ---
 
 ## 📋 Arquitectura del Proyecto (Hexagonal)
