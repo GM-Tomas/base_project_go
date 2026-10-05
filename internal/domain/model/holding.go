@@ -1,8 +1,14 @@
 package model
 
 import (
+	"errors"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
+
+// ErrNegativeBalance is a change that would take a value below zero.
+var ErrNegativeBalance = errors.New("value would go below zero")
 
 const (
 	MaxHoldingNameLength = 120
@@ -50,4 +56,15 @@ func CreateHolding(
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}, nil
+}
+
+// WithDelta is the holding with its value changed by delta (positive or negative), rounded to cents as
+// Money is; one that would drop below zero is ErrNegativeBalance.
+func (h Holding) WithDelta(delta decimal.Decimal) (Holding, error) {
+	next := h.Value.Amount().Add(delta)
+	if next.IsNegative() {
+		return h, ErrNegativeBalance
+	}
+	h.Value = MustMoney(next)
+	return h, nil
 }

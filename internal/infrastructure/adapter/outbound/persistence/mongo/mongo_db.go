@@ -17,6 +17,9 @@ type MongoDB struct {
 	Database  *mongo.Database
 	Holdings  *mongo.Collection
 	Snapshots *mongo.Collection
+	Movements *mongo.Collection
+	// Quotas holds per-user counters that transactions keep exact (see MongoQuotaRepository).
+	Quotas *mongo.Collection
 	// Platforms is only read, for the types that earlier versions stored (Broker, Wallet...).
 	Platforms *mongo.Collection
 }
@@ -48,7 +51,13 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 		Database:  database,
 		Holdings:  database.Collection("holdings"),
 		Snapshots: database.Collection("net_worth_snapshots"),
+		Movements: database.Collection("movements"),
+		Quotas:    database.Collection("quotas"),
 		Platforms: database.Collection("platforms"),
+	}
+	if !db.supportsTransactions(pingCtx) {
+		log.Println("WARNING: MongoDB isn't a replica set, so it has no transactions: recording a change of value " +
+			"(adding, editing or removing a holding, a movement) will answer 503. Run it as a replica set (see the README).")
 	}
 
 	// Synchronous on purpose: a background goroutine can be frozen on Vercel before it finishes, and
@@ -58,6 +67,19 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 	db.ensureIndexes(idxCtx)
 
 	return db, nil
+}
+
+// supportsTransactions asks the server what it is: a replica set member (setName) or a mongos router has
+// transactions, a standalone mongod doesn't. A failed check is taken as "no", which only costs a warning.
+func (db *MongoDB) supportsTransactions(ctx context.Context) bool {
+	var hello struct {
+		SetName string `bson:"setName"`
+		Msg     string `bson:"msg"`
+	}
+	if err := db.Client.Database("admin").RunCommand(ctx, bson.D{{Key: "hello", Value: 1}}).Decode(&hello); err != nil {
+		return false
+	}
+	return hello.SetName != "" || hello.Msg == "isdbgrid"
 }
 
 func (db *MongoDB) Close(ctx context.Context) error {
@@ -93,5 +115,16 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 	})
 	if err != nil {
 		log.Printf("Warning creating holdings indexes: %v", err)
+	}
+
+	// Movements: the activity log newest first (also by period), and one holding's, as either end of a
+	// transfer (movementsNewestFirst after the filtered fields, so the index serves the sort too).
+	_, err = db.Movements.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: append(bson.D{{Key: "user_id", Value: 1}}, movementsNewestFirst...)},
+		{Keys: append(bson.D{{Key: "user_id", Value: 1}, {Key: "holding.id", Value: 1}}, movementsNewestFirst...)},
+		{Keys: append(bson.D{{Key: "user_id", Value: 1}, {Key: "to_holding.id", Value: 1}}, movementsNewestFirst...)},
+	})
+	if err != nil {
+		log.Printf("Warning creating movements indexes: %v", err)
 	}
 }

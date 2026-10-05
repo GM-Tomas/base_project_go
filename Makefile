@@ -11,11 +11,13 @@ run:
 test:
 	go test -v -race ./...
 
-# Mongo/app integration tests skip without MONGO_TEST_URI; this target starts a throwaway Mongo for them.
+# Mongo/app integration tests skip without MONGO_TEST_URI; this target starts a throwaway Mongo for them, as a
+# single-node replica set (transactions need one).
 test-coverage:
-	docker run -d --rm --name base-wealth-test-mongo -p 27018:27017 mongo:7
-	until docker exec base-wealth-test-mongo mongosh --quiet --eval 1 >/dev/null 2>&1; do sleep 1; done
-	MONGO_TEST_URI=mongodb://localhost:27018 go test -race -coverprofile=coverage.out ./...; s=$$?; docker stop base-wealth-test-mongo; exit $$s
+	docker run -d --rm --name base-wealth-test-mongo -p 27018:27017 mongo:7 --replSet rs0 --bind_ip_all
+	until docker exec base-wealth-test-mongo mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }" 2>/dev/null | grep -q 1; do sleep 1; done
+	until docker exec base-wealth-test-mongo mongosh --quiet --eval "db.hello().isWritablePrimary" 2>/dev/null | grep -q true; do sleep 1; done
+	MONGO_TEST_URI="mongodb://localhost:27018/?directConnection=true" go test -race -coverprofile=coverage.out ./...; s=$$?; docker stop base-wealth-test-mongo; exit $$s
 	go tool cover -html=coverage.out -o coverage.html
 	@go tool cover -func=coverage.out | awk '/^total:/ { sub("%","",$$3); print "coverage: " $$3 "%"; if ($$3+0 < 85) { print "below 85%"; exit 1 } }'
 

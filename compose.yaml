@@ -1,10 +1,20 @@
+# Local MongoDB as a single-node replica set: the API writes a change of value and its movement in one
+# transaction, and MongoDB only has transactions on replica sets. The healthcheck initiates the set on the
+# first start (and is a no-op after); an existing volume from a standalone mongod works as it is.
 services:
   mongo:
     image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     ports:
       - "27017:27017"
     volumes:
       - base_wealth_go_mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 5s
 
 volumes:
   base_wealth_go_mongodata:

@@ -400,4 +400,60 @@ func TestMultiUser_HoldingCapHoldsUnderConcurrentCreates(t *testing.T) {
 	require.Equal(t, http.StatusOK, e.do(token, "GET", "/api/v1/holdings", nil, &list))
 	assert.LessOrEqual(t, len(list), model.MaxHoldingsPerUser, "never above the cap")
 	assert.Equal(t, prefilled+created, len(list), "every 201 stayed, every 409 left nothing behind")
+	// Each create is a transaction that also counts its OPENING in the user's counter: the burst is
+	// serialized, so every free slot is used and none twice.
+	assert.Equal(t, model.MaxHoldingsPerUser, len(list))
+}
+
+func TestMultiUser_MovementsStayWithTheirOwner(t *testing.T) {
+	e := newE2E(t, "")
+	asAlice, asBob := e.token(uuid.New(), nil), e.token(uuid.New(), nil)
+	savings := e.create(asAlice, "Savings", "Cash", "Santander", 1000)
+	broker := e.create(asAlice, "USD cash", "Cash", "Balanz", 0)
+	wallet := e.create(asBob, "Wallet", "Cash", "Mercado Pago", 50)
+
+	// Alice moves money between her platforms: both values change together, the fee is lost on the way.
+	var transfer struct{ Id string }
+	require.Equal(t, http.StatusCreated, e.do(asAlice, "POST", "/api/v1/movements", map[string]any{
+		"kind": "TRANSFER", "fromHoldingId": savings.Id, "toHoldingId": broker.Id, "amountUsd": 300, "feeUsd": 5,
+	}, &transfer))
+	assert.Equal(t, 995.0, e.summary(asAlice).NetWorth.Usd)
+
+	// Bob can't record on her holdings, move money to or from them, see her activity or undo it.
+	for _, body := range []map[string]any{
+		{"kind": "GAIN", "holdingId": savings.Id, "amountUsd": 1},
+		{"kind": "TRANSFER", "fromHoldingId": savings.Id, "toHoldingId": wallet.Id, "amountUsd": 1},
+		{"kind": "TRANSFER", "fromHoldingId": wallet.Id, "toHoldingId": savings.Id, "amountUsd": 1},
+	} {
+		assert.Equal(t, http.StatusNotFound, e.do(asBob, "POST", "/api/v1/movements", body, nil), body)
+	}
+	var bobs struct{ Items []struct{ Kind string } }
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/movements?holdingId="+savings.Id, nil, &bobs))
+	assert.Empty(t, bobs.Items)
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/movements", nil, &bobs))
+	require.Len(t, bobs.Items, 1)
+	assert.Equal(t, "OPENING", bobs.Items[0].Kind, "only his own")
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "DELETE", "/api/v1/movements/"+transfer.Id, nil, nil))
+	assert.Equal(t, 50.0, e.summary(asBob).NetWorth.Usd)
+
+	// Alice undoes it: both values back.
+	assert.Equal(t, http.StatusNoContent, e.do(asAlice, "DELETE", "/api/v1/movements/"+transfer.Id, nil, nil))
+	assert.Equal(t, 1000.0, e.summary(asAlice).NetWorth.Usd)
+
+	// Removing a holding keeps its history, naming it as it was.
+	assert.Equal(t, http.StatusNoContent, e.do(asAlice, "DELETE", "/api/v1/holdings/"+broker.Id, nil, nil))
+	var log struct {
+		Items []struct {
+			Kind    string
+			Holding struct {
+				Name   string
+				Exists bool
+			}
+		}
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/movements?holdingId="+broker.Id, nil, &log))
+	require.Len(t, log.Items, 2)
+	assert.Equal(t, "CLOSING", log.Items[0].Kind)
+	assert.Equal(t, "USD cash", log.Items[0].Holding.Name)
+	assert.False(t, log.Items[0].Holding.Exists)
 }

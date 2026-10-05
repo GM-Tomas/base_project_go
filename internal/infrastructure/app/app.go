@@ -48,10 +48,14 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 	holdingRepo := mongopersistence.NewMongoHoldingRepository(mongoDB)
 	platformRepo := mongopersistence.NewMongoPlatformRepository(mongoDB)
 	snapshotRepo := mongopersistence.NewMongoSnapshotRepository(mongoDB)
+	movementRepo := mongopersistence.NewMongoMovementRepository(mongoDB)
+	quotaRepo := mongopersistence.NewMongoQuotaRepository(mongoDB)
+	transactions := mongopersistence.NewMongoTransactionManager(mongoDB)
 	wealthAggAdapter := mongopersistence.NewMongoWealthAggregationAdapter(mongoDB)
 
 	// Application Services
-	holdingService := appService.NewHoldingService(holdingRepo, platformRepo, appService.RealClock)
+	holdingService := appService.NewHoldingService(transactions, holdingRepo, platformRepo, movementRepo, quotaRepo, appService.RealClock)
+	movementService := appService.NewMovementService(transactions, holdingRepo, platformRepo, movementRepo, quotaRepo, appService.RealClock)
 	platformService := appService.NewPlatformService(platformRepo)
 	assetClassService := appService.NewAssetClassService(holdingRepo, cfg.DefaultAssetClasses)
 	snapshotService := appService.NewSnapshotService(snapshotRepo, wealthAggAdapter, appService.RealClock)
@@ -65,6 +69,7 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// HTTP Handlers
 	routes.HoldingHandler = appHttp.NewHoldingHandler(holdingService)
+	routes.MovementHandler = appHttp.NewMovementHandler(movementService)
 	routes.PlatformHandler = appHttp.NewPlatformHandler(platformService)
 	routes.AssetClassHandler = appHttp.NewAssetClassHandler(assetClassService)
 	routes.WealthHandler = appHttp.NewWealthHandler(wealthService, snapshotService, projectionService)

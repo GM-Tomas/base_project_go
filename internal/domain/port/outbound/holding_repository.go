@@ -17,4 +17,6 @@ type HoldingRepository interface {
 	Update(ctx context.Context, holding model.Holding) (bool, error)
 	DeleteById(ctx context.Context, userId model.UserId, id model.HoldingId) (bool, error)
 	AssetClassesInUse(ctx context.Context, userId model.UserId) ([]model.AssetClass, error)
+	// ExistingIds says which of these holdings the user still has.
+	ExistingIds(ctx context.Context, userId model.UserId, ids []model.HoldingId) (map[model.HoldingId]bool, error)
 }

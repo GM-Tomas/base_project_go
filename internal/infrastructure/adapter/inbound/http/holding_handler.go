@@ -143,6 +143,14 @@ func (h *HoldingHandler) UpdateHolding(w http.ResponseWriter, r *http.Request) {
 		AssetClass: text("assetClass", "Asset class", req.AssetClass),
 		Platform:   text("platform", "Platform", req.Platform),
 	}
+	cmd.ValueChangeReason, cmd.Note = req.ValueChangeReason, req.Note
+	if req.OccurredAt != "" {
+		at, ok := parseWhen(req.OccurredAt, noon)
+		if !ok {
+			valErrors = append(valErrors, errors.ValidationError{Field: "occurredAt", Message: "occurredAt must be a date (YYYY-MM-DD) or a date and time (RFC 3339)"})
+		}
+		cmd.OccurredAt = &at
+	}
 	if sent := req.ValueUsd; sent.Set {
 		switch {
 		case sent.Null:

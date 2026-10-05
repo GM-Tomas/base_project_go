@@ -20,23 +20,33 @@ func RealClock() time.Time {
 	return time.Now().UTC()
 }
 
+// HoldingService adds, edits and removes holdings. Each change of value is recorded in the activity log in
+// the same transaction: an OPENING when one is added, a CLOSING when it's removed, and what an edit of its
+// value was (see model.ValueChangeReason).
 type HoldingService struct {
+	tx           outbound.TransactionManager
 	holdingRepo  outbound.HoldingRepository
 	platformRepo outbound.PlatformRepository
+	ledger       ledger
 	clock        Clock
 }
 
 func NewHoldingService(
+	tx outbound.TransactionManager,
 	holdingRepo outbound.HoldingRepository,
 	platformRepo outbound.PlatformRepository,
+	movementRepo outbound.MovementRepository,
+	quotaRepo outbound.QuotaRepository,
 	clock Clock,
 ) *HoldingService {
 	if clock == nil {
 		clock = RealClock
 	}
 	return &HoldingService{
+		tx:           tx,
 		holdingRepo:  holdingRepo,
 		platformRepo: platformRepo,
+		ledger:       ledger{movements: movementRepo, quotas: quotaRepo},
 		clock:        clock,
 	}
 }
@@ -50,13 +60,15 @@ func (s *HoldingService) GetAllHoldings(
 	return s.holdingRepo.FindAll(ctx, userId)
 }
 
+// CreateHolding validates everything before touching storage, then adds the holding and its OPENING in one
+// transaction. The holdings cap is checked in it too, and the OPENING counts against the user's movements,
+// which serializes concurrent creates: the cap is exact.
 func (s *HoldingService) CreateHolding(
 	ctx context.Context,
 	command inbound.CreateHoldingCommand,
 ) (model.Holding, error) {
 	now := s.clock()
 
-	// Validate everything before touching storage.
 	platform, err := model.NewPlatformName(command.Platform)
 	if err != nil {
 		return model.Holding{}, err
@@ -72,57 +84,51 @@ func (s *HoldingService) CreateHolding(
 		return model.Holding{}, err
 	}
 
-	holding, err := model.CreateHolding(
-		command.UserId,
-		command.Name,
-		ac,
-		platform,
-		moneyVal,
-		now,
-	)
+	holding, err := model.CreateHolding(command.UserId, command.Name, ac, platform, moneyVal, now)
 	if err != nil {
 		return model.Holding{}, err
 	}
 
-	count, err := s.holdingRepo.Count(ctx, command.UserId)
-	if err != nil {
-		return model.Holding{}, err
-	}
-	if count >= model.MaxHoldingsPerUser {
-		return model.Holding{}, errHoldingsLimit
-	}
-
-	// The spelling the user's holdings already use for this platform wins (matched case-insensitively).
-	holding.Platform, err = s.platformRepo.Canonical(ctx, command.UserId, platform)
-	if err != nil {
-		return model.Holding{}, err
-	}
-
-	saved, err := s.holdingRepo.Save(ctx, holding)
-	if err != nil {
-		return model.Holding{}, err
-	}
-
-	err = confirmUnderCap(ctx, model.MaxHoldingsPerUser, errHoldingsLimit,
-		func(ctx context.Context) (int64, error) { return s.holdingRepo.Count(ctx, command.UserId) },
-		func(ctx context.Context) error {
-			_, err := s.holdingRepo.DeleteById(ctx, command.UserId, saved.Id)
+	var saved model.Holding
+	err = s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		if err := holdingsUnderCap(ctx, s.holdingRepo, command.UserId); err != nil {
 			return err
-		})
+		}
+		h := holding
+		// The spelling the user's holdings already use for this platform wins (matched case-insensitively).
+		if h.Platform, err = s.platformRepo.Canonical(ctx, command.UserId, platform); err != nil {
+			return err
+		}
+		if saved, err = s.holdingRepo.Save(ctx, h); err != nil {
+			return err
+		}
+		return s.ledger.record(ctx, lifecycleMovement(model.MovementOpening, saved, now))
+	})
 	if err != nil {
 		return model.Holding{}, err
 	}
 	return saved, nil
 }
 
+// lifecycleMovement is a holding being added (OPENING) or removed (CLOSING), with its value then.
+func lifecycleMovement(kind model.MovementKind, h model.Holding, now time.Time) model.Movement {
+	ref := model.RefOf(h)
+	return model.Movement{
+		Id: model.NewMovementId(), UserId: h.UserId, Kind: kind, OccurredAt: now,
+		Amount: h.Value, Fee: model.ZeroMoney, Holding: &ref, CreatedAt: now,
+	}
+}
+
 // UpdateHolding changes what the command sends, validated like CreateHolding before anything is read. A
 // platform is spelled as the user's holdings already spell it, as when creating; one the holding leaves
-// without holdings is gone (platforms are derived from holdings). Sending what's already there writes
-// nothing and keeps UpdatedAt.
+// without holdings is gone (platforms are derived from holdings). A new value is recorded as a movement,
+// computed against the value read in the same transaction (an edit from another device in between isn't
+// lost). Sending what's already there writes nothing and keeps UpdatedAt.
 func (s *HoldingService) UpdateHolding(
 	ctx context.Context,
 	command inbound.UpdateHoldingCommand,
 ) (model.Holding, error) {
+	now := s.clock()
 	var (
 		name       *string
 		assetClass *model.AssetClass
@@ -157,61 +163,97 @@ func (s *HoldingService) UpdateHolding(
 		}
 		value = &v
 	}
-
-	current, err := s.holdingRepo.FindById(ctx, command.UserId, command.Id)
+	reason, err := model.ParseValueChangeReason(command.ValueChangeReason)
 	if err != nil {
 		return model.Holding{}, err
 	}
-	if current == nil {
-		return model.Holding{}, holdingNotFound(command.Id)
+	note, err := model.NormalizeNote(command.Note)
+	if err != nil {
+		return model.Holding{}, err
+	}
+	occurredAt := now
+	if command.OccurredAt != nil {
+		occurredAt = command.OccurredAt.UTC()
+	}
+	if err := model.CheckOccurredAt(occurredAt, now); err != nil {
+		return model.Holding{}, err
 	}
 
-	updated := *current
-	if name != nil {
-		updated.Name = *name
-	}
-	if assetClass != nil {
-		updated.AssetClass = *assetClass
-	}
-	if value != nil {
-		updated.Value = *value
-	}
-	if platform != nil {
-		if updated.Platform, err = s.platformRepo.Canonical(ctx, command.UserId, *platform); err != nil {
-			return model.Holding{}, err
+	var result model.Holding
+	err = s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		current, err := findHolding(ctx, s.holdingRepo, command.UserId, command.Id)
+		if err != nil {
+			return err
 		}
-	}
-	if updated.Name == current.Name && updated.AssetClass == current.AssetClass &&
-		updated.Platform == current.Platform && updated.Value.Cmp(current.Value) == 0 {
-		return *current, nil
-	}
+		updated := current
+		if name != nil {
+			updated.Name = *name
+		}
+		if assetClass != nil {
+			updated.AssetClass = *assetClass
+		}
+		if value != nil {
+			updated.Value = *value
+		}
+		if platform != nil {
+			if updated.Platform, err = s.platformRepo.Canonical(ctx, command.UserId, *platform); err != nil {
+				return err
+			}
+		}
+		valueChanged := updated.Value.Cmp(current.Value) != 0
+		if !valueChanged && updated.Name == current.Name && updated.AssetClass == current.AssetClass &&
+			updated.Platform == current.Platform {
+			result = current
+			return nil
+		}
 
-	updated.UpdatedAt = s.clock()
-	found, err := s.holdingRepo.Update(ctx, updated)
+		updated.UpdatedAt = now
+		if err := updateHolding(ctx, s.holdingRepo, updated); err != nil {
+			return err
+		}
+		result = updated
+		if !valueChanged {
+			return nil
+		}
+		ref := model.RefOf(updated)
+		previous, next := current.Value, updated.Value
+		delta := next.Amount().Sub(previous.Amount()).Abs()
+		return s.ledger.record(ctx, model.Movement{
+			Id: model.NewMovementId(), UserId: command.UserId, Kind: reason.KindFor(previous, next),
+			OccurredAt: occurredAt, Amount: model.MustMoney(delta), Fee: model.ZeroMoney, Holding: &ref,
+			PreviousValue: &previous, NewValue: &next, Note: note, CreatedAt: now,
+		})
+	})
 	if err != nil {
 		return model.Holding{}, err
 	}
-	if !found {
-		return model.Holding{}, holdingNotFound(command.Id)
-	}
-	return updated, nil
+	return result, nil
 }
 
 func holdingNotFound(id model.HoldingId) error {
 	return appErrors.NewResourceNotFoundError(fmt.Sprintf("Holding %s not found", id.String()))
 }
 
+// DeleteHolding removes the holding and records its CLOSING, with the value it had, in one transaction. Its
+// movements stay in the activity log, naming it as it was.
 func (s *HoldingService) DeleteHolding(
 	ctx context.Context,
 	userId model.UserId,
 	id model.HoldingId,
 ) error {
-	deleted, err := s.holdingRepo.DeleteById(ctx, userId, id)
-	if err != nil {
-		return err
-	}
-	if !deleted {
-		return holdingNotFound(id)
-	}
-	return nil
+	now := s.clock()
+	return s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		h, err := findHolding(ctx, s.holdingRepo, userId, id)
+		if err != nil {
+			return err
+		}
+		deleted, err := s.holdingRepo.DeleteById(ctx, userId, id)
+		if err != nil {
+			return err
+		}
+		if !deleted {
+			return holdingNotFound(id)
+		}
+		return s.ledger.record(ctx, lifecycleMovement(model.MovementClosing, h, now))
+	})
 }

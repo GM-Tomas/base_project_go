@@ -66,6 +66,13 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 		WriteProblem(w, r, http.StatusConflict, "conflict", "Conflict", e.Message, nil)
 	case appErrors.LimitExceededError:
 		WriteProblem(w, r, http.StatusConflict, "limit-exceeded", "Conflict", e.Message, nil)
+	case appErrors.InsufficientBalanceError:
+		WriteProblem(w, r, http.StatusConflict, "insufficient-balance", "Conflict", e.Message, nil)
+	case appErrors.NotRevertibleError:
+		WriteProblem(w, r, http.StatusConflict, "not-revertible", "Conflict", e.Message, nil)
+	case appErrors.TransactionsUnavailableError:
+		log.Printf("transactions unavailable [traceId=%s] %s %s: %v", GetTraceID(r.Context()), r.Method, r.URL.Path, e)
+		WriteProblem(w, r, http.StatusServiceUnavailable, "transactions-unavailable", "Service Unavailable", e.Message, nil)
 	case appErrors.ValidationErrors:
 		fieldErrs := make([]FieldError, len(e.Errors))
 		messages := make([]string, len(e.Errors))
@@ -96,6 +103,11 @@ func isDomainValidationError(err error) bool {
 		model.ErrYearsOutOfRange,
 		model.ErrYieldOutOfRange,
 		model.ErrTooManyMilestones,
+		model.ErrUnknownMovementKind,
+		model.ErrNonPositiveAmount,
+		model.ErrFeeExceedsAmount,
+		model.ErrOccurredAtOutOfRange,
+		model.ErrUnknownValueChangeReason,
 	} {
 		if errors.Is(err, target) {
 			return true

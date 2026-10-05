@@ -101,3 +101,32 @@ func (id SnapshotId) UUID() uuid.UUID {
 func (id SnapshotId) String() string {
 	return id.value.String()
 }
+
+// MovementId represents the unique identifier of a Movement.
+type MovementId struct {
+	value uuid.UUID
+}
+
+func NewMovementId() MovementId {
+	return MovementId{value: uuid.New()}
+}
+
+func MovementIdFromUUID(u uuid.UUID) MovementId {
+	return MovementId{value: u}
+}
+
+func ParseMovementId(s string) (MovementId, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return MovementId{}, fmt.Errorf("%w: %s", ErrInvalidUUID, s)
+	}
+	return MovementId{value: u}, nil
+}
+
+func (id MovementId) UUID() uuid.UUID {
+	return id.value
+}
+
+func (id MovementId) String() string {
+	return id.value.String()
+}

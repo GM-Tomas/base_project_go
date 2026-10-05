@@ -12,6 +12,9 @@ func TestErrorMessages(t *testing.T) {
 	assert.EqualError(t, appErrors.NewDuplicateResourceError("dup"), "dup")
 	assert.EqualError(t, appErrors.NewResourceInUseError("in use"), "in use")
 	assert.EqualError(t, appErrors.NewLimitExceededError("too many"), "too many")
+	assert.EqualError(t, appErrors.NewInsufficientBalanceError("too little"), "too little")
+	assert.EqualError(t, appErrors.NewNotRevertibleError("can't undo"), "can't undo")
+	assert.EqualError(t, appErrors.NewTransactionsUnavailableError("no transactions"), "no transactions")
 	assert.EqualError(t, appErrors.ValidationError{Field: "name", Message: "required"}, "name: required")
 	assert.EqualError(t, appErrors.NewValidationErrors([]appErrors.ValidationError{{}, {}}), "validation failed with 2 errors")
 }

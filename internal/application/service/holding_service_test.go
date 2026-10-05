@@ -25,11 +25,13 @@ type mockHoldingRepo struct {
 	countErrAfter int // Count calls that still succeed before countErr kicks in
 	countCalls    int
 	deleteErr     error
+	beforeDelete  func() // lands a "concurrent" delete between the service's read and its own
 	beforeSave    func() // lands a "concurrent" request between the service's checks and its insert
 	findErr       error
 	updateErr     error
 	beforeUpdate  func() // lands a "concurrent" request between the service's read and its update
 	updates       int
+	existingErr   error
 }
 
 func newMockHoldingRepo() *mockHoldingRepo {
@@ -102,6 +104,9 @@ func (m *mockHoldingRepo) DeleteById(ctx context.Context, userId model.UserId, i
 	if m.deleteErr != nil {
 		return false, m.deleteErr
 	}
+	if m.beforeDelete != nil {
+		m.beforeDelete()
+	}
 	h, ok := m.holdings[id.String()]
 	if !ok || h.UserId.UUID() != userId.UUID() {
 		return false, nil
@@ -112,6 +117,19 @@ func (m *mockHoldingRepo) DeleteById(ctx context.Context, userId model.UserId, i
 
 func (m *mockHoldingRepo) AssetClassesInUse(ctx context.Context, userId model.UserId) ([]model.AssetClass, error) {
 	return m.assetClasses, nil
+}
+
+func (m *mockHoldingRepo) ExistingIds(ctx context.Context, userId model.UserId, ids []model.HoldingId) (map[model.HoldingId]bool, error) {
+	if m.existingErr != nil {
+		return nil, m.existingErr
+	}
+	existing := map[model.HoldingId]bool{}
+	for _, id := range ids {
+		if h, ok := m.holdings[id.String()]; ok && h.UserId == userId {
+			existing[id] = true
+		}
+	}
+	return existing, nil
 }
 
 // mockPlatformRepo derives platforms from the holdings, like the real one.
@@ -155,11 +173,9 @@ func fixedClock(t time.Time) service.Clock {
 }
 
 func TestHoldingService_Lifecycle(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	platformRepo := newMockPlatformRepo(holdingRepo)
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(now))
-
+	f := newLedgerFixture(fixedClock(now))
+	svc := f.holdingSvc
 	userId := model.NewUserId(uuid.New())
 	ctx := context.Background()
 
@@ -171,40 +187,52 @@ func TestHoldingService_Lifecycle(t *testing.T) {
 		return h
 	}
 
-	// 1. Create reuses an existing platform case-insensitively, else auto-creates it.
+	// 1. Create reuses an existing platform case-insensitively, else auto-creates it, and records an OPENING.
 	nvda := create("NVDA", "Balanz")
 	assert.Equal(t, "NVDA", nvda.Name)
 	assert.Equal(t, "10557.00", nvda.Value.String())
 	aapl := create("AAPL", "balanz")
 	assert.Equal(t, "Balanz", aapl.Platform.Value())
 	platforms := func() []model.Platform {
-		list, err := platformRepo.FindAll(ctx, userId)
+		list, err := f.platforms.FindAll(ctx, userId)
 		require.NoError(t, err)
 		return list
 	}
 	require.Len(t, platforms(), 1)
 	assert.Equal(t, "Other", platforms()[0].Type.Value())
+	require.Len(t, f.movements.movements, 2)
+	opening := f.movements.movements[0]
+	assert.Equal(t, model.MovementOpening, opening.Kind)
+	assert.Equal(t, nvda.Id, opening.Holding.Id)
+	assert.Equal(t, "10557.00", opening.Amount.String())
+	assert.Equal(t, now, opening.OccurredAt)
+	assert.Equal(t, 2, f.quotas.movementsOf(userId))
 
 	all, err := svc.GetAllHoldings(ctx, userId)
 	require.NoError(t, err)
 	assert.Len(t, all, 2)
 
-	// 2. Deleting one holding keeps the platform while another holding still uses it.
+	// 2. Deleting one holding keeps the platform while another holding still uses it, and records its CLOSING
+	// (not counted against the quota: removing always works).
 	require.NoError(t, svc.DeleteHolding(ctx, userId, nvda.Id))
 	assert.Len(t, platforms(), 1)
+	closing := f.movements.movements[2]
+	assert.Equal(t, model.MovementClosing, closing.Kind)
+	assert.Equal(t, "NVDA", closing.Holding.Name)
+	assert.Equal(t, "10557.00", closing.Amount.String())
+	assert.Equal(t, 2, f.quotas.movementsOf(userId))
 
 	// 3. Deleting the last one prunes the platform (the UI has no way to delete it).
 	require.NoError(t, svc.DeleteHolding(ctx, userId, aapl.Id))
 	assert.Empty(t, platforms())
 
-	// 4. Delete again -> not found
-	assert.Error(t, svc.DeleteHolding(ctx, userId, aapl.Id))
+	// 4. Delete again -> not found, and nothing recorded.
+	assert.ErrorAs(t, svc.DeleteHolding(ctx, userId, aapl.Id), &appErrors.ResourceNotFoundError{})
+	assert.Len(t, f.movements.movements, 4)
 }
 
-func TestHoldingService_RejectedCreateLeavesNoPlatformBehind(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	platformRepo := newMockPlatformRepo(holdingRepo)
-	svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(time.Now()))
+func TestHoldingService_RejectedCreateLeavesNothingBehind(t *testing.T) {
+	f := newLedgerFixture(fixedClock(time.Now()))
 	userId := model.NewUserId(uuid.New())
 
 	for name, cmd := range map[string]inbound.CreateHoldingCommand{
@@ -215,131 +243,94 @@ func TestHoldingService_RejectedCreateLeavesNoPlatformBehind(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cmd.UserId = userId
-			_, err := svc.CreateHolding(context.Background(), cmd)
+			_, err := f.holdingSvc.CreateHolding(context.Background(), cmd)
 			assert.Error(t, err)
-			assert.Empty(t, holdingRepo.holdings)
+			assert.Empty(t, f.holdings.holdings)
+			assert.Empty(t, f.movements.movements)
+			assert.Zero(t, f.tx.calls, "validated before any transaction")
 		})
 	}
 }
 
 func TestHoldingService_CapsHoldingsPerUser(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	platformRepo := newMockPlatformRepo(holdingRepo)
-	svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(time.Now()))
+	f := newLedgerFixture(fixedClock(time.Now()))
 	full, other := model.NewUserId(uuid.New()), model.NewUserId(uuid.New())
 
 	for i := 0; i < model.MaxHoldingsPerUser; i++ {
 		h := model.Holding{Id: model.NewHoldingId(), UserId: full, Platform: model.MustPlatformName("Bank")}
-		holdingRepo.holdings[h.Id.String()] = h
+		f.holdings.holdings[h.Id.String()] = h
 	}
 	cmd := func(u model.UserId) inbound.CreateHoldingCommand {
 		return inbound.CreateHoldingCommand{UserId: u, Name: "One more", AssetClass: "Cash", Platform: "New Bank", ValueUsd: 1}
 	}
 
-	_, err := svc.CreateHolding(context.Background(), cmd(full))
+	_, err := f.holdingSvc.CreateHolding(context.Background(), cmd(full))
 	assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
-	platforms, _ := platformRepo.FindAll(context.Background(), full)
+	platforms, _ := f.platforms.FindAll(context.Background(), full)
 	require.Len(t, platforms, 1)
 	assert.Equal(t, "Bank", platforms[0].Name.Value(), "no platform for a refused holding")
+	assert.Empty(t, f.movements.movements)
+	assert.Zero(t, f.quotas.movementsOf(full))
 
 	// The cap is per account: everyone else is unaffected.
-	_, err = svc.CreateHolding(context.Background(), cmd(other))
+	_, err = f.holdingSvc.CreateHolding(context.Background(), cmd(other))
 	assert.NoError(t, err)
 
-	holdingRepo.countErr = errors.New("db down")
-	_, err = svc.CreateHolding(context.Background(), cmd(other))
+	f.holdings.countErr = errors.New("db down")
+	_, err = f.holdingSvc.CreateHolding(context.Background(), cmd(other))
 	assert.EqualError(t, err, "db down")
 }
 
-func TestHoldingService_CapHoldsWhenCreatesRace(t *testing.T) {
-	for name, deleteErr := range map[string]error{"withdrawn": nil, "withdrawal fails": errors.New("db down")} {
+func TestHoldingService_CreateIsAllOrNothing(t *testing.T) {
+	for name, tc := range map[string]struct {
+		breakIt func(f *ledgerFixture, user model.UserId)
+		want    func(t *testing.T, err error)
+	}{
+		"the movements quota is full": {
+			breakIt: func(f *ledgerFixture, user model.UserId) {
+				f.quotas.counts[user.String()+"/movements"] = model.MaxMovementsPerUser
+			},
+			want: func(t *testing.T, err error) {
+				assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
+				assert.ErrorContains(t, err, "20000 recorded changes")
+			},
+		},
+		"the OPENING can't be stored": {
+			breakIt: func(f *ledgerFixture, _ model.UserId) { f.movements.saveErr = errors.New("insert failed") },
+			want:    func(t *testing.T, err error) { assert.EqualError(t, err, "insert failed") },
+		},
+		"the quota can't be read": {
+			breakIt: func(f *ledgerFixture, _ model.UserId) { f.quotas.reserveErr = errors.New("quota down") },
+			want:    func(t *testing.T, err error) { assert.EqualError(t, err, "quota down") },
+		},
+		"the platform can't be read": {
+			breakIt: func(f *ledgerFixture, _ model.UserId) { f.platforms.canonicalErr = errors.New("canonical failed") },
+			want:    func(t *testing.T, err error) { assert.EqualError(t, err, "canonical failed") },
+		},
+	} {
 		t.Run(name, func(t *testing.T) {
-			holdingRepo := newMockHoldingRepo()
-			platformRepo := newMockPlatformRepo(holdingRepo)
-			svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(time.Now()))
-			ctx := context.Background()
+			f := newLedgerFixture(fixedClock(time.Now()))
 			user := model.NewUserId(uuid.New())
-			add := func() {
-				h := model.Holding{Id: model.NewHoldingId(), UserId: user, Name: "other", Platform: model.MustPlatformName("Bank")}
-				holdingRepo.holdings[h.Id.String()] = h
-			}
-			for i := 0; i < model.MaxHoldingsPerUser-1; i++ {
-				add()
-			}
-			// Both requests passed the check at 999; the other one's insert lands first.
-			holdingRepo.beforeSave = func() { holdingRepo.beforeSave = nil; add() }
-			holdingRepo.deleteErr = deleteErr
+			tc.breakIt(f, user)
 
-			_, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{
-				UserId: user, Name: "Mine", AssetClass: "Cash", Platform: "Fresh", ValueUsd: 1,
+			_, err := f.holdingSvc.CreateHolding(context.Background(), inbound.CreateHoldingCommand{
+				UserId: user, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 1,
 			})
 
-			mine := 0
-			for _, h := range holdingRepo.holdings {
-				if h.Name == "Mine" {
-					mine++
-				}
-			}
-			if deleteErr != nil {
-				// It couldn't be taken back, so it stands and is reported as created: a 500 would only
-				// invite a retry that stores it twice.
-				assert.NoError(t, err)
-				assert.Equal(t, 1, mine)
-				return
-			}
-			assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
-			n, _ := holdingRepo.Count(ctx, user)
-			assert.Equal(t, int64(model.MaxHoldingsPerUser), n, "ours was withdrawn, so the user stays at the cap")
-			assert.Zero(t, mine)
+			tc.want(t, err)
+			assert.Empty(t, f.holdings.holdings, "the holding was rolled back with the rest")
+			assert.Empty(t, f.movements.movements)
 		})
 	}
-}
-
-func TestHoldingService_WithdrawsTheHoldingWhenTheRecountFails(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
-	holdingRepo.countErr, holdingRepo.countErrAfter = errors.New("db blip"), 1
-
-	_, err := svc.CreateHolding(context.Background(), inbound.CreateHoldingCommand{
-		UserId: model.NewUserId(uuid.New()), Name: "x", AssetClass: "Cash", Platform: "Bank", ValueUsd: 1,
-	})
-
-	assert.EqualError(t, err, "db blip", "fail closed: the cap couldn't be confirmed")
-	assert.Empty(t, holdingRepo.holdings, "and the client's error matches what's stored")
-}
-
-func TestHoldingService_ClientHangingUpAfterTheInsertDoesNotSkipTheCap(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
-	user := model.NewUserId(uuid.New())
-	add := func() {
-		h := model.Holding{Id: model.NewHoldingId(), UserId: user, Name: "other", Platform: model.MustPlatformName("Bank")}
-		holdingRepo.holdings[h.Id.String()] = h
-	}
-	for i := 0; i < model.MaxHoldingsPerUser-1; i++ {
-		add()
-	}
-	ctx, hangUp := context.WithCancel(context.Background())
-	// A racing request lands, and this client drops its connection right as its own insert goes in.
-	holdingRepo.beforeSave = func() { holdingRepo.beforeSave = nil; add(); hangUp() }
-
-	_, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{
-		UserId: user, Name: "Mine", AssetClass: "Cash", Platform: "Bank", ValueUsd: 1,
-	})
-
-	assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
-	n, _ := holdingRepo.Count(context.Background(), user)
-	assert.Equal(t, int64(model.MaxHoldingsPerUser), n)
 }
 
 func ptr[T any](v T) *T { return &v }
 
 func TestHoldingService_UpdateChangesOnlyWhatIsSent(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	platformRepo := newMockPlatformRepo(holdingRepo)
 	created := time.Date(2026, 1, 10, 9, 0, 0, 0, time.UTC)
 	now := created
-	svc := service.NewHoldingService(holdingRepo, platformRepo, func() time.Time { return now })
+	f := newLedgerFixture(func() time.Time { return now })
+	svc := f.holdingSvc
 	ctx := context.Background()
 	user := model.NewUserId(uuid.New())
 	create := func(name, platform string) model.Holding {
@@ -359,10 +350,11 @@ func TestHoldingService_UpdateChangesOnlyWhatIsSent(t *testing.T) {
 	assert.Equal(t, "Ledger", got.Platform.Value())
 	assert.Equal(t, created, got.CreatedAt)
 	assert.Equal(t, now, got.UpdatedAt)
-	assert.Equal(t, got, holdingRepo.holdings[btc.Id.String()], "what's returned is what's stored")
+	assert.Equal(t, got, f.holdings.holdings[btc.Id.String()], "what's returned is what's stored")
 
 	// Moving it to a platform the user has under another case keeps that spelling, and the platform it
-	// left (its only holding) is gone.
+	// left (its only holding) is gone. No value change, no movement.
+	recorded := len(f.movements.movements)
 	got, err = svc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{
 		UserId: user, Id: btc.Id, Name: ptr("  Bitcoin   (cold) "), AssetClass: ptr("Store of value"), Platform: ptr("binance"),
 	})
@@ -370,18 +362,68 @@ func TestHoldingService_UpdateChangesOnlyWhatIsSent(t *testing.T) {
 	assert.Equal(t, "Bitcoin (cold)", got.Name)
 	assert.Equal(t, "Store of value", got.AssetClass.Value())
 	assert.Equal(t, "Binance", got.Platform.Value())
-	platforms, _ := platformRepo.FindAll(ctx, user)
+	platforms, _ := f.platforms.FindAll(ctx, user)
 	require.Len(t, platforms, 1)
 	assert.Equal(t, "Binance", platforms[0].Name.Value())
+	assert.Len(t, f.movements.movements, recorded)
+}
+
+func TestHoldingService_UpdateRecordsWhyTheValueChanged(t *testing.T) {
+	now := time.Date(2026, 10, 5, 15, 0, 0, 0, time.UTC)
+	f := newLedgerFixture(fixedClock(now))
+	ctx := context.Background()
+	user := model.NewUserId(uuid.New())
+	h, err := f.holdingSvc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: user, Name: "Savings", AssetClass: "Cash", Platform: "Bank", ValueUsd: 100})
+	require.NoError(t, err)
+	lastMovement := func() model.Movement { return f.movements.movements[len(f.movements.movements)-1] }
+	yesterday := now.Add(-24 * time.Hour)
+
+	for _, tc := range []struct {
+		reason string
+		value  float64
+		kind   model.MovementKind
+		amount string
+	}{
+		{"", 150, model.MovementGain, "50.00"},
+		{"MARKET", 120, model.MovementLoss, "30.00"},
+		{"CASH_FLOW", 220, model.MovementDeposit, "100.00"},
+		{"CASH_FLOW", 200, model.MovementWithdrawal, "20.00"},
+		{"CORRECTION", 210.5, model.MovementAdjustment, "10.50"},
+	} {
+		before := f.holdings.holdings[h.Id.String()].Value
+		_, err := f.holdingSvc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{
+			UserId: user, Id: h.Id, ValueUsd: ptr(tc.value), ValueChangeReason: tc.reason, OccurredAt: &yesterday, Note: "  from the statement ",
+		})
+		require.NoError(t, err)
+		m := lastMovement()
+		assert.Equal(t, tc.kind, m.Kind, tc.reason)
+		assert.Equal(t, tc.amount, m.Amount.String())
+		assert.Equal(t, before.String(), m.PreviousValue.String())
+		assert.Equal(t, model.MustMoneyFromFloat(tc.value).String(), m.NewValue.String())
+		assert.Equal(t, yesterday, m.OccurredAt)
+		assert.Equal(t, now, m.CreatedAt)
+		assert.Equal(t, "from the statement", m.Note)
+		assert.Equal(t, h.Id, m.Holding.Id)
+	}
+
+	// The change is measured against the value read in the transaction, not one sent with the edit.
+	f.holdings.holdings[h.Id.String()] = func() model.Holding {
+		changed := f.holdings.holdings[h.Id.String()]
+		changed.Value = model.MustMoneyFromFloat(300) // edited from another device meanwhile
+		return changed
+	}()
+	_, err = f.holdingSvc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{UserId: user, Id: h.Id, ValueUsd: ptr(250.0)})
+	require.NoError(t, err)
+	assert.Equal(t, model.MovementLoss, lastMovement().Kind)
+	assert.Equal(t, "50.00", lastMovement().Amount.String())
 }
 
 func TestHoldingService_UpdateWithNothingNewWritesNothing(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
 	created := time.Date(2026, 1, 10, 9, 0, 0, 0, time.UTC)
 	now := created
-	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), func() time.Time { return now })
+	f := newLedgerFixture(func() time.Time { return now })
 	user := model.NewUserId(uuid.New())
-	h, err := svc.CreateHolding(context.Background(), inbound.CreateHoldingCommand{UserId: user, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
+	h, err := f.holdingSvc.CreateHolding(context.Background(), inbound.CreateHoldingCommand{UserId: user, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
 	require.NoError(t, err)
 	now = created.Add(time.Hour)
 
@@ -391,19 +433,20 @@ func TestHoldingService_UpdateWithNothingNewWritesNothing(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cmd.UserId, cmd.Id = user, h.Id
-			got, err := svc.UpdateHolding(context.Background(), cmd)
+			got, err := f.holdingSvc.UpdateHolding(context.Background(), cmd)
 			require.NoError(t, err)
 			assert.Equal(t, created, got.UpdatedAt)
-			assert.Zero(t, holdingRepo.updates)
+			assert.Zero(t, f.holdings.updates)
+			assert.Len(t, f.movements.movements, 1, "just the OPENING")
 		})
 	}
 }
 
 func TestHoldingService_UpdateValidatesBeforeReading(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
-	holdingRepo.findErr = errors.New("must not be read")
+	f := newLedgerFixture(fixedClock(time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)))
+	f.holdings.findErr = errors.New("must not be read")
 	long := strings.Repeat("x", model.MaxPlatformNameLength+1)
+	tomorrowAndABit := time.Date(2026, 10, 6, 13, 0, 0, 0, time.UTC)
 
 	for name, tc := range map[string]struct {
 		cmd  inbound.UpdateHoldingCommand
@@ -414,20 +457,23 @@ func TestHoldingService_UpdateValidatesBeforeReading(t *testing.T) {
 		"blank platform": {inbound.UpdateHoldingCommand{Platform: ptr("")}, model.ErrBlankLabel},
 		"negative value": {inbound.UpdateHoldingCommand{ValueUsd: ptr(-1.0)}, model.ErrNegativeMoney},
 		"NaN value":      {inbound.UpdateHoldingCommand{ValueUsd: ptr(math.NaN())}, model.ErrNonFiniteMoney},
+		"unknown reason": {inbound.UpdateHoldingCommand{ValueUsd: ptr(1.0), ValueChangeReason: "TAXES"}, model.ErrUnknownValueChangeReason},
+		"note too long":  {inbound.UpdateHoldingCommand{ValueUsd: ptr(1.0), Note: strings.Repeat("n", model.MaxMovementNoteLength+1)}, model.ErrLabelTooLong},
+		"in the future":  {inbound.UpdateHoldingCommand{ValueUsd: ptr(1.0), OccurredAt: &tomorrowAndABit}, model.ErrOccurredAtOutOfRange},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := svc.UpdateHolding(context.Background(), tc.cmd)
+			_, err := f.holdingSvc.UpdateHolding(context.Background(), tc.cmd)
 			assert.ErrorIs(t, err, tc.want)
+			assert.Zero(t, f.tx.calls)
 		})
 	}
 }
 
 func TestHoldingService_UpdateOfAMissingHoldingIsNotFound(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
+	f := newLedgerFixture(fixedClock(time.Now()))
 	ctx := context.Background()
 	owner, other := model.NewUserId(uuid.New()), model.NewUserId(uuid.New())
-	h, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: owner, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
+	h, err := f.holdingSvc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: owner, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
 	require.NoError(t, err)
 
 	// Someone else's holding is as missing as one that never was.
@@ -435,39 +481,70 @@ func TestHoldingService_UpdateOfAMissingHoldingIsNotFound(t *testing.T) {
 		{UserId: other, Id: h.Id, Name: ptr("Mine now")},
 		{UserId: owner, Id: model.NewHoldingId(), Name: ptr("Ghost")},
 	} {
-		_, err := svc.UpdateHolding(ctx, cmd)
+		_, err := f.holdingSvc.UpdateHolding(ctx, cmd)
 		assert.ErrorAs(t, err, &appErrors.ResourceNotFoundError{})
 	}
-	assert.Equal(t, "BTC", holdingRepo.holdings[h.Id.String()].Name)
+	assert.Equal(t, "BTC", f.holdings.holdings[h.Id.String()].Name)
 
-	// Deleted (from another device) between the read and the write: not found, and not brought back.
-	holdingRepo.beforeUpdate = func() { delete(holdingRepo.holdings, h.Id.String()) }
-	_, err = svc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{UserId: owner, Id: h.Id, Name: ptr("Edited")})
+	// Deleted (from another device) between the read and the write: not found, not brought back, and the
+	// movement isn't recorded either.
+	f.holdings.beforeUpdate = func() { delete(f.holdings.holdings, h.Id.String()) }
+	_, err = f.holdingSvc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{UserId: owner, Id: h.Id, Name: ptr("Edited"), ValueUsd: ptr(1.0)})
 	assert.ErrorAs(t, err, &appErrors.ResourceNotFoundError{})
-	assert.Empty(t, holdingRepo.holdings)
+	assert.Len(t, f.movements.movements, 1, "just the OPENING")
 }
 
 func TestHoldingService_UpdateReturnsStorageErrors(t *testing.T) {
-	holdingRepo := newMockHoldingRepo()
-	platformRepo := newMockPlatformRepo(holdingRepo)
-	svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(time.Now()))
+	f := newLedgerFixture(fixedClock(time.Now()))
 	ctx := context.Background()
 	user := model.NewUserId(uuid.New())
-	h, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: user, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
+	h, err := f.holdingSvc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: user, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
 	require.NoError(t, err)
 	update := func() error {
-		_, err := svc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{UserId: user, Id: h.Id, Platform: ptr("Binance")})
+		_, err := f.holdingSvc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{UserId: user, Id: h.Id, Platform: ptr("Binance"), ValueUsd: ptr(50.0)})
 		return err
 	}
 
-	holdingRepo.findErr = errors.New("find failed")
+	f.holdings.findErr = errors.New("find failed")
 	assert.EqualError(t, update(), "find failed")
-	holdingRepo.findErr = nil
+	f.holdings.findErr = nil
 
-	platformRepo.canonicalErr = errors.New("canonical failed")
+	f.platforms.canonicalErr = errors.New("canonical failed")
 	assert.EqualError(t, update(), "canonical failed")
-	platformRepo.canonicalErr = nil
+	f.platforms.canonicalErr = nil
 
-	holdingRepo.updateErr = errors.New("update failed")
+	f.holdings.updateErr = errors.New("update failed")
 	assert.EqualError(t, update(), "update failed")
+	f.holdings.updateErr = nil
+
+	// The movement fails: the new value is rolled back with it.
+	f.movements.saveErr = errors.New("insert failed")
+	assert.EqualError(t, update(), "insert failed")
+	assert.Equal(t, "100.00", f.holdings.holdings[h.Id.String()].Value.String())
+	assert.Equal(t, "Ledger", f.holdings.holdings[h.Id.String()].Platform.Value())
+}
+
+func TestHoldingService_DeleteIsAllOrNothing(t *testing.T) {
+	f := newLedgerFixture(fixedClock(time.Now()))
+	ctx := context.Background()
+	user := model.NewUserId(uuid.New())
+	h, err := f.holdingSvc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: user, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
+	require.NoError(t, err)
+
+	f.movements.saveErr = errors.New("insert failed")
+	assert.EqualError(t, f.holdingSvc.DeleteHolding(ctx, user, h.Id), "insert failed")
+	assert.Contains(t, f.holdings.holdings, h.Id.String(), "the holding is back: its CLOSING couldn't be stored")
+	f.movements.saveErr = nil
+
+	f.holdings.deleteErr = errors.New("delete failed")
+	assert.EqualError(t, f.holdingSvc.DeleteHolding(ctx, user, h.Id), "delete failed")
+	f.holdings.deleteErr = nil
+
+	f.holdings.findErr = errors.New("find failed")
+	assert.EqualError(t, f.holdingSvc.DeleteHolding(ctx, user, h.Id), "find failed")
+	f.holdings.findErr = nil
+
+	// Gone between the read and the delete (another device): not found.
+	f.holdings.beforeDelete = func() { delete(f.holdings.holdings, h.Id.String()) }
+	assert.ErrorAs(t, f.holdingSvc.DeleteHolding(ctx, user, h.Id), &appErrors.ResourceNotFoundError{})
 }

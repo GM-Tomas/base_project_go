@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/shopspring/decimal"
 )
@@ -124,6 +125,19 @@ func (m Money) GrowthPctFrom(baseline Money) *decimal.Decimal {
 	}
 	pct := m.amount.Sub(baseline.amount).Mul(hundred).DivRound(baseline.amount, 1)
 	return &pct
+}
+
+// USD is the amount as people read it in messages: "$1,234.56".
+func (m Money) USD() string {
+	whole, cents, _ := strings.Cut(m.amount.StringFixed(2), ".")
+	var grouped strings.Builder
+	for i, digit := range whole {
+		if i > 0 && (len(whole)-i)%3 == 0 {
+			grouped.WriteByte(',')
+		}
+		grouped.WriteRune(digit)
+	}
+	return "$" + grouped.String() + "." + cents
 }
 
 // SumMoney sums a slice of Money.

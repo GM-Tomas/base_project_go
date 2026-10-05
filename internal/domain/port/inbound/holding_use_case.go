@@ -2,6 +2,7 @@ package inbound
 
 import (
 	"context"
+	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 )
@@ -14,14 +15,18 @@ type CreateHoldingCommand struct {
 	ValueUsd   float64
 }
 
-// UpdateHoldingCommand changes the fields that aren't nil and leaves the rest as they are.
+// UpdateHoldingCommand changes the fields that aren't nil and leaves the rest as they are. A change of value
+// is recorded as a movement: ValueChangeReason says which ("" is a market move), OccurredAt when (nil: now).
 type UpdateHoldingCommand struct {
-	UserId     model.UserId
-	Id         model.HoldingId
-	Name       *string
-	AssetClass *string
-	Platform   *string
-	ValueUsd   *float64
+	UserId            model.UserId
+	Id                model.HoldingId
+	Name              *string
+	AssetClass        *string
+	Platform          *string
+	ValueUsd          *float64
+	ValueChangeReason string
+	OccurredAt        *time.Time
+	Note              string
 }
 
 type HoldingUseCase interface {

@@ -28,8 +28,10 @@ func LoadConfig() Config {
 	supabaseURL := strings.TrimRight(getEnv("SUPABASE_URL", "https://rhzumppfruperaivykhe.supabase.co"), "/")
 
 	return Config{
-		Port:        getEnv("PORT", "8080"),
-		MongoDBURI:  getEnv("MONGODB_URI", "mongodb://localhost:27017"), // local default matches compose.yaml
+		Port: getEnv("PORT", "8080"),
+		// Local default matches compose.yaml: a single-node replica set, reached directly (its member is
+		// "localhost:27017" from inside the container too).
+		MongoDBURI:  getEnv("MONGODB_URI", "mongodb://localhost:27017/?directConnection=true"),
 		MongoDBName: getEnv("MONGODB_DATABASE", "base_wealth"),
 		// Never "*.vercel.app": anyone can deploy there. FRONTEND_ORIGIN overrides (e.g. a custom domain).
 		AllowedOrigins:      splitList(getEnv("FRONTEND_ORIGIN", "http://localhost:3000,http://127.0.0.1:3000,https://base-project-fe.vercel.app")),

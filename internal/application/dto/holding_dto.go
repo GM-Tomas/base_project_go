@@ -9,12 +9,16 @@ type CreateHoldingRequest struct {
 	ValueUsd   float64 `json:"valueUsd"`
 }
 
-// UpdateHoldingRequest is PATCH /holdings/{id}: only the fields sent change.
+// UpdateHoldingRequest is PATCH /holdings/{id}: only the fields sent change. A new valueUsd is recorded as a
+// movement: valueChangeReason says what it was (MARKET by default), occurredAt and note go with it.
 type UpdateHoldingRequest struct {
-	Name       Optional[string]  `json:"name"`
-	AssetClass Optional[string]  `json:"assetClass"`
-	Platform   Optional[string]  `json:"platform"`
-	ValueUsd   Optional[float64] `json:"valueUsd"`
+	Name              Optional[string]  `json:"name"`
+	AssetClass        Optional[string]  `json:"assetClass"`
+	Platform          Optional[string]  `json:"platform"`
+	ValueUsd          Optional[float64] `json:"valueUsd"`
+	ValueChangeReason string            `json:"valueChangeReason"`
+	OccurredAt        string            `json:"occurredAt"`
+	Note              string            `json:"note"`
 }
 
 type HoldingResponse struct {

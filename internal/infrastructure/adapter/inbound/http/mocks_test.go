@@ -71,6 +71,97 @@ func (m *mockHoldingRepo) AssetClassesInUse(ctx context.Context, userId model.Us
 	return m.assetClasses, nil
 }
 
+func (m *mockHoldingRepo) ExistingIds(ctx context.Context, userId model.UserId, ids []model.HoldingId) (map[model.HoldingId]bool, error) {
+	existing := map[model.HoldingId]bool{}
+	for _, id := range ids {
+		if h, ok := m.holdings[id.String()]; ok && h.UserId == userId {
+			existing[id] = true
+		}
+	}
+	return existing, nil
+}
+
+// mockMovementRepo keeps movements in memory, newest first as the real one lists them, and the last query.
+type mockMovementRepo struct {
+	movements  []model.Movement
+	lastFilter model.MovementFilter
+	lastAfter  *model.MovementCursor
+	lastLimit  int
+}
+
+func (m *mockMovementRepo) Save(ctx context.Context, mv model.Movement) error {
+	m.movements = append(m.movements, mv)
+	return nil
+}
+
+func (m *mockMovementRepo) FindById(ctx context.Context, userId model.UserId, id model.MovementId) (*model.Movement, error) {
+	for _, mv := range m.movements {
+		if mv.Id == id && mv.UserId == userId {
+			return &mv, nil
+		}
+	}
+	return nil, nil
+}
+
+// List pages by position: the cursor's id is where the previous page ended (the HTTP tests check the
+// cursor round trip and the query parsing, the Mongo tests the real order).
+func (m *mockMovementRepo) List(ctx context.Context, userId model.UserId, filter model.MovementFilter, after *model.MovementCursor, limit int) (outbound.MovementPage, error) {
+	m.lastFilter, m.lastAfter, m.lastLimit = filter, after, limit
+	var list []model.Movement
+	for i := len(m.movements) - 1; i >= 0; i-- {
+		if m.movements[i].UserId == userId {
+			list = append(list, m.movements[i])
+		}
+	}
+	if after != nil {
+		for i, mv := range list {
+			if mv.Id == after.Id {
+				list = list[i+1:]
+				break
+			}
+		}
+	}
+	page := outbound.MovementPage{Items: list}
+	if len(list) > limit {
+		page.Items = list[:limit]
+		last := list[limit-1]
+		page.Next = &model.MovementCursor{OccurredAt: last.OccurredAt, CreatedAt: last.CreatedAt, Id: last.Id}
+	}
+	return page, nil
+}
+
+func (m *mockMovementRepo) DeleteById(ctx context.Context, userId model.UserId, id model.MovementId) (bool, error) {
+	for i, mv := range m.movements {
+		if mv.Id == id && mv.UserId == userId {
+			m.movements = append(m.movements[:i], m.movements[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+type mockQuotaRepo struct{ counts map[string]int }
+
+func (m *mockQuotaRepo) Reserve(ctx context.Context, userId model.UserId, key string, n, limit int) (bool, error) {
+	if m.counts[userId.String()+key]+n > limit {
+		return false, nil
+	}
+	m.counts[userId.String()+key] += n
+	return true, nil
+}
+
+func (m *mockQuotaRepo) Release(ctx context.Context, userId model.UserId, key string, n int) error {
+	m.counts[userId.String()+key] -= n
+	return nil
+}
+
+// passthroughTx runs fn as it is: the HTTP tests don't fail halfway (the service and Mongo tests do).
+type passthroughTx struct{}
+
+func (passthroughTx) WithinTransaction(ctx context.Context, fn func(ctx context.Context) error) error {
+	return fn(ctx)
+}
+
 // mockPlatformRepo derives platforms from the holdings, like the real one.
 type mockPlatformRepo struct {
 	holdings *mockHoldingRepo

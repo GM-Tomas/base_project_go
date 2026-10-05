@@ -172,6 +172,40 @@ func (r *MongoHoldingRepository) AssetClassesInUse(
 	return classes, nil
 }
 
+func (r *MongoHoldingRepository) ExistingIds(
+	ctx context.Context,
+	userId model.UserId,
+	ids []model.HoldingId,
+) (map[model.HoldingId]bool, error) {
+	existing := make(map[model.HoldingId]bool, len(ids))
+	if len(ids) == 0 {
+		return existing, nil
+	}
+	wanted := make([]string, len(ids))
+	for i, id := range ids {
+		wanted[i] = id.UUID().String()
+	}
+	cursor, err := r.coll.Find(ctx,
+		bson.M{"user_id": userId.UUID().String(), "_id": bson.M{"$in": wanted}},
+		options.Find().SetProjection(bson.M{"_id": 1}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var docs []struct {
+		ID string `bson:"_id"`
+	}
+	if err := cursor.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	for _, doc := range docs {
+		if id, err := uuid.Parse(doc.ID); err == nil {
+			existing[model.HoldingIdFromUUID(id)] = true
+		}
+	}
+	return existing, nil
+}
+
 func mapDocToHolding(doc holdingDoc) (model.Holding, error) {
 	id, err := uuid.Parse(doc.ID)
 	if err != nil {

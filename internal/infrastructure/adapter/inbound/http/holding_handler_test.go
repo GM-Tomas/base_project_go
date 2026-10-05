@@ -31,17 +31,37 @@ func (v *dummyJWTValidator) ValidateToken(ctx context.Context, tokenStr string) 
 	return v.userId, nil
 }
 
+// testRouter is the API over in-memory repositories, with the clock at testNow.
+type testRouter struct {
+	http.Handler
+	holdings  *mockHoldingRepo
+	platforms *mockPlatformRepo
+	snapshots *mockSnapshotRepo
+	wealthAgg *mockWealthAggregationPort
+	movements *mockMovementRepo
+}
+
+var testNow = time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+
 func setupTestRouter(userId model.UserId) (http.Handler, *mockHoldingRepo, *mockPlatformRepo, *mockSnapshotRepo, *mockWealthAggregationPort) {
+	r := newTestRouter(userId)
+	return r.Handler, r.holdings, r.platforms, r.snapshots, r.wealthAgg
+}
+
+func newTestRouter(userId model.UserId) *testRouter {
 	holdingRepo := newMockHoldingRepo()
 	platformRepo := newMockPlatformRepo(holdingRepo)
 	snapshotRepo := newMockSnapshotRepo()
+	movementRepo := &mockMovementRepo{}
+	quotaRepo := &mockQuotaRepo{counts: map[string]int{}}
 	wealthAgg := &mockWealthAggregationPort{
 		netWorth: model.MustMoneyFromFloat(100000.0),
 	}
 
-	clock := func() time.Time { return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC) }
+	clock := func() time.Time { return testNow }
 
-	holdingSvc := service.NewHoldingService(holdingRepo, platformRepo, clock)
+	holdingSvc := service.NewHoldingService(passthroughTx{}, holdingRepo, platformRepo, movementRepo, quotaRepo, clock)
+	movementSvc := service.NewMovementService(passthroughTx{}, holdingRepo, platformRepo, movementRepo, quotaRepo, clock)
 	platformSvc := service.NewPlatformService(platformRepo)
 	assetClassSvc := service.NewAssetClassService(holdingRepo, nil)
 	snapshotSvc := service.NewSnapshotService(snapshotRepo, wealthAgg, clock)
@@ -53,12 +73,13 @@ func setupTestRouter(userId model.UserId) (http.Handler, *mockHoldingRepo, *mock
 		JWTValidator:      &dummyJWTValidator{userId: userId},
 		HealthHandler:     appHttp.NewHealthHandler(),
 		HoldingHandler:    appHttp.NewHoldingHandler(holdingSvc),
+		MovementHandler:   appHttp.NewMovementHandler(movementSvc),
 		PlatformHandler:   appHttp.NewPlatformHandler(platformSvc),
 		AssetClassHandler: appHttp.NewAssetClassHandler(assetClassSvc),
 		WealthHandler:     appHttp.NewWealthHandler(wealthSvc, snapshotSvc, projSvc),
 	})
 
-	return router, holdingRepo, platformRepo, snapshotRepo, wealthAgg
+	return &testRouter{Handler: router, holdings: holdingRepo, platforms: platformRepo, snapshots: snapshotRepo, wealthAgg: wealthAgg, movements: movementRepo}
 }
 
 func do(t *testing.T, router http.Handler, method, path string, body any) *httptest.ResponseRecorder {
