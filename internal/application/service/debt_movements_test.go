@@ -222,6 +222,7 @@ func TestMovementService_WhatCantBeUndoneOnADebt(t *testing.T) {
 	require.Equal(t, model.MovementClosing, closing.Kind)
 	err = a.movementSvc.RevertMovement(context.Background(), a.user, closing.Id)
 	assert.ErrorAs(t, err, &appErrors.NotRevertibleError{})
+	assert.EqualError(t, err, "Adding or removing a debt can't be undone here: remove it, or add it again.")
 
 	// Reading or writing the debt fails: nothing changes.
 	loan := a.addDebt("Loan", 100)

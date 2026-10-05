@@ -378,7 +378,7 @@ func TestMovementService_WhatCantBeUndone(t *testing.T) {
 
 	err := a.movementSvc.RevertMovement(ctx, a.user, opening.Id)
 	assert.ErrorAs(t, err, &appErrors.NotRevertibleError{})
-	assert.ErrorContains(t, err, "remove the asset, or add it again")
+	assert.EqualError(t, err, "Adding or removing an asset can't be undone here: remove it, or add it again.")
 
 	// A holding the movement touched is gone.
 	transfer, err := a.record(inbound.RecordMovementCommand{Kind: "TRANSFER", FromHoldingId: &bank.Id, ToHoldingId: &broker.Id, AmountUsd: 10})

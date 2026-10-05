@@ -352,7 +352,12 @@ func (s *MovementService) RevertMovement(ctx context.Context, userId model.UserI
 			return movementNotFound(id)
 		}
 		if !m.Kind.Revertible() {
-			return appErrors.NewNotRevertibleError("Adding or removing an asset can't be undone here: remove the asset, or add it again.")
+			what := "an asset"
+			if m.Debt != nil {
+				what = "a debt"
+			}
+			return appErrors.NewNotRevertibleError(fmt.Sprintf(
+				"Adding or removing %s can't be undone here: remove it, or add it again.", what))
 		}
 		for _, change := range m.Effect() {
 			h, err := s.holdings.FindById(ctx, userId, change.Holding)
