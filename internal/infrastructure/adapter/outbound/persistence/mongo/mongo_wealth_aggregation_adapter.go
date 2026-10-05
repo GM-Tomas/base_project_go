@@ -80,6 +80,17 @@ func amountsOf(docs []holdingDoc) []amount {
 	return amounts
 }
 
+// returnsOf is each holding counted in the assets with its expected return, if it has one.
+func returnsOf(docs []holdingDoc, amounts []amount) []model.HoldingReturn {
+	returns := make([]model.HoldingReturn, 0, len(docs))
+	for i, doc := range docs {
+		if amounts[i].readable {
+			returns = append(returns, model.HoldingReturn{Value: amounts[i].value, Pct: readReturn(doc.ExpectedReturnPCT)})
+		}
+	}
+	return returns
+}
+
 // Totals reads what the user owns and what they owe, at once.
 func (a *MongoWealthAggregationAdapter) Totals(ctx context.Context, userId model.UserId) (outbound.WealthTotals, error) {
 	var (
@@ -88,7 +99,7 @@ func (a *MongoWealthAggregationAdapter) Totals(ctx context.Context, userId model
 	)
 	err := parallel.Run(ctx,
 		func(ctx context.Context) (err error) {
-			docs, err = readHoldings(ctx, a.holdingsColl, userId, "value_usd")
+			docs, err = readHoldings(ctx, a.holdingsColl, userId, "value_usd", "expected_return_pct")
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -99,7 +110,8 @@ func (a *MongoWealthAggregationAdapter) Totals(ctx context.Context, userId model
 	if err != nil {
 		return outbound.WealthTotals{}, err
 	}
-	return outbound.WealthTotals{Assets: assetsOf(amountsOf(docs)), Debts: debts.Balance}, nil
+	amounts := amountsOf(docs)
+	return outbound.WealthTotals{Assets: assetsOf(amounts), Debts: debts.Balance, Returns: returnsOf(docs, amounts)}, nil
 }
 
 // Breakdown reads the user's holdings once, alongside the platform types earlier versions stored, for
@@ -116,7 +128,7 @@ func (a *MongoWealthAggregationAdapter) Breakdown(
 	err := parallel.Run(ctx,
 		func(ctx context.Context) (err error) {
 			docs, types, err = holdingsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId,
-				"asset_class", "platform_name", "value_usd")
+				"asset_class", "platform_name", "value_usd", "expected_return_pct")
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -133,6 +145,7 @@ func (a *MongoWealthAggregationAdapter) Breakdown(
 		Debts:        debts,
 		ByAssetClass: classBreakdown(docs, amounts),
 		ByPlatform:   platformBreakdown(groupPlatforms(docs, amounts), types),
+		Returns:      returnsOf(docs, amounts),
 	}, nil
 }
 

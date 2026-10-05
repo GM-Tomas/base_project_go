@@ -114,6 +114,13 @@ func isDomainValidationError(err error) bool {
 		model.ErrUnknownBalanceChangeReason,
 		model.ErrPaymentRaisesBalance,
 		model.ErrChargeLowersBalance,
+		model.ErrExpectedReturnOutOfRange,
+		model.ErrInflationOutOfRange,
+		model.ErrContributionGrowthOutOfRange,
+		model.ErrUnknownYieldMode,
+		model.ErrContributionOutOfRange,
+		model.ErrCustomYieldOutOfRange,
+		model.ErrMilestoneOutOfRange,
 	} {
 		if errors.Is(err, target) {
 			return true

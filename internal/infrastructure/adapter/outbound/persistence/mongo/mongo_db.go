@@ -21,6 +21,8 @@ type MongoDB struct {
 	Movements *mongo.Collection
 	// Quotas holds per-user counters that transactions keep exact (see MongoQuotaRepository).
 	Quotas *mongo.Collection
+	// Preferences holds one document per user (_id is the user's id): see MongoPreferencesRepository.
+	Preferences *mongo.Collection
 	// Platforms is only read, for the types that earlier versions stored (Broker, Wallet...).
 	Platforms *mongo.Collection
 }
@@ -48,14 +50,15 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 
 	database := client.Database(dbName)
 	db := &MongoDB{
-		Client:    client,
-		Database:  database,
-		Holdings:  database.Collection("holdings"),
-		Debts:     database.Collection("debts"),
-		Snapshots: database.Collection("net_worth_snapshots"),
-		Movements: database.Collection("movements"),
-		Quotas:    database.Collection("quotas"),
-		Platforms: database.Collection("platforms"),
+		Client:      client,
+		Database:    database,
+		Holdings:    database.Collection("holdings"),
+		Debts:       database.Collection("debts"),
+		Snapshots:   database.Collection("net_worth_snapshots"),
+		Movements:   database.Collection("movements"),
+		Quotas:      database.Collection("quotas"),
+		Preferences: database.Collection("preferences"),
+		Platforms:   database.Collection("platforms"),
 	}
 	if !db.supportsTransactions(pingCtx) {
 		log.Println("WARNING: MongoDB isn't a replica set, so it has no transactions: recording a change of value " +

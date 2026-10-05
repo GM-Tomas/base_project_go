@@ -2,8 +2,10 @@ package outbound
 
 import (
 	"context"
+	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
+	"github.com/shopspring/decimal"
 )
 
 type HoldingRepository interface {
@@ -19,4 +21,8 @@ type HoldingRepository interface {
 	AssetClassesInUse(ctx context.Context, userId model.UserId) ([]model.AssetClass, error)
 	// ExistingIds says which of these holdings the user still has.
 	ExistingIds(ctx context.Context, userId model.UserId, ids []model.HoldingId) (map[model.HoldingId]bool, error)
+	// SetExpectedReturns sets each of these holdings' expected return, and its UpdatedAt, leaving the rest
+	// as stored; it says how many of them the user has.
+	SetExpectedReturns(ctx context.Context, userId model.UserId, returns map[model.HoldingId]*decimal.Decimal,
+		updatedAt time.Time) (int, error)
 }

@@ -29,11 +29,34 @@ func TestProjectionParams_RejectsYearsOutOfRange(t *testing.T) {
 }
 
 func TestProjectionParams_RejectsYieldOutOfRange(t *testing.T) {
-	_, errNeg := makeParams(10, "-0.01", nil)
-	assert.Error(t, errNeg)
+	_, errUnder := makeParams(10, "-100.01", nil)
+	assert.ErrorIs(t, errUnder, model.ErrYieldOutOfRange)
+	assert.EqualError(t, errUnder, "yieldPct must be between -100 and 100")
 
 	_, errOver := makeParams(10, "100.01", nil)
-	assert.Error(t, errOver)
+	assert.ErrorIs(t, errOver, model.ErrYieldOutOfRange)
+
+	// Losing is a yield too.
+	for _, yield := range []string{"-100", "-0.01", "100"} {
+		_, err := makeParams(10, yield, nil)
+		assert.NoError(t, err, yield)
+	}
+}
+
+func TestProjectionParams_WithAdjustments(t *testing.T) {
+	params, err := makeParams(10, "8.0", nil)
+	require.NoError(t, err)
+
+	adjusted, err := params.WithAdjustments(decimal.NewFromInt(3), decimal.NewFromInt(50))
+	require.NoError(t, err)
+	assert.Equal(t, "3", adjusted.InflationPct.String())
+	assert.Equal(t, "50", adjusted.ContributionGrowthPct.String())
+	assert.True(t, params.InflationPct.IsZero(), "a copy")
+
+	_, err = params.WithAdjustments(decimal.RequireFromString("50.01"), decimal.Zero)
+	assert.EqualError(t, err, "inflationPct must be between 0 and 50")
+	_, err = params.WithAdjustments(decimal.Zero, decimal.RequireFromString("-1"))
+	assert.EqualError(t, err, "contributionGrowthPct must be between 0 and 50")
 }
 
 func TestProjectionParams_RejectsTooManyMilestones(t *testing.T) {

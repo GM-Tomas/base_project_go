@@ -16,88 +16,62 @@ func debtAt(params model.ProjectionParams, months int) decimal.Decimal {
 }
 
 // CalculateSeries generates years + 1 points (year 0 through params.Years). Year 0 equals principal. Each
-// point's net worth is the portfolio minus what's still owed then.
+// point's net worth is the portfolio minus what's still owed then; the real values are both in today's
+// dollars.
 func CalculateSeries(params model.ProjectionParams) []model.ProjectionPoint {
+	states := simulate(params)
 	series := make([]model.ProjectionPoint, 0, params.Years+1)
 
 	for year := 0; year <= params.Years; year++ {
 		months := year * monthsPerYear
-		fv := FutureValue(
-			params.Principal,
-			params.MonthlyContribution,
-			params.AnnualYieldPct,
-			months,
-		)
-		totalContributed := params.Principal.Plus(
-			params.MonthlyContribution.Times(decimal.NewFromInt(int64(months))),
-		)
-		interestEarned := fv.Minus(totalContributed)
+		state := states[months]
+		fv := model.MustMoneyFromFloat(state.value)
+		totalContributed := model.MustMoneyFromFloat(state.contributed)
 		debt := model.MustMoney(debtAt(params, months))
+		netWorth := model.NetOf(fv, debt)
+		deflator := decimal.NewFromFloat(state.deflator)
 
 		series = append(series, model.ProjectionPoint{
 			Year:             year,
 			FutureValue:      fv,
 			TotalContributed: totalContributed,
-			InterestEarned:   interestEarned,
+			InterestEarned:   model.NetOf(fv, totalContributed),
 			DebtBalance:      debt,
-			NetWorth:         model.NetOf(fv, debt),
+			NetWorth:         netWorth,
+			RealFutureValue:  model.MustMoney(fv.Amount().Div(deflator)),
+			RealNetWorth:     model.NewSignedMoney(netWorth.Amount().Div(deflator)),
 		})
 	}
 
 	return series
 }
 
-// netWorthMonthsToReach is the first month (0..maxMonths) the net worth — the portfolio minus what's owed —
-// reaches threshold, or nil if it doesn't.
-func netWorthMonthsToReach(params model.ProjectionParams, threshold model.Money, maxMonths int) *int {
-	if len(params.DebtBalances) == 0 {
-		return MonthsToReach(threshold, params.Principal, params.MonthlyContribution, params.AnnualYieldPct, maxMonths)
-	}
-	for month := 0; month <= maxMonths; month++ {
-		fv := FutureValue(params.Principal, params.MonthlyContribution, params.AnnualYieldPct, month)
-		if fv.Amount().Sub(debtAt(params, month)).GreaterThanOrEqual(threshold.Amount()) {
-			m := month
-			return &m
-		}
-	}
-	return nil
-}
-
 // CalculateMilestones evaluates the status of each milestone within the years*12 horizon, on the net worth
-// (the portfolio, without debts).
+// (the portfolio, without debts) month by month, in dollars of each month.
 func CalculateMilestones(params model.ProjectionParams, now time.Time) []model.Milestone {
-	maxMonths := params.Years * monthsPerYear
+	states := simulate(params)
+	netWorthAt := func(month int) decimal.Decimal {
+		return model.MustMoneyFromFloat(states[month].value).Amount().Sub(debtAt(params, month))
+	}
 	milestones := make([]model.Milestone, 0, len(params.Milestones))
 
 	for _, amount := range params.Milestones {
-		monthsRequired := netWorthMonthsToReach(params, amount, maxMonths)
-
-		if monthsRequired == nil {
-			milestones = append(milestones, model.Milestone{
-				Amount:         amount,
-				Status:         model.MilestoneStatusOutOfHorizon,
-				MonthsRequired: nil,
-				TargetMonth:    nil,
-			})
-		} else if *monthsRequired == 0 {
-			zero := 0
-			milestones = append(milestones, model.Milestone{
-				Amount:         amount,
-				Status:         model.MilestoneStatusAchieved,
-				MonthsRequired: &zero,
-				TargetMonth:    nil,
-			})
-		} else {
-			m := *monthsRequired
-			targetMonthStr := MonthAfter(now, m)
-
-			milestones = append(milestones, model.Milestone{
-				Amount:         amount,
-				Status:         model.MilestoneStatusReachable,
-				MonthsRequired: &m,
-				TargetMonth:    &targetMonthStr,
-			})
+		milestone := model.Milestone{Amount: amount, Status: model.MilestoneStatusOutOfHorizon}
+		for month := range states {
+			if netWorthAt(month).LessThan(amount.Amount()) {
+				continue
+			}
+			m := month
+			milestone.MonthsRequired = &m
+			if month == 0 {
+				milestone.Status = model.MilestoneStatusAchieved
+			} else {
+				target := MonthAfter(now, month)
+				milestone.Status, milestone.TargetMonth = model.MilestoneStatusReachable, &target
+			}
+			break
 		}
+		milestones = append(milestones, milestone)
 	}
 
 	return milestones

@@ -9,18 +9,19 @@ import (
 )
 
 type RouterParams struct {
-	AllowedOrigins    []string
-	JWTValidator      middleware.JWTValidator
-	HealthHandler     *HealthHandler
-	HoldingHandler    *HoldingHandler
-	DebtHandler       *DebtHandler
-	MovementHandler   *MovementHandler
-	PlatformHandler   *PlatformHandler
-	AssetClassHandler *AssetClassHandler
-	WealthHandler     *WealthHandler
-	SwaggerHandler    *SwaggerHandler
-	DocsPassword      string // non-empty = docs behind basic auth (user "docs")
-	HideDocs          bool
+	AllowedOrigins     []string
+	JWTValidator       middleware.JWTValidator
+	HealthHandler      *HealthHandler
+	HoldingHandler     *HoldingHandler
+	DebtHandler        *DebtHandler
+	PreferencesHandler *PreferencesHandler
+	MovementHandler    *MovementHandler
+	PlatformHandler    *PlatformHandler
+	AssetClassHandler  *AssetClassHandler
+	WealthHandler      *WealthHandler
+	SwaggerHandler     *SwaggerHandler
+	DocsPassword       string // non-empty = docs behind basic auth (user "docs")
+	HideDocs           bool
 	// NoData answers every API route but health with 503: a Vercel preview, which has no database (see
 	// config.Config.Preview). Only HealthHandler is needed then.
 	NoData bool
@@ -83,6 +84,7 @@ func NewRouter(params RouterParams) http.Handler {
 			// Exactly the surface the frontend consumes (base_project_fe/src/lib/api.ts).
 			r.Get("/holdings", params.HoldingHandler.GetAllHoldings)
 			r.Post("/holdings", params.HoldingHandler.CreateHolding)
+			r.Put("/holdings/expected-returns", params.HoldingHandler.SetExpectedReturns)
 			r.Patch("/holdings/{id}", params.HoldingHandler.UpdateHolding)
 			r.Delete("/holdings/{id}", params.HoldingHandler.DeleteHolding)
 
@@ -90,6 +92,9 @@ func NewRouter(params RouterParams) http.Handler {
 			r.Post("/debts", params.DebtHandler.CreateDebt)
 			r.Patch("/debts/{id}", params.DebtHandler.UpdateDebt)
 			r.Delete("/debts/{id}", params.DebtHandler.DeleteDebt)
+
+			r.Get("/preferences", params.PreferencesHandler.GetPreferences)
+			r.Put("/preferences", params.PreferencesHandler.ReplacePreferences)
 
 			r.Get("/movements", params.MovementHandler.ListMovements)
 			r.Post("/movements", params.MovementHandler.RecordMovement)

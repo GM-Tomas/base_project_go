@@ -11,6 +11,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,6 +46,36 @@ func TestWealthQueryService_GetSummary(t *testing.T) {
 	assert.Equal(t, 0.0, summary.Liquidity.IlliquidPct)
 	assert.Len(t, summary.ByAssetClass, 2)
 	assert.Len(t, summary.ByPlatform, 3) // includes 0 value platform
+}
+
+func TestWealthQueryService_GetSummary_ExpectedReturn(t *testing.T) {
+	seven, minus := decimal.RequireFromString("7.5"), decimal.NewFromInt(-20)
+	svc := func(returns []model.HoldingReturn) *service.WealthQueryService {
+		agg := &mockWealthAggregationPort{assets: model.MustMoneyFromFloat(100000), returns: returns}
+		return service.NewWealthQueryService(agg, newMockSnapshotRepo(), fixedClock(time.Now()), nil)
+	}
+
+	summary, err := svc([]model.HoldingReturn{
+		{Value: model.MustMoneyFromFloat(80000), Pct: &seven},
+		{Value: model.MustMoneyFromFloat(10000), Pct: &minus},
+		{Value: model.MustMoneyFromFloat(10000)},
+	}).GetSummary(context.Background(), model.NewUserId(uuid.New()))
+	require.NoError(t, err)
+	// (80,000 × 7.5 − 10,000 × 20) / 100,000
+	assert.Equal(t, 4.0, *summary.ExpectedReturn.WeightedPct)
+	assert.Equal(t, 90.0, summary.ExpectedReturn.CoveragePct)
+	assert.Equal(t, 4000.0, summary.ExpectedReturn.AnnualUsd)
+
+	// No returns set: 0%, nothing covered.
+	summary, err = svc([]model.HoldingReturn{{Value: model.MustMoneyFromFloat(100000)}}).GetSummary(context.Background(), model.NewUserId(uuid.New()))
+	require.NoError(t, err)
+	assert.Equal(t, 0.0, *summary.ExpectedReturn.WeightedPct)
+	assert.Equal(t, 0.0, summary.ExpectedReturn.CoveragePct)
+
+	// Nothing owned: nothing to weigh.
+	summary, err = svc(nil).GetSummary(context.Background(), model.NewUserId(uuid.New()))
+	require.NoError(t, err)
+	assert.Nil(t, summary.ExpectedReturn.WeightedPct)
 }
 
 // The summary's reads, each running onRead first.

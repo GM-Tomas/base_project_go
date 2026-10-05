@@ -8,6 +8,7 @@ import (
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
+	"github.com/shopspring/decimal"
 )
 
 type mockHoldingRepo struct {
@@ -79,6 +80,19 @@ func (m *mockHoldingRepo) ExistingIds(ctx context.Context, userId model.UserId, 
 		}
 	}
 	return existing, nil
+}
+
+func (m *mockHoldingRepo) SetExpectedReturns(ctx context.Context, userId model.UserId, returns map[model.HoldingId]*decimal.Decimal,
+	updatedAt time.Time) (int, error) {
+	found := 0
+	for id, pct := range returns {
+		if h, ok := m.holdings[id.String()]; ok && h.UserId == userId {
+			h.ExpectedReturnPct, h.UpdatedAt = pct, updatedAt
+			m.holdings[id.String()] = h
+			found++
+		}
+	}
+	return found, nil
 }
 
 // mockMovementRepo keeps movements in memory, newest first as the real one lists them, and the last query.
@@ -255,14 +269,34 @@ type mockWealthAggregationPort struct {
 	debts        model.DebtTotals
 	byAssetClass []outbound.AssetClassAggregate
 	byPlatform   []outbound.PlatformAggregate
+	returns      []model.HoldingReturn
 }
 
 func (m *mockWealthAggregationPort) Totals(ctx context.Context, userId model.UserId) (outbound.WealthTotals, error) {
-	return outbound.WealthTotals{Assets: m.assets, Debts: m.debts.Balance}, nil
+	return outbound.WealthTotals{Assets: m.assets, Debts: m.debts.Balance, Returns: m.returns}, nil
 }
 
 func (m *mockWealthAggregationPort) Breakdown(ctx context.Context, userId model.UserId) (outbound.WealthBreakdown, error) {
-	return outbound.WealthBreakdown{Assets: m.assets, Debts: m.debts, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform}, nil
+	return outbound.WealthBreakdown{Assets: m.assets, Debts: m.debts, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform,
+		Returns: m.returns}, nil
+}
+
+// mockPreferencesRepo keeps each user's preferences in memory.
+type mockPreferencesRepo struct {
+	saved map[model.UserId]model.Preferences
+}
+
+func (m *mockPreferencesRepo) Find(ctx context.Context, userId model.UserId) (*model.Preferences, error) {
+	p, ok := m.saved[userId]
+	if !ok {
+		return nil, nil
+	}
+	return &p, nil
+}
+
+func (m *mockPreferencesRepo) Save(ctx context.Context, userId model.UserId, preferences model.Preferences) error {
+	m.saved[userId] = preferences
+	return nil
 }
 
 // mockDebtRepo keeps debts in memory, isolated by user, listed largest first.

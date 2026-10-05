@@ -2,16 +2,19 @@ package service
 
 import (
 	"context"
+	"math"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	domainService "github.com/GM-Tomas/base_project_go/internal/domain/service"
 	"github.com/GM-Tomas/base_project_go/internal/parallel"
+	"github.com/shopspring/decimal"
 )
 
-// ProjectionService projects the portfolio (the assets) with compound interest and monthly contributions.
-// Debts aren't part of it: each is paid off on its own terms, and the net worth is what's left after them.
+// ProjectionService projects the portfolio (the assets) with compound interest and monthly contributions, at
+// a growth of the user's or the portfolio's expected return. Debts aren't part of it: each is paid off on
+// its own terms, and the net worth is what's left after them.
 type ProjectionService struct {
 	wealthAggregationPort outbound.WealthAggregationPort
 	debtRepo              outbound.DebtRepository
@@ -44,7 +47,19 @@ func (s *ProjectionService) Project(
 		return inbound.ProjectionResult{}, err
 	}
 
-	annualYieldPct, err := model.YieldPctFromFloat(request.AnnualYieldPct)
+	// Without a yield of its own, the projection grows at the portfolio's expected return, known once read.
+	annualYieldPct, source := decimal.Zero, model.YieldFromPortfolio
+	if request.AnnualYieldPct != nil {
+		if annualYieldPct, err = model.YieldPctFromFloat(*request.AnnualYieldPct); err != nil {
+			return inbound.ProjectionResult{}, err
+		}
+		source = model.YieldCustom
+	}
+	inflationPct, err := adjustmentPct(request.InflationPct, model.ErrInflationOutOfRange)
+	if err != nil {
+		return inbound.ProjectionResult{}, err
+	}
+	contributionGrowthPct, err := adjustmentPct(request.ContributionGrowthPct, model.ErrContributionGrowthOutOfRange)
 	if err != nil {
 		return inbound.ProjectionResult{}, err
 	}
@@ -68,6 +83,9 @@ func (s *ProjectionService) Project(
 	if err != nil {
 		return inbound.ProjectionResult{}, err
 	}
+	if params, err = params.WithAdjustments(inflationPct, contributionGrowthPct); err != nil {
+		return inbound.ProjectionResult{}, err
+	}
 
 	var (
 		totals outbound.WealthTotals
@@ -88,6 +106,10 @@ func (s *ProjectionService) Project(
 	}
 	params.Principal = totals.Assets
 	params.DebtBalances = domainService.TotalDebtBalances(debts, params.Years*12)
+	portfolio := domainService.CalculateExpectedReturn(totals.Returns).WeightedPct
+	if source == model.YieldFromPortfolio && portfolio != nil {
+		params.AnnualYieldPct = *portfolio
+	}
 	owed := model.ZeroMoney
 	for _, d := range debts {
 		owed = owed.Plus(d.Balance)
@@ -96,12 +118,24 @@ func (s *ProjectionService) Project(
 	now := s.clock()
 
 	return inbound.ProjectionResult{
-		Principal:           params.Principal,
-		Debts:               owed,
-		MonthlyContribution: params.MonthlyContribution,
-		AnnualYieldPct:      params.AnnualYieldPct,
-		Years:               params.Years,
-		Series:              domainService.CalculateSeries(params),
-		Milestones:          domainService.CalculateMilestones(params, now),
+		Principal:             params.Principal,
+		Debts:                 owed,
+		MonthlyContribution:   params.MonthlyContribution,
+		AnnualYieldPct:        params.AnnualYieldPct,
+		YieldSource:           source,
+		PortfolioYieldPct:     portfolio,
+		InflationPct:          params.InflationPct,
+		ContributionGrowthPct: params.ContributionGrowthPct,
+		Years:                 params.Years,
+		Series:                domainService.CalculateSeries(params),
+		Milestones:            domainService.CalculateMilestones(params, now),
 	}, nil
+}
+
+// adjustmentPct is an inflation or a raise as sent (a finite percentage); its range is the params' to check.
+func adjustmentPct(v float64, outOfRange error) (decimal.Decimal, error) {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return decimal.Zero, outOfRange
+	}
+	return decimal.NewFromFloat(v), nil
 }

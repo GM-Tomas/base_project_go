@@ -17,6 +17,15 @@ type DebtsDTO struct {
 	MonthlyPaymentUsd float64 `json:"monthlyPaymentUsd"`
 }
 
+// ExpectedReturnDTO is what the portfolio is expected to earn in a year: weightedPct is each holding's return
+// weighted by value (null with nothing to weigh), coveragePct the share of the value with a return set,
+// annualUsd the dollars.
+type ExpectedReturnDTO struct {
+	WeightedPct *float64 `json:"weightedPct"`
+	CoveragePct float64  `json:"coveragePct"`
+	AnnualUsd   float64  `json:"annualUsd"`
+}
+
 type YtdDTO struct {
 	Basis            string     `json:"basis"`
 	GrowthPct        float64    `json:"growthPct"`
@@ -46,12 +55,13 @@ type PlatformBreakdown struct {
 }
 
 type WealthSummaryResponse struct {
-	NetWorth      NetWorthDTO           `json:"netWorth"`
-	Assets        AssetsDTO             `json:"assets"`
-	Debts         DebtsDTO              `json:"debts"`
-	HoldingsCount int                   `json:"holdingsCount"`
-	Ytd           YtdDTO                `json:"ytd"`
-	Liquidity     LiquidityDTO          `json:"liquidity"`
-	ByAssetClass  []AssetClassBreakdown `json:"byAssetClass"`
-	ByPlatform    []PlatformBreakdown   `json:"byPlatform"`
+	NetWorth       NetWorthDTO           `json:"netWorth"`
+	Assets         AssetsDTO             `json:"assets"`
+	Debts          DebtsDTO              `json:"debts"`
+	HoldingsCount  int                   `json:"holdingsCount"`
+	ExpectedReturn ExpectedReturnDTO     `json:"expectedReturn"`
+	Ytd            YtdDTO                `json:"ytd"`
+	Liquidity      LiquidityDTO          `json:"liquidity"`
+	ByAssetClass   []AssetClassBreakdown `json:"byAssetClass"`
+	ByPlatform     []PlatformBreakdown   `json:"byPlatform"`
 }

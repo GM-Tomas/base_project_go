@@ -14,6 +14,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,6 +33,9 @@ type mockHoldingRepo struct {
 	beforeUpdate  func() // lands a "concurrent" request between the service's read and its update
 	updates       int
 	existingErr   error
+	setReturnsErr error
+	beforeReturns func() // lands a "concurrent" request between the service's read and its writes
+	returnWrites  int
 }
 
 func newMockHoldingRepo() *mockHoldingRepo {
@@ -130,6 +134,28 @@ func (m *mockHoldingRepo) ExistingIds(ctx context.Context, userId model.UserId, 
 		}
 	}
 	return existing, nil
+}
+
+func (m *mockHoldingRepo) SetExpectedReturns(ctx context.Context, userId model.UserId, returns map[model.HoldingId]*decimal.Decimal,
+	updatedAt time.Time) (int, error) {
+	if m.beforeReturns != nil {
+		m.beforeReturns()
+	}
+	if m.setReturnsErr != nil {
+		return 0, m.setReturnsErr
+	}
+	found := 0
+	for id, pct := range returns {
+		h, ok := m.holdings[id.String()]
+		if !ok || h.UserId != userId {
+			continue
+		}
+		h.ExpectedReturnPct, h.UpdatedAt = pct, updatedAt
+		m.holdings[id.String()] = h
+		found++
+	}
+	m.returnWrites++
+	return found, nil
 }
 
 // mockPlatformRepo derives platforms from the holdings, like the real one.

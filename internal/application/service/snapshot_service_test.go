@@ -97,15 +97,17 @@ type mockWealthAggregationPort struct {
 	debts        model.DebtTotals
 	byAssetClass []outbound.AssetClassAggregate
 	byPlatform   []outbound.PlatformAggregate
+	returns      []model.HoldingReturn
 	totalsErr    error
 }
 
 func (m *mockWealthAggregationPort) Totals(ctx context.Context, userId model.UserId) (outbound.WealthTotals, error) {
-	return outbound.WealthTotals{Assets: m.assets, Debts: m.debts.Balance}, m.totalsErr
+	return outbound.WealthTotals{Assets: m.assets, Debts: m.debts.Balance, Returns: m.returns}, m.totalsErr
 }
 
 func (m *mockWealthAggregationPort) Breakdown(ctx context.Context, userId model.UserId) (outbound.WealthBreakdown, error) {
-	return outbound.WealthBreakdown{Assets: m.assets, Debts: m.debts, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform}, nil
+	return outbound.WealthBreakdown{Assets: m.assets, Debts: m.debts, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform,
+		Returns: m.returns}, nil
 }
 
 func TestSnapshotService_CreateAndGet(t *testing.T) {

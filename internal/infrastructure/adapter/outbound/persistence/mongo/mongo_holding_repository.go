@@ -16,14 +16,16 @@ import (
 )
 
 type holdingDoc struct {
-	ID           string    `bson:"_id"`
-	UserID       string    `bson:"user_id"`
-	Name         string    `bson:"name"`
-	AssetClass   string    `bson:"asset_class"`
-	PlatformName string    `bson:"platform_name"`
-	ValueUSD     string    `bson:"value_usd"`
-	CreatedAt    time.Time `bson:"created_at"`
-	UpdatedAt    time.Time `bson:"updated_at"`
+	ID           string `bson:"_id"`
+	UserID       string `bson:"user_id"`
+	Name         string `bson:"name"`
+	AssetClass   string `bson:"asset_class"`
+	PlatformName string `bson:"platform_name"`
+	ValueUSD     string `bson:"value_usd"`
+	// ExpectedReturnPCT is the yearly return as decimal text ("7.5"); absent when the holding has none.
+	ExpectedReturnPCT string    `bson:"expected_return_pct,omitempty"`
+	CreatedAt         time.Time `bson:"created_at"`
+	UpdatedAt         time.Time `bson:"updated_at"`
 }
 
 type MongoHoldingRepository struct {
@@ -86,15 +88,36 @@ func (r *MongoHoldingRepository) Count(ctx context.Context, userId model.UserId)
 
 func toHoldingDoc(holding model.Holding) holdingDoc {
 	return holdingDoc{
-		ID:           holding.Id.UUID().String(),
-		UserID:       holding.UserId.UUID().String(),
-		Name:         holding.Name,
-		AssetClass:   holding.AssetClass.Value(),
-		PlatformName: holding.Platform.Value(),
-		ValueUSD:     holding.Value.Amount().StringFixed(2),
-		CreatedAt:    holding.CreatedAt,
-		UpdatedAt:    holding.UpdatedAt,
+		ID:                holding.Id.UUID().String(),
+		UserID:            holding.UserId.UUID().String(),
+		Name:              holding.Name,
+		AssetClass:        holding.AssetClass.Value(),
+		PlatformName:      holding.Platform.Value(),
+		ValueUSD:          holding.Value.Amount().StringFixed(2),
+		ExpectedReturnPCT: returnText(holding.ExpectedReturnPct),
+		CreatedAt:         holding.CreatedAt,
+		UpdatedAt:         holding.UpdatedAt,
 	}
+}
+
+func returnText(pct *decimal.Decimal) string {
+	if pct == nil {
+		return ""
+	}
+	return pct.String()
+}
+
+// readReturn is an expected return as stored. One that can't be read (only writable outside the API) is
+// none, rather than failing every read of the holding.
+func readReturn(s string) *decimal.Decimal {
+	if s == "" {
+		return nil
+	}
+	pct, err := decimal.NewFromString(s)
+	if err != nil || pct.Abs().GreaterThan(model.MaxExpectedReturnPct) {
+		return nil
+	}
+	return &pct
 }
 
 func (r *MongoHoldingRepository) Save(
@@ -246,13 +269,44 @@ func mapDocToHolding(doc holdingDoc) (model.Holding, error) {
 	}
 
 	return model.Holding{
-		Id:         model.HoldingIdFromUUID(id),
-		UserId:     model.NewUserId(userId),
-		Name:       name,
-		AssetClass: ac,
-		Platform:   pn,
-		Value:      m,
-		CreatedAt:  doc.CreatedAt,
-		UpdatedAt:  doc.UpdatedAt,
+		Id:                model.HoldingIdFromUUID(id),
+		UserId:            model.NewUserId(userId),
+		Name:              name,
+		AssetClass:        ac,
+		Platform:          pn,
+		Value:             m,
+		ExpectedReturnPct: readReturn(doc.ExpectedReturnPCT),
+		CreatedAt:         doc.CreatedAt,
+		UpdatedAt:         doc.UpdatedAt,
 	}, nil
+}
+
+// SetExpectedReturns writes the returns, and UpdatedAt, of the user's holdings among these in one round
+// trip, touching nothing else of them (not the platform's stored spelling, say).
+func (r *MongoHoldingRepository) SetExpectedReturns(
+	ctx context.Context,
+	userId model.UserId,
+	returns map[model.HoldingId]*decimal.Decimal,
+	updatedAt time.Time,
+) (int, error) {
+	if len(returns) == 0 {
+		return 0, nil
+	}
+	writes := make([]mongo.WriteModel, 0, len(returns))
+	for id, pct := range returns {
+		update := bson.M{"$set": bson.M{"updated_at": updatedAt}}
+		if pct == nil {
+			update["$unset"] = bson.M{"expected_return_pct": ""}
+		} else {
+			update["$set"] = bson.M{"updated_at": updatedAt, "expected_return_pct": pct.String()}
+		}
+		writes = append(writes, mongo.NewUpdateOneModel().
+			SetFilter(bson.M{"_id": id.UUID().String(), "user_id": userId.UUID().String()}).
+			SetUpdate(update))
+	}
+	res, err := r.coll.BulkWrite(ctx, writes, options.BulkWrite().SetOrdered(false))
+	if err != nil {
+		return 0, err
+	}
+	return int(res.MatchedCount), nil
 }

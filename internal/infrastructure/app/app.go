@@ -72,6 +72,8 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 	// HTTP Handlers
 	routes.HoldingHandler = appHttp.NewHoldingHandler(holdingService)
 	routes.DebtHandler = appHttp.NewDebtHandler(debtService)
+	routes.PreferencesHandler = appHttp.NewPreferencesHandler(
+		appService.NewPreferencesService(mongopersistence.NewMongoPreferencesRepository(mongoDB)))
 	routes.MovementHandler = appHttp.NewMovementHandler(movementService)
 	routes.PlatformHandler = appHttp.NewPlatformHandler(platformService)
 	routes.AssetClassHandler = appHttp.NewAssetClassHandler(assetClassService)

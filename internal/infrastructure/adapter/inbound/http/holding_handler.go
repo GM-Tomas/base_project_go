@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http/middleware"
 	"github.com/go-chi/chi/v5"
+	"github.com/shopspring/decimal"
 )
 
 // Upper bound for a single holding: rejects absurd input (e.g. 1e30) at the API boundary.
@@ -77,6 +79,9 @@ func (h *HoldingHandler) CreateHolding(w http.ResponseWriter, r *http.Request) {
 	} else if req.ValueUsd > maxHoldingValueUsd {
 		valErrors = append(valErrors, errors.ValidationError{Field: "valueUsd", Message: "Value is too large"})
 	}
+	if req.ExpectedReturnPct != nil && !validReturn(*req.ExpectedReturnPct) {
+		valErrors = append(valErrors, errors.ValidationError{Field: "expectedReturnPct", Message: model.ErrExpectedReturnOutOfRange.Error()})
+	}
 
 	if len(valErrors) > 0 {
 		middleware.HandleError(w, r, errors.NewValidationErrors(valErrors))
@@ -84,11 +89,12 @@ func (h *HoldingHandler) CreateHolding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cmd := inbound.CreateHoldingCommand{
-		UserId:     userId,
-		Name:       req.Name,
-		AssetClass: req.AssetClass,
-		Platform:   req.Platform,
-		ValueUsd:   req.ValueUsd,
+		UserId:            userId,
+		Name:              req.Name,
+		AssetClass:        req.AssetClass,
+		Platform:          req.Platform,
+		ValueUsd:          req.ValueUsd,
+		ExpectedReturnPct: req.ExpectedReturnPct,
 	}
 
 	created, err := h.holdingUseCase.CreateHolding(r.Context(), cmd)
@@ -163,6 +169,15 @@ func (h *HoldingHandler) UpdateHolding(w http.ResponseWriter, r *http.Request) {
 			cmd.ValueUsd = &sent.Value
 		}
 	}
+	if sent := req.ExpectedReturnPct; sent.Set {
+		if sent.Null {
+			cmd.ExpectedReturnPct = inbound.Change[float64]{Set: true}
+		} else if validReturn(sent.Value) {
+			cmd.ExpectedReturnPct = inbound.Change[float64]{Set: true, Value: &sent.Value}
+		} else {
+			valErrors = append(valErrors, errors.ValidationError{Field: "expectedReturnPct", Message: model.ErrExpectedReturnOutOfRange.Error()})
+		}
+	}
 	if len(valErrors) > 0 {
 		middleware.HandleError(w, r, errors.NewValidationErrors(valErrors))
 		return
@@ -201,14 +216,121 @@ func (h *HoldingHandler) DeleteHolding(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// validReturn is whether a yearly return is one the API takes (-100 to 100; it keeps 2 decimals).
+func validReturn(v float64) bool {
+	_, err := model.NewExpectedReturnPct(v)
+	return err == nil
+}
+
+// maxExpectedReturnItems is how many returns one PUT /holdings/expected-returns sets: every holding a user
+// can have.
+const maxExpectedReturnItems = model.MaxHoldingsPerUser
+
+// SetExpectedReturns is PUT /holdings/expected-returns: many holdings' yearly returns at once (null clears
+// one), all or none. Every problem with the items is reported at once; an id that isn't a holding's is 404,
+// as anywhere in a body.
+func (h *HoldingHandler) SetExpectedReturns(w http.ResponseWriter, r *http.Request) {
+	userId, err := middleware.GetUserFromContext(r.Context())
+	if err != nil {
+		middleware.WriteUnauthorized(w, r, "")
+		return
+	}
+
+	var req dto.ExpectedReturnsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "bad-request", "Bad Request", "Malformed JSON body", nil)
+		return
+	}
+	if req.Items == nil {
+		middleware.HandleError(w, r, errors.NewValidationErrors([]errors.ValidationError{
+			{Field: "items", Message: "items is required"},
+		}))
+		return
+	}
+	if len(*req.Items) > maxExpectedReturnItems {
+		middleware.HandleError(w, r, errors.NewValidationErrors([]errors.ValidationError{
+			{Field: "items", Message: fmt.Sprintf("items can't have more than %d entries", maxExpectedReturnItems)},
+		}))
+		return
+	}
+
+	var valErrors []errors.ValidationError
+	items := make([]inbound.ExpectedReturnItem, 0, len(*req.Items))
+	seen := make(map[string]bool, len(*req.Items))
+	var unknown string
+	for i, item := range *req.Items {
+		field := fmt.Sprintf("items[%d]", i)
+		switch {
+		case strings.TrimSpace(item.HoldingId) == "":
+			valErrors = append(valErrors, errors.ValidationError{Field: field + ".holdingId", Message: field + ".holdingId is required"})
+		case seen[item.HoldingId]:
+			valErrors = append(valErrors, errors.ValidationError{Field: field + ".holdingId", Message: field + ".holdingId appears more than once"})
+		}
+		seen[item.HoldingId] = true
+		sent := item.ExpectedReturnPct
+		switch {
+		case !sent.Set:
+			valErrors = append(valErrors, errors.ValidationError{Field: field + ".expectedReturnPct",
+				Message: field + ".expectedReturnPct is required (null clears it)"})
+		case !sent.Null && !validReturn(sent.Value):
+			valErrors = append(valErrors, errors.ValidationError{Field: field + ".expectedReturnPct",
+				Message: field + "." + model.ErrExpectedReturnOutOfRange.Error()})
+		}
+		id, err := model.ParseHoldingId(item.HoldingId)
+		if err != nil {
+			if unknown == "" && strings.TrimSpace(item.HoldingId) != "" {
+				unknown = item.HoldingId
+			}
+			continue
+		}
+		next := inbound.ExpectedReturnItem{HoldingId: id}
+		if sent.Set && !sent.Null {
+			v := sent.Value
+			next.ExpectedReturnPct = &v
+		}
+		items = append(items, next)
+	}
+	if len(valErrors) > 0 {
+		middleware.HandleError(w, r, errors.NewValidationErrors(valErrors))
+		return
+	}
+	if unknown != "" {
+		middleware.HandleError(w, r, errors.NewResourceNotFoundError("Holding "+unknown+" not found"))
+		return
+	}
+
+	updated, err := h.holdingUseCase.SetExpectedReturns(r.Context(), userId, items)
+	if err != nil {
+		middleware.HandleError(w, r, err)
+		return
+	}
+	res := make([]dto.HoldingResponse, len(updated))
+	for i, item := range updated {
+		res[i] = toHoldingResponse(item)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+func optionalFloat(d *decimal.Decimal) *float64 {
+	if d == nil {
+		return nil
+	}
+	f := d.InexactFloat64()
+	return &f
+}
+
 func toHoldingResponse(h model.Holding) dto.HoldingResponse {
 	return dto.HoldingResponse{
-		Id:         h.Id.String(),
-		Name:       h.Name,
-		AssetClass: h.AssetClass.Value(),
-		Platform:   h.Platform.Value(),
-		ValueUsd:   h.Value.Float64(),
-		CreatedAt:  h.CreatedAt,
-		UpdatedAt:  h.UpdatedAt,
+		Id:                 h.Id.String(),
+		Name:               h.Name,
+		AssetClass:         h.AssetClass.Value(),
+		Platform:           h.Platform.Value(),
+		ValueUsd:           h.Value.Float64(),
+		ExpectedReturnPct:  optionalFloat(h.ExpectedReturnPct),
+		EffectiveReturnPct: optionalFloat(h.EffectiveReturnPct()),
+		CreatedAt:          h.CreatedAt,
+		UpdatedAt:          h.UpdatedAt,
 	}
 }

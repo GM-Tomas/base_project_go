@@ -133,10 +133,17 @@ versión llegó a crearlo, `db.holdings.dropIndex("user_id_1_created_at_1")`.
 
 El adaptador `internal/infrastructure/adapter/outbound/persistence/mongo/` implementa los puertos outbound
 (`HoldingRepository`, `DebtRepository`, `PlatformRepository`, `SnapshotRepository`, `MovementRepository`,
-`QuotaRepository`, `WealthAggregationPort`, `TransactionManager`) sobre las colecciones `holdings`, `debts` (lo que se
-debe), `net_worth_snapshots`, `movements` (la actividad: cada cambio de valor de un holding o del saldo de una deuda) y
-`quotas` (contadores por usuario). Los montos y las tasas se guardan como decimales en texto (escala 2) para no perder
+`QuotaRepository`, `PreferencesRepository`, `WealthAggregationPort`, `TransactionManager`) sobre las colecciones
+`holdings`, `debts` (lo que se debe), `net_worth_snapshots`, `movements` (la actividad: cada cambio de valor de un
+holding o del saldo de una deuda), `quotas` (contadores por usuario) y `preferences` (un documento por usuario, con su
+id como `_id`: cómo dejó Estimate). Los montos y las tasas se guardan como decimales en texto (escala 2) para no perder
 precisión.
+
+**Retorno esperado.** Cada holding puede decir cuánto rinde por año (`expected_return_pct`, −100 a 100; ausente si no
+se sabe). El del portfolio es el promedio ponderado por valor (los que no tienen cuentan como 0 %), con la cobertura (%
+del valor con retorno cargado) y lo que rendiría en dólares: `expectedReturn` del resumen. La proyección crece a ese
+retorno salvo que se le pase `yieldPct`, y simula mes a mes (aporte que sube cada año, inflación para ver los valores en
+dólares de hoy).
 
 **Patrimonio neto = assets − deudas.** El resumen, los snapshots y los hitos de la proyección usan el neto, que puede ser
 negativo. Cada snapshot guarda también lo que se tenía (`assets_usd`) y lo que se debía (`debts_usd`); los anteriores a
@@ -184,7 +191,7 @@ Authorization: Bearer <session.access_token>
 La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Supabase y ve y modifica **solo sus datos**.
 
 - **Cómo se aísla:** cada documento de MongoDB (`holdings`, `debts`, `net_worth_snapshots`, `movements`) guarda el
-  `user_id` (el `sub` del JWT)
+  `user_id` (el `sub` del JWT; en `preferences` es el `_id`)
   y **toda** lectura, escritura y borrado filtra por él, incluidos las plataformas, los agregados del resumen y la proyección.
   Dos cuentas pueden tener una plataforma "Binance" o un snapshot en el mismo segundo sin chocar.
 - **Recursos ajenos:** borrar un holding de otra cuenta (aunque se conozca su id) responde `404`, igual que uno inexistente,
@@ -204,10 +211,11 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
   // ("platforms" solo existe en bases de versiones anteriores)
   ["holdings", "debts", "net_worth_snapshots", "movements", "platforms"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
   db.quotas.deleteOne({ _id: uid });
+  db.preferences.deleteOne({ _id: uid });
   ```
 - **Tests:** `internal/infrastructure/app/multiuser_test.go` levanta la API completa (router, auth, servicios y MongoDB real)
   con un JWKS de prueba y verifica con dos usuarios que ninguno ve ni modifica holdings, deudas, movimientos,
-  plataformas, clases de activo, snapshots, resumen o proyección del otro, que un `userId` en el body o la query se ignora, y que en modo dev las cuentas
+  plataformas, clases de activo, snapshots, resumen, proyección, retornos esperados o preferencias del otro, que un `userId` en el body o la query se ignora, y que en modo dev las cuentas
   reales siguen separadas.
 
 ---
@@ -221,7 +229,8 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `GET` | `/api/v1/wealth/summary` | Dashboard, Platforms (net worth = assets − deudas, YTD, liquidez, desgloses) | Sí |
 | `GET` | `/api/v1/holdings` | Assets, drill-down de Platforms, contador | Sí |
 | `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva; registra su `OPENING`; `409` al superar 1000 holdings) | Sí |
-| `PATCH` | `/api/v1/holdings/{id}` | Edit asset (solo cambia lo enviado; un valor nuevo queda registrado según `valueChangeReason`; `404` si no existe o es ajeno) | Sí |
+| `PATCH` | `/api/v1/holdings/{id}` | Edit asset (solo cambia lo enviado; un valor nuevo queda registrado según `valueChangeReason`; `expectedReturnPct`, `null` lo borra; `404` si no existe o es ajeno) | Sí |
+| `PUT` | `/api/v1/holdings/expected-returns` | "Set expected returns" (varios retornos a la vez, todo o nada; `404` si algún id es ajeno) | Sí |
 | `DELETE` | `/api/v1/holdings/{id}` | Assets (registra su `CLOSING`; borra también la plataforma si quedó vacía) | Sí |
 | `GET` | `/api/v1/debts` | Debts (por saldo; cada una con su `payoff`: cuándo se cancela con su cuota) | Sí |
 | `POST` | `/api/v1/debts` | "Add a debt" (registra su `OPENING`; `409` al superar 200 deudas) | Sí |
@@ -232,7 +241,8 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `DELETE` | `/api/v1/movements/{id}` | Undo (revierte como delta; `409` si no se puede) | Sí |
 | `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts" | Sí |
 | `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets | Sí |
-| `GET` | `/api/v1/wealth/estimate?contribution&yieldPct&years` | Estimate (parte de los assets; deudas amortizadas aparte; hitos 150k/250k sobre el neto) | Sí |
+| `GET` | `/api/v1/wealth/estimate?contribution&years[&yieldPct&milestones&inflationPct&contributionGrowthPct]` | Estimate (parte de los assets, al retorno esperado del portfolio salvo `yieldPct`; deudas amortizadas aparte; hitos sobre el neto, 150k/250k por defecto) | Sí |
+| `GET`, `PUT` | `/api/v1/preferences` | Estimate (cómo lo dejó el usuario, en cualquier dispositivo; el PUT reemplaza el documento) | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | History | Sí |
 | `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (`409` si ya hay uno en ese segundo o al superar 5000) | Sí |
 | `DELETE` | `/api/v1/wealth/snapshots/{id}` | History → "Delete checkpoint" (`404` si no existe o es ajeno) | Sí |

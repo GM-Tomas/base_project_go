@@ -42,6 +42,10 @@
     {
       "name": "Movements",
       "description": "Actividad: ganancias, pérdidas, depósitos, retiros y transferencias; deshacer."
+    },
+    {
+      "name": "Preferences",
+      "description": "Lo que cada usuario dejó configurado (cómo dejó Estimate), para verlo igual en cualquier dispositivo."
     }
   ],
   "paths": {
@@ -194,8 +198,8 @@
         "tags": [
           "Wealth"
         ],
-        "summary": "Proyección de interés compuesto y progreso de hitos financieros",
-        "description": "Calcula la evolución año a año con interés compuesto mensual partiendo del patrimonio neto actual del usuario, y evalúa los hitos fijos `[150000, 250000]` (los dos que muestra la vista Estimate).\n\nDevuelve N+1 puntos en la serie anual (año 0 a año N). Sin `Cache-Control`: el principal cambia con cada holding.",
+        "summary": "Proyección del portfolio (al retorno esperado o a uno propio) y progreso de hitos",
+        "description": "Simula mes a mes el portfolio (los assets): cada mes rinde la tasa anual/12 y después entra el aporte, que sube `contributionGrowthPct` cada 12 meses (sin aumento coincide con FV = P(1+r)ⁿ + PMT((1+r)ⁿ − 1)/r). Sin `yieldPct` usa el retorno esperado del portfolio (ver `expectedReturn` del resumen; 0 % si no hay). Las deudas se amortizan aparte y los hitos se evalúan sobre el patrimonio neto nominal, mes a mes. Con `inflationPct` los puntos traen además los valores en dólares de hoy.\n\nDevuelve N+1 puntos (año 0 a año N). Todos los problemas de los parámetros se informan juntos.",
         "operationId": "getWealthEstimate",
         "security": [
           {
@@ -218,12 +222,12 @@
           {
             "name": "yieldPct",
             "in": "query",
-            "required": true,
-            "description": "Tasa de rendimiento anual estimada en porcentaje (ej. 9.0 para 9%). Entre 0 y 100.",
+            "required": false,
+            "description": "Crecimiento anual en % (−100 a 100). Si no se manda, el retorno esperado del portfolio.",
             "schema": {
               "type": "number",
-              "minimum": 0.0,
-              "maximum": 100.0,
+              "minimum": -100,
+              "maximum": 100,
               "example": 9.0
             }
           },
@@ -237,6 +241,40 @@
               "minimum": 1,
               "maximum": 50,
               "example": 12
+            }
+          },
+          {
+            "name": "milestones",
+            "in": "query",
+            "required": false,
+            "description": "Hasta 5 montos separados por coma (0 a 1e15); vacío = ninguno. Sin el parámetro, 150000 y 250000.",
+            "schema": {
+              "type": "string",
+              "example": "150000,250000,500000"
+            }
+          },
+          {
+            "name": "inflationPct",
+            "in": "query",
+            "required": false,
+            "description": "Inflación anual en % (0 a 50) para los valores en dólares de hoy. Por defecto 0.",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 50,
+              "example": 3
+            }
+          },
+          {
+            "name": "contributionGrowthPct",
+            "in": "query",
+            "required": false,
+            "description": "Cuánto sube el aporte mensual cada 12 meses, en % (0 a 50). Por defecto 0.",
+            "schema": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 50,
+              "example": 5
             }
           }
         ],
@@ -1176,6 +1214,170 @@
           }
         }
       }
+    },
+    "/api/v1/holdings/expected-returns": {
+      "put": {
+        "tags": [
+          "Holdings"
+        ],
+        "summary": "Fija el retorno anual esperado de varios holdings a la vez",
+        "description": "Todo o nada, en una transacción: si algún id no es un holding del usuario (o no es un UUID) responde `404` y no cambia nada. Los que ya tenían ese retorno no se escriben (conservan `updatedAt`). Devuelve los holdings en el orden pedido. No registra movimientos.",
+        "operationId": "setExpectedReturns",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExpectedReturnsRequest"
+              },
+              "example": {
+                "items": [
+                  {
+                    "holdingId": "f3b890a5-2962-4217-b714-3d07e60fa7e2",
+                    "expectedReturnPct": 8
+                  },
+                  {
+                    "holdingId": "0d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+                    "expectedReturnPct": null
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Los holdings como quedaron",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HoldingResponse"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
+          }
+        }
+      }
+    },
+    "/api/v1/preferences": {
+      "get": {
+        "tags": [
+          "Preferences"
+        ],
+        "summary": "Las preferencias del usuario",
+        "description": "Lo guardado o, si nunca guardó nada, los valores por defecto.",
+        "operationId": "getPreferences",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Las preferencias",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preferences"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Preferences"
+        ],
+        "summary": "Reemplaza las preferencias del usuario",
+        "description": "Reemplaza el documento entero: lo que no se manda toma su valor por defecto y lo desconocido se ignora. Mismos rangos que la estimación; todos los problemas se informan juntos (campos `estimate.*`).",
+        "operationId": "replacePreferences",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Preferences"
+              },
+              "example": {
+                "estimate": {
+                  "contributionUsd": 1500,
+                  "years": 20,
+                  "yieldMode": "PORTFOLIO",
+                  "customYieldPct": 9,
+                  "milestonesUsd": [
+                    250000,
+                    500000
+                  ],
+                  "inflationPct": 3,
+                  "contributionGrowthPct": 5
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Las preferencias guardadas",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preferences"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1381,7 +1583,8 @@
           "ytd",
           "liquidity",
           "byAssetClass",
-          "byPlatform"
+          "byPlatform",
+          "expectedReturn"
         ],
         "properties": {
           "netWorth": {
@@ -1414,6 +1617,9 @@
             "items": {
               "$ref": "#/components/schemas/PlatformBreakdown"
             }
+          },
+          "expectedReturn": {
+            "$ref": "#/components/schemas/ExpectedReturnDTO"
           }
         },
         "description": "`byAssetClass` y `byPlatform` (y sus `pct`) son sobre los assets; el YTD, sobre el patrimonio neto (sin porcentaje si la base no es mayor que 0: `NO_BASELINE`)."
@@ -1426,7 +1632,9 @@
           "totalContributedUsd",
           "interestEarnedUsd",
           "debtBalanceUsd",
-          "netWorthUsd"
+          "netWorthUsd",
+          "realFutureValueUsd",
+          "realNetWorthUsd"
         ],
         "properties": {
           "year": {
@@ -1449,7 +1657,7 @@
           "interestEarnedUsd": {
             "type": "number",
             "format": "double",
-            "description": "Interés compuesto ganado acumulado (futureValueUsd - totalContributedUsd)",
+            "description": "futureValueUsd − totalContributedUsd: negativo si el crecimiento lo es.",
             "example": 46270.15
           },
           "debtBalanceUsd": {
@@ -1463,6 +1671,18 @@
             "format": "double",
             "description": "futureValueUsd − debtBalanceUsd.",
             "example": 184520.15
+          },
+          "realFutureValueUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "futureValueUsd en dólares de hoy (deflactado mes a mes a `inflationPct`; igual sin inflación).",
+            "example": 150000
+          },
+          "realNetWorthUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "netWorthUsd en dólares de hoy.",
+            "example": 150000
           }
         }
       },
@@ -1512,6 +1732,10 @@
           "debtsUsd",
           "monthlyContributionUsd",
           "annualYieldPct",
+          "yieldSource",
+          "portfolioYieldPct",
+          "inflationPct",
+          "contributionGrowthPct",
           "years",
           "series",
           "milestones"
@@ -1536,7 +1760,32 @@
           },
           "annualYieldPct": {
             "type": "number",
-            "example": 9.0
+            "example": 9.0,
+            "description": "El crecimiento usado: el del portfolio (`yieldSource` PORTFOLIO) o el pedido (CUSTOM)."
+          },
+          "yieldSource": {
+            "type": "string",
+            "enum": [
+              "PORTFOLIO",
+              "CUSTOM"
+            ],
+            "example": "PORTFOLIO"
+          },
+          "portfolioYieldPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "El retorno esperado del portfolio, se haya usado o no (`null` sin nada que ponderar).",
+            "example": 7.8
+          },
+          "inflationPct": {
+            "type": "number",
+            "example": 0
+          },
+          "contributionGrowthPct": {
+            "type": "number",
+            "example": 0
           },
           "years": {
             "type": "integer",
@@ -1640,6 +1889,16 @@
             "minimum": 0.0,
             "description": "Valor actual total de la posición en USD",
             "example": 10557.0
+          },
+          "expectedReturnPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": -100,
+            "maximum": 100,
+            "description": "Cuánto rinde por año, aproximadamente, en % (−100 a 100, se guardan 2 decimales). `null` = no se sabe (cuenta como 0 % en el retorno del portfolio).",
+            "example": 7.5
           }
         }
       },
@@ -1651,6 +1910,8 @@
           "assetClass",
           "platform",
           "valueUsd",
+          "expectedReturnPct",
+          "effectiveReturnPct",
           "createdAt",
           "updatedAt"
         ],
@@ -1676,6 +1937,22 @@
             "type": "number",
             "format": "double",
             "example": 10557.0
+          },
+          "expectedReturnPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "El retorno anual propio del holding (null si no tiene).",
+            "example": 7.5
+          },
+          "effectiveReturnPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "El retorno con el que cuenta en el del portfolio: hoy, el propio.",
+            "example": 7.5
           },
           "createdAt": {
             "type": "string",
@@ -1879,6 +2156,16 @@
             "type": "string",
             "maxLength": 200,
             "description": "Nota del movimiento que registra el cambio de valor."
+          },
+          "expectedReturnPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": -100,
+            "maximum": 100,
+            "description": "Cuánto rinde por año, aproximadamente, en % (−100 a 100, se guardan 2 decimales). `null` = no se sabe (cuenta como 0 % en el retorno del portfolio). En un PATCH, `null` lo borra; cambiarlo no registra movimiento.",
+            "example": 8
           }
         }
       },
@@ -2489,6 +2776,140 @@
             "type": "number",
             "description": "La suma de las cuotas mensuales (de las deudas que tienen una).",
             "example": 950
+          }
+        }
+      },
+      "ExpectedReturnsRequest": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "description": "El retorno anual de varios holdings a la vez (hasta 1000). Cada `holdingId` una sola vez; `expectedReturnPct` es obligatorio (`null` lo borra).",
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "required": [
+                "holdingId",
+                "expectedReturnPct"
+              ],
+              "properties": {
+                "holdingId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "expectedReturnPct": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": -100,
+                  "maximum": 100,
+                  "example": 8
+                }
+              }
+            }
+          }
+        }
+      },
+      "ExpectedReturnDTO": {
+        "type": "object",
+        "required": [
+          "weightedPct",
+          "coveragePct",
+          "annualUsd"
+        ],
+        "description": "Lo que el portfolio debería rendir en un año: el retorno de cada holding ponderado por su valor (los que no tienen cuentan como 0 %).",
+        "properties": {
+          "weightedPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Σ(valorᵢ × retornoᵢ) / Σ valorᵢ, 2 decimales; `null` sin nada que ponderar (sin holdings o todos en 0).",
+            "example": 7.8
+          },
+          "coveragePct": {
+            "type": "number",
+            "description": "% del valor del portfolio con retorno cargado (1 decimal).",
+            "example": 90
+          },
+          "annualUsd": {
+            "type": "number",
+            "description": "Σ(valorᵢ × retornoᵢ) / 100: lo que rendiría en un año (negativo si perdería).",
+            "example": 9360
+          }
+        }
+      },
+      "EstimatePreferences": {
+        "type": "object",
+        "description": "Estimate como lo dejó el usuario. En un PUT, lo que falta toma su valor por defecto.",
+        "properties": {
+          "contributionUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000000,
+            "default": 900
+          },
+          "years": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 12
+          },
+          "yieldMode": {
+            "type": "string",
+            "enum": [
+              "PORTFOLIO",
+              "CUSTOM"
+            ],
+            "default": "PORTFOLIO",
+            "description": "Crecer al retorno esperado del portfolio o a `customYieldPct`."
+          },
+          "customYieldPct": {
+            "type": "number",
+            "minimum": -100,
+            "maximum": 100,
+            "default": 9
+          },
+          "milestonesUsd": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1000000000000000.0
+            },
+            "default": [
+              150000,
+              250000
+            ],
+            "description": "Se devuelven ordenados."
+          },
+          "inflationPct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 50,
+            "default": 0
+          },
+          "contributionGrowthPct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 50,
+            "default": 0
+          }
+        }
+      },
+      "Preferences": {
+        "type": "object",
+        "required": [
+          "estimate"
+        ],
+        "properties": {
+          "estimate": {
+            "$ref": "#/components/schemas/EstimatePreferences"
           }
         }
       }

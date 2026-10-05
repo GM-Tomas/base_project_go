@@ -19,10 +19,12 @@ type PlatformAggregate struct {
 	Count int
 }
 
-// WealthTotals is what a user owns (their holdings) and what they owe (their debts).
+// WealthTotals is what a user owns (their holdings) and what they owe (their debts), with each holding's
+// value and expected return (the portfolio's expected return weighs them).
 type WealthTotals struct {
-	Assets model.Money
-	Debts  model.Money
+	Assets  model.Money
+	Debts   model.Money
+	Returns []model.HoldingReturn
 }
 
 // NetWorth is assets minus debts.
@@ -37,6 +39,7 @@ type WealthBreakdown struct {
 	Debts        model.DebtTotals
 	ByAssetClass []AssetClassAggregate
 	ByPlatform   []PlatformAggregate
+	Returns      []model.HoldingReturn
 }
 
 type WealthAggregationPort interface {

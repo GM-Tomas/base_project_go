@@ -1,6 +1,7 @@
 package model_test
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -154,4 +155,84 @@ func TestMoney_MustPanicsOnNegative(t *testing.T) {
 func TestMoney_MinusAndSum(t *testing.T) {
 	assert.Equal(t, "5.00", model.MustMoneyFromFloat(10).Minus(model.MustMoneyFromFloat(5)).String())
 	assert.Equal(t, "3.00", model.SumMoney([]model.Money{model.MustMoneyFromFloat(1), model.MustMoneyFromFloat(2)}).String())
+}
+
+func TestNewExpectedReturnPct(t *testing.T) {
+	for v, want := range map[float64]string{7.5: "7.5", -100: "-100", 100: "100", 0: "0", 3.14159: "3.14"} {
+		pct, err := model.NewExpectedReturnPct(v)
+		require.NoError(t, err, v)
+		assert.Equal(t, want, pct.String(), v)
+	}
+	for _, v := range []float64{-100.01, 100.01, math.NaN(), math.Inf(1)} {
+		_, err := model.NewExpectedReturnPct(v)
+		assert.ErrorIs(t, err, model.ErrExpectedReturnOutOfRange, v)
+	}
+	assert.EqualError(t, model.ErrExpectedReturnOutOfRange, "expectedReturnPct must be between -100 and 100")
+}
+
+func TestHolding_EffectiveReturnIsItsOwn(t *testing.T) {
+	seven := decimal.NewFromInt(7)
+	h := model.Holding{ExpectedReturnPct: &seven}
+	assert.Equal(t, &seven, h.EffectiveReturnPct())
+	assert.Nil(t, model.Holding{}.EffectiveReturnPct())
+
+	other := decimal.RequireFromString("7.00")
+	assert.True(t, model.SameReturn(&seven, &other))
+	assert.True(t, model.SameReturn(nil, nil))
+	assert.False(t, model.SameReturn(&seven, nil))
+	assert.False(t, model.SameReturn(nil, &seven))
+	eight := decimal.NewFromInt(8)
+	assert.False(t, model.SameReturn(&seven, &eight))
+}
+
+func TestPreferences_DefaultsAndChecks(t *testing.T) {
+	defaults := model.DefaultPreferences().Estimate
+	assert.Equal(t, "900.00", defaults.Contribution.String())
+	assert.Equal(t, 12, defaults.Years)
+	assert.Equal(t, model.YieldModePortfolio, defaults.YieldMode)
+	assert.Equal(t, "9", defaults.CustomYieldPct.String())
+	assert.Equal(t, []string{"150000.00", "250000.00"}, []string{defaults.Milestones[0].String(), defaults.Milestones[1].String()})
+	checked, err := defaults.Check()
+	require.NoError(t, err)
+	assert.Equal(t, defaults, checked)
+
+	// Milestones come back in order.
+	e := defaults
+	e.Milestones = []model.Money{model.MustMoneyFromFloat(3), model.MustMoneyFromFloat(1)}
+	checked, err = e.Check()
+	require.NoError(t, err)
+	assert.Equal(t, "1.00", checked.Milestones[0].String())
+
+	bad := func(change func(*model.EstimatePreferences)) error {
+		e := defaults
+		change(&e)
+		_, err := e.Check()
+		return err
+	}
+	assert.ErrorIs(t, bad(func(e *model.EstimatePreferences) { e.Contribution = model.MustMoneyFromFloat(1e9 + 1) }), model.ErrContributionOutOfRange)
+	assert.ErrorIs(t, bad(func(e *model.EstimatePreferences) { e.Years = 51 }), model.ErrYearsOutOfRange)
+	assert.ErrorIs(t, bad(func(e *model.EstimatePreferences) { e.YieldMode = "MAGIC" }), model.ErrUnknownYieldMode)
+	assert.ErrorIs(t, bad(func(e *model.EstimatePreferences) { e.CustomYieldPct = decimal.NewFromInt(-101) }), model.ErrCustomYieldOutOfRange)
+	assert.ErrorIs(t, bad(func(e *model.EstimatePreferences) { e.Milestones = make([]model.Money, 6) }), model.ErrTooManyMilestones)
+	assert.ErrorIs(t, bad(func(e *model.EstimatePreferences) { e.Milestones = []model.Money{model.MustMoneyFromFloat(1e15 + 1)} }),
+		model.ErrMilestoneOutOfRange)
+	assert.ErrorIs(t, bad(func(e *model.EstimatePreferences) { e.InflationPct = decimal.NewFromInt(51) }), model.ErrInflationOutOfRange)
+	assert.ErrorIs(t, bad(func(e *model.EstimatePreferences) { e.ContributionGrowthPct = decimal.NewFromInt(-1) }),
+		model.ErrContributionGrowthOutOfRange)
+}
+
+func TestParseYieldModeAndMilestones(t *testing.T) {
+	mode, err := model.ParseYieldMode("CUSTOM")
+	require.NoError(t, err)
+	assert.Equal(t, model.YieldModeCustom, mode)
+	_, err = model.ParseYieldMode("custom")
+	assert.EqualError(t, err, `yieldMode must be one of PORTFOLIO, CUSTOM (got "custom")`)
+
+	m, err := model.NewMilestone(150000.004)
+	require.NoError(t, err)
+	assert.Equal(t, "150000.00", m.String())
+	for _, v := range []float64{-1, 1e15 + 1, math.NaN()} {
+		_, err := model.NewMilestone(v)
+		assert.ErrorIs(t, err, model.ErrMilestoneOutOfRange, v)
+	}
 }

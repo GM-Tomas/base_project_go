@@ -150,6 +150,16 @@ func (s *WealthQueryService) GetSummary(
 		}
 	}
 
+	expected := domainService.CalculateExpectedReturn(breakdown.Returns)
+	expectedDTO := dto.ExpectedReturnDTO{
+		CoveragePct: expected.CoveragePct.InexactFloat64(),
+		AnnualUsd:   expected.Annual.Float64(),
+	}
+	if expected.WeightedPct != nil {
+		pct := expected.WeightedPct.InexactFloat64()
+		expectedDTO.WeightedPct = &pct
+	}
+
 	return dto.WealthSummaryResponse{
 		NetWorth: dto.NetWorthDTO{
 			Usd: netWorth.Float64(),
@@ -160,10 +170,11 @@ func (s *WealthQueryService) GetSummary(
 			Count:             debts.Count,
 			MonthlyPaymentUsd: debts.MonthlyPayment.Float64(),
 		},
-		HoldingsCount: totalCount,
-		Ytd:           ytdDTO,
-		Liquidity:     liquidityDTO,
-		ByAssetClass:  byAssetClassDTOs,
-		ByPlatform:    byPlatformDTOs,
+		HoldingsCount:  totalCount,
+		ExpectedReturn: expectedDTO,
+		Ytd:            ytdDTO,
+		Liquidity:      liquidityDTO,
+		ByAssetClass:   byAssetClassDTOs,
+		ByPlatform:     byPlatformDTOs,
 	}, nil
 }

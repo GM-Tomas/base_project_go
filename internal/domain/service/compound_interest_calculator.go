@@ -4,55 +4,46 @@ import (
 	"math"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
-	"github.com/shopspring/decimal"
 )
 
 const (
 	monthsPerYear = 12
 	percent       = 100.0
-	nearZeroRate  = 1e-9
 )
 
-// FutureValue calculates FV = P*(1+r)^n + PMT*((1+r)^n - 1)/r, r = annualYieldPct/100/12.
-func FutureValue(
-	principal model.Money,
-	monthlyContribution model.Money,
-	annualYieldPct decimal.Decimal,
-	months int,
-) model.Money {
-	p := principal.Float64()
-	pmt := monthlyContribution.Float64()
-	yieldFloat, _ := annualYieldPct.Float64()
-	r := yieldFloat / percent / monthsPerYear
-
-	var fv float64
-	if math.Abs(r) < nearZeroRate {
-		fv = p + pmt*float64(months)
-	} else {
-		compound := math.Pow(1.0+r, float64(months))
-		fv = p*compound + pmt*((compound-1.0)/r)
-	}
-
-	if fv < 0 {
-		fv = 0
-	}
-	return model.MustMoneyFromFloat(fv)
+// projectedMonth is where a projection stands after a month.
+type projectedMonth struct {
+	value       float64 // the portfolio
+	contributed float64 // the principal and every contribution so far
+	deflator    float64 // what a dollar then is worth today: (1 + inflation/12)^month
 }
 
-// MonthsToReach returns the first month (0..maxMonths) where futureValue >= threshold, or nil if never reached.
-func MonthsToReach(
-	threshold model.Money,
-	principal model.Money,
-	monthlyContribution model.Money,
-	annualYieldPct decimal.Decimal,
-	maxMonths int,
-) *int {
-	for month := 0; month <= maxMonths; month++ {
-		fv := FutureValue(principal, monthlyContribution, annualYieldPct, month)
-		if fv.GreaterThanOrEqual(threshold) {
-			m := month
-			return &m
+// simulate runs a projection month by month for params.Years*12 months: each month the portfolio earns the
+// yield's monthly rate (annual/12), then the month's contribution goes in (an ordinary annuity, so without
+// a raise it matches FV = P(1+r)ⁿ + PMT((1+r)ⁿ − 1)/r). The contribution grows by ContributionGrowthPct
+// every 12 months. It returns months+1 states, month 0 (the principal) first.
+func simulate(params model.ProjectionParams) []projectedMonth {
+	months := params.Years * monthsPerYear
+	yield, _ := params.AnnualYieldPct.Float64()
+	growth, _ := params.ContributionGrowthPct.Float64()
+	inflation, _ := params.InflationPct.Float64()
+	rate := yield / percent / monthsPerYear
+	monthlyInflation := 1 + inflation/percent/monthsPerYear
+	contribution := params.MonthlyContribution.Float64()
+
+	states := make([]projectedMonth, months+1)
+	value := params.Principal.Float64()
+	contributed := value
+	deflator := 1.0
+	states[0] = projectedMonth{value: value, contributed: contributed, deflator: deflator}
+	for m := 1; m <= months; m++ {
+		if m > monthsPerYear && (m-1)%monthsPerYear == 0 {
+			contribution *= 1 + growth/percent // a new year: the raise
 		}
+		value = math.Max(0, value*(1+rate)+contribution)
+		contributed += contribution
+		deflator *= monthlyInflation
+		states[m] = projectedMonth{value: value, contributed: contributed, deflator: deflator}
 	}
-	return nil
+	return states
 }

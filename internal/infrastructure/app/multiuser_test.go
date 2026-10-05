@@ -582,3 +582,69 @@ func TestMultiUser_DebtCapHoldsUnderConcurrentCreates(t *testing.T) {
 	require.Equal(t, http.StatusOK, e.do(token, "GET", "/api/v1/debts", nil, &list))
 	assert.Equal(t, model.MaxDebtsPerUser, len(list), "every free slot used, none twice")
 }
+
+func TestMultiUser_ExpectedReturnsAndPreferencesStayWithTheirOwner(t *testing.T) {
+	e := newE2E(t, "")
+	asAlice, asBob := e.token(uuid.New(), nil), e.token(uuid.New(), nil)
+	etf := e.create(asAlice, "ETF", "Index Fund", "IBKR", 6000)
+	cash := e.create(asAlice, "Cash", "Cash", "Santander", 4000)
+	bobs := e.create(asBob, "Wallet", "Cash", "Mercado Pago", 50)
+
+	// Alice sets her returns at once: her portfolio is expected to earn 6% (cash counts as 0%).
+	var updated []struct {
+		Id                string
+		ExpectedReturnPct *float64
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "PUT", "/api/v1/holdings/expected-returns", map[string]any{
+		"items": []map[string]any{{"holdingId": etf.Id, "expectedReturnPct": 10}, {"holdingId": cash.Id, "expectedReturnPct": nil}},
+	}, &updated))
+	require.Len(t, updated, 2)
+	assert.Equal(t, 10.0, *updated[0].ExpectedReturnPct)
+	var summary struct {
+		ExpectedReturn struct {
+			WeightedPct *float64
+			CoveragePct float64
+			AnnualUsd   float64
+		}
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/wealth/summary", nil, &summary))
+	assert.Equal(t, 6.0, *summary.ExpectedReturn.WeightedPct)
+	assert.Equal(t, 60.0, summary.ExpectedReturn.CoveragePct)
+	assert.Equal(t, 600.0, summary.ExpectedReturn.AnnualUsd)
+	var estimate struct {
+		YieldSource    string
+		AnnualYieldPct float64
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/wealth/estimate?contribution=0&years=1", nil, &estimate))
+	assert.Equal(t, "PORTFOLIO", estimate.YieldSource)
+	assert.Equal(t, 6.0, estimate.AnnualYieldPct)
+
+	// Bob can't set hers, not even alongside his own: nothing changes for either.
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "PUT", "/api/v1/holdings/expected-returns", map[string]any{
+		"items": []map[string]any{{"holdingId": bobs.Id, "expectedReturnPct": 3}, {"holdingId": etf.Id, "expectedReturnPct": 99}},
+	}, nil))
+	var mine []struct{ ExpectedReturnPct *float64 }
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/holdings", nil, &mine))
+	assert.Nil(t, mine[0].ExpectedReturnPct)
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/wealth/summary", nil, &summary))
+	assert.Equal(t, 6.0, *summary.ExpectedReturn.WeightedPct)
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/wealth/estimate?contribution=0&years=1", nil, &estimate))
+	assert.Equal(t, 0.0, estimate.AnnualYieldPct, "his portfolio has no returns set")
+
+	// Each one's preferences are their own.
+	var prefs struct {
+		Estimate struct {
+			Years     int
+			YieldMode string
+		}
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "PUT", "/api/v1/preferences", map[string]any{
+		"estimate": map[string]any{"years": 30, "yieldMode": "CUSTOM", "customYieldPct": 5},
+	}, &prefs))
+	assert.Equal(t, 30, prefs.Estimate.Years)
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/preferences", nil, &prefs))
+	assert.Equal(t, "CUSTOM", prefs.Estimate.YieldMode)
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/preferences", nil, &prefs))
+	assert.Equal(t, 12, prefs.Estimate.Years)
+	assert.Equal(t, "PORTFOLIO", prefs.Estimate.YieldMode)
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,7 +29,7 @@ func TestProjectionService_Project(t *testing.T) {
 	result, err := svc.Project(ctx, inbound.ProjectionRequest{
 		UserId:              userId,
 		MonthlyContribution: 900.0,
-		AnnualYieldPct:      9.0,
+		AnnualYieldPct:      ptr(9.0),
 		Years:               12,
 		Milestones:          []float64{150000.0, 250000.0},
 	})
@@ -44,12 +45,26 @@ func TestProjectionService_Project(t *testing.T) {
 
 func TestProjectionService_RejectsNonFiniteInputsInsteadOfPanicking(t *testing.T) {
 	svc := service.NewProjectionService(&mockWealthAggregationPort{assets: model.ZeroMoney}, newMockDebtRepo(), fixedClock(time.Now()))
-	base := inbound.ProjectionRequest{UserId: model.NewUserId(uuid.New()), MonthlyContribution: 100, AnnualYieldPct: 5, Years: 1}
+	base := inbound.ProjectionRequest{UserId: model.NewUserId(uuid.New()), MonthlyContribution: 100, AnnualYieldPct: ptr(5.0), Years: 1}
 
 	nan := base
-	nan.AnnualYieldPct = math.NaN()
+	nan.AnnualYieldPct = ptr(math.NaN())
 	_, err := svc.Project(context.Background(), nan)
 	assert.ErrorIs(t, err, model.ErrYieldOutOfRange)
+
+	for _, adjust := range []func(*inbound.ProjectionRequest){
+		func(r *inbound.ProjectionRequest) { r.InflationPct = math.NaN() },
+		func(r *inbound.ProjectionRequest) { r.InflationPct = 51 },
+	} {
+		req := base
+		adjust(&req)
+		_, err = svc.Project(context.Background(), req)
+		assert.ErrorIs(t, err, model.ErrInflationOutOfRange)
+	}
+	growth := base
+	growth.ContributionGrowthPct = math.Inf(-1)
+	_, err = svc.Project(context.Background(), growth)
+	assert.ErrorIs(t, err, model.ErrContributionGrowthOutOfRange)
 
 	inf := base
 	inf.MonthlyContribution = math.Inf(1)
@@ -81,4 +96,40 @@ func TestProjectionService_ProjectsThePortfolioAndPaysOffDebts(t *testing.T) {
 	// Invalid parameters are refused before anything is read.
 	_, err = svc.Project(context.Background(), inbound.ProjectionRequest{UserId: user, Years: 0})
 	assert.ErrorIs(t, err, model.ErrYearsOutOfRange)
+}
+
+func TestProjectionService_GrowsAtThePortfoliosExpectedReturnUnlessToldOtherwise(t *testing.T) {
+	eight := decimal.NewFromInt(8)
+	agg := &mockWealthAggregationPort{
+		assets: model.MustMoneyFromFloat(100000),
+		// 75,000 at 8% and 25,000 without a return: 6% for the portfolio.
+		returns: []model.HoldingReturn{{Value: model.MustMoneyFromFloat(75000), Pct: &eight}, {Value: model.MustMoneyFromFloat(25000)}},
+	}
+	svc := service.NewProjectionService(agg, newMockDebtRepo(), fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)))
+	user := model.NewUserId(uuid.New())
+
+	portfolio, err := svc.Project(context.Background(), inbound.ProjectionRequest{UserId: user, Years: 1})
+	require.NoError(t, err)
+	assert.Equal(t, model.YieldFromPortfolio, portfolio.YieldSource)
+	assert.Equal(t, "6", portfolio.AnnualYieldPct.String())
+	assert.Equal(t, "6", portfolio.PortfolioYieldPct.String())
+	assert.InDelta(t, 100000*math.Pow(1.005, 12), portfolio.Series[1].FutureValue.Float64(), 0.01)
+
+	custom, err := svc.Project(context.Background(), inbound.ProjectionRequest{UserId: user, Years: 1, AnnualYieldPct: ptr(-2.5),
+		InflationPct: 3, ContributionGrowthPct: 10})
+	require.NoError(t, err)
+	assert.Equal(t, model.YieldCustom, custom.YieldSource)
+	assert.Equal(t, "-2.5", custom.AnnualYieldPct.String())
+	assert.Equal(t, "6", custom.PortfolioYieldPct.String(), "the portfolio's, either way")
+	assert.Equal(t, "3", custom.InflationPct.String())
+	assert.Equal(t, "10", custom.ContributionGrowthPct.String())
+	assert.Less(t, custom.Series[1].RealFutureValue.Float64(), custom.Series[1].FutureValue.Float64())
+
+	// Nothing to weigh: the portfolio grows at 0%.
+	empty := service.NewProjectionService(&mockWealthAggregationPort{assets: model.ZeroMoney}, newMockDebtRepo(), fixedClock(time.Now()))
+	none, err := empty.Project(context.Background(), inbound.ProjectionRequest{UserId: user, Years: 1, MonthlyContribution: 100})
+	require.NoError(t, err)
+	assert.Nil(t, none.PortfolioYieldPct)
+	assert.True(t, none.AnnualYieldPct.IsZero())
+	assert.Equal(t, "1200.00", none.Series[1].FutureValue.String())
 }
