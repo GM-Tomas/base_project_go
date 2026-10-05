@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "BASE Wealth Management API (Go Backend)",
-    "description": "REST API construida en **Go 1.26** siguiendo los principios de **Arquitectura Hexagonal (Ports & Adapters)** y **Domain-Driven Design (DDD)**.\nExpone la gestión integral de activos financieros, posiciones de inversión (holdings), plataformas/entidades, cálculo de patrimonio neto en USD, variaciones de rendimiento YTD, desglose de liquidez, serie histórica de snapshots y motor de proyecciones financieras con interés compuesto.\n\n### Seguridad y Autenticación\nTodos los endpoints bajo `/api/v1/**` (excepto `/api/v1/health`) requieren un token Bearer JWT emitido por **Supabase Auth**.\nEl backend extrae la identidad del usuario a partir del claim `sub` del JWT y aplica aislamiento multi-tenant estricto: cada usuario solo ve y modifica sus propios holdings, plataformas, clases de activo y snapshots. Ningún endpoint acepta un identificador de usuario en body, path o query (si se envía, se ignora), y un recurso de otro usuario responde `404` igual que uno inexistente.\n\nCuotas por usuario: hasta 1000 holdings y 5000 snapshots (`409` con `type` `.../limit-exceeded` al superarlas).\n\nSi las claves públicas (JWKS) de Supabase no se pueden obtener, la API responde `503` (no `401`): el token puede ser válido.\n\n### Formato de Errores\nTodos los errores siguen el estándar **RFC 9457 / RFC 7807** (`application/problem+json`) incluyendo identificador de traza `traceId` y validación granular por campo.\n",
+    "description": "REST API construida en **Go 1.26** siguiendo los principios de **Arquitectura Hexagonal (Ports & Adapters)** y **Domain-Driven Design (DDD)**.\nExpone la gestión integral de activos financieros, posiciones de inversión (holdings), plataformas/entidades, cálculo de patrimonio neto en USD, variaciones de rendimiento YTD, desglose de liquidez, serie histórica de snapshots y motor de proyecciones financieras con interés compuesto.\n\n### Seguridad y Autenticación\nTodos los endpoints bajo `/api/v1/**` (excepto `/api/v1/health`) requieren un token Bearer JWT emitido por **Supabase Auth**.\nEl backend extrae la identidad del usuario a partir del claim `sub` del JWT y aplica aislamiento multi-tenant estricto: cada usuario solo ve y modifica sus propios holdings, plataformas, clases de activo y snapshots. Ningún endpoint acepta un identificador de usuario en body, path o query (si se envía, se ignora), y un recurso de otro usuario responde `404` igual que uno inexistente.\n\nCuotas por usuario: hasta 1000 holdings, 5000 snapshots y 20000 movimientos (`409` con `type` `.../limit-exceeded` al superarlas).\n\nCada cambio de valor (alta, edición o baja de un holding, un movimiento) se escribe en una transacción de MongoDB junto con su movimiento: todo o nada. Sin replica set esas escrituras responden `503` (`.../transactions-unavailable`).\n\nSi las claves públicas (JWKS) de Supabase no se pueden obtener, la API responde `503` (no `401`): el token puede ser válido.\n\n### Formato de Errores\nTodos los errores siguen el estándar **RFC 9457 / RFC 7807** (`application/problem+json`) incluyendo identificador de traza `traceId` y validación granular por campo.\n",
     "version": "1.0.0",
     "contact": {
       "name": "BASE Wealth Team"
@@ -34,6 +34,10 @@
     {
       "name": "Asset Classes",
       "description": "Catálogo de clases de activo sugeridas y en uso"
+    },
+    {
+      "name": "Movements",
+      "description": "Actividad: ganancias, pérdidas, depósitos, retiros y transferencias; deshacer."
     }
   ],
   "paths": {
@@ -446,7 +450,7 @@
           "Holdings"
         ],
         "summary": "Crea una nueva posición financiera",
-        "description": "Registra una nueva posición de inversión.\n\n**Plataforma:** no hace falta crearla antes. Si el usuario ya tiene holdings en esa plataforma escrita con otras mayúsculas (\"binance\" vs \"Binance\"), el holding toma esa grafía y la respuesta la refleja; si es nueva, queda como se envió y aparece en `GET /platforms` con tipo `\"Other\"` (o el que versiones anteriores, que permitían elegirlo, le hayan dado a ese nombre).\n",
+        "description": "Registra una nueva posición de inversión.\n\n**Plataforma:** no hace falta crearla antes. Si el usuario ya tiene holdings en esa plataforma escrita con otras mayúsculas (\"binance\" vs \"Binance\"), el holding toma esa grafía y la respuesta la refleja; si es nueva, queda como se envió y aparece en `GET /platforms` con tipo `\"Other\"` (o el que versiones anteriores, que permitían elegirlo, le hayan dado a ese nombre).\n\n\nRegistra además el `OPENING` del holding (con su valor inicial), en la misma transacción.",
         "operationId": "createHolding",
         "security": [
           {
@@ -511,7 +515,7 @@
             "$ref": "#/components/responses/InternalServerError"
           },
           "503": {
-            "$ref": "#/components/responses/AuthUnavailableError"
+            "$ref": "#/components/responses/TransactionsUnavailableError"
           }
         }
       }
@@ -522,7 +526,7 @@
           "Holdings"
         ],
         "summary": "Edita una posición financiera",
-        "description": "Cambia solo los campos enviados (*merge patch*): nombre, clase, plataforma y/o valor, con las mismas validaciones y mensajes que el alta. Los cuatro son obligatorios en un holding, así que `null` es un error de validación. La plataforma se guarda con la grafía que ya usan los holdings del usuario (sin distinguir mayúsculas); si el holding era el único de su plataforma anterior, esa plataforma desaparece. Un cuerpo vacío (`{}`) o con los valores actuales no escribe nada ni cambia `updatedAt`.",
+        "description": "Cambia solo los campos enviados (*merge patch*): nombre, clase, plataforma y/o valor, con las mismas validaciones y mensajes que el alta. Los cuatro son obligatorios en un holding, así que `null` es un error de validación. La plataforma se guarda con la grafía que ya usan los holdings del usuario (sin distinguir mayúsculas); si el holding era el único de su plataforma anterior, esa plataforma desaparece. Un cuerpo vacío (`{}`) o con los valores actuales no escribe nada ni cambia `updatedAt`. Un cambio de `valueUsd` queda registrado como movimiento según `valueChangeReason`, calculado contra el valor leído en la misma transacción.",
         "operationId": "updateHolding",
         "security": [
           {
@@ -580,7 +584,7 @@
             "$ref": "#/components/responses/InternalServerError"
           },
           "503": {
-            "$ref": "#/components/responses/AuthUnavailableError"
+            "$ref": "#/components/responses/TransactionsUnavailableError"
           }
         }
       },
@@ -589,7 +593,7 @@
           "Holdings"
         ],
         "summary": "Elimina una posición financiera",
-        "description": "Elimina definitivamente el holding indicado.",
+        "description": "Elimina definitivamente el holding indicado. Registra su `CLOSING` (con el valor que tenía) en la misma transacción; su actividad se conserva.",
         "operationId": "deleteHolding",
         "security": [
           {
@@ -623,7 +627,229 @@
             "$ref": "#/components/responses/InternalServerError"
           },
           "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
+          }
+        }
+      }
+    },
+    "/api/v1/movements": {
+      "get": {
+        "tags": [
+          "Movements"
+        ],
+        "summary": "Actividad: movimientos, más nuevos primero",
+        "operationId": "listMovements",
+        "description": "Ordenados por `occurredAt`, `createdAt` e `id` descendentes; paginados por cursor (estable aunque entren movimientos nuevos).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "holdingId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Solo los de ese holding (como origen o destino de una transferencia)."
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Lista separada por comas, p. ej. `GAIN,LOSS`."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "`occurredAt` desde: fecha (su primer instante UTC) o RFC 3339."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "`occurredAt` hasta: fecha (su último instante UTC) o RFC 3339."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "El `nextCursor` de la página anterior."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Una página de la actividad",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovementListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
             "$ref": "#/components/responses/AuthUnavailableError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Movements"
+        ],
+        "summary": "Registra una ganancia, pérdida, depósito, retiro o transferencia",
+        "operationId": "createMovement",
+        "description": "Aplica el movimiento a los valores de los holdings y lo guarda, en una transacción. Ningún holding puede quedar por debajo de 0 (`409 insufficient-balance`). Una transferencia puede crear su destino (`toNewHolding`), que respeta la cuota de holdings.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMovementRequest"
+              },
+              "examples": {
+                "gain": {
+                  "value": {
+                    "kind": "GAIN",
+                    "holdingId": "f3b890a5-2962-4217-b714-3d07e60fa7e2",
+                    "amountUsd": 250,
+                    "occurredAt": "2026-10-05",
+                    "note": "Dividends"
+                  }
+                },
+                "transfer": {
+                  "value": {
+                    "kind": "TRANSFER",
+                    "fromHoldingId": "f3b890a5-2962-4217-b714-3d07e60fa7e2",
+                    "toNewHolding": {
+                      "name": "USD cash",
+                      "assetClass": "Cash",
+                      "platform": "Balanz"
+                    },
+                    "amountUsd": 1000,
+                    "feeUsd": 2
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Movimiento registrado",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovementResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ConflictError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
+          }
+        }
+      }
+    },
+    "/api/v1/movements/{id}": {
+      "delete": {
+        "tags": [
+          "Movements"
+        ],
+        "summary": "Deshace un movimiento",
+        "operationId": "revertMovement",
+        "description": "Revierte su efecto sobre los holdings como delta (los movimientos posteriores se conservan) y lo borra, en una transacción. `OPENING`/`CLOSING` no se deshacen, ni uno cuyo holding ya no existe (`409 not-revertible`), ni si un valor quedaría negativo (`409 insufficient-balance`).",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deshecho"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ConflictError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
           }
         }
       }
@@ -1360,6 +1586,235 @@
             "minimum": 0.0,
             "maximum": 1000000000000000.0,
             "example": 20150.5
+          },
+          "valueChangeReason": {
+            "type": "string",
+            "enum": [
+              "MARKET",
+              "CASH_FLOW",
+              "CORRECTION"
+            ],
+            "default": "MARKET",
+            "description": "Qué fue el cambio de `valueUsd`: un movimiento de mercado (se registra como `GAIN`/`LOSS`), plata que entra o sale (`DEPOSIT`/`WITHDRAWAL`) o una corrección (`ADJUSTMENT`). Se ignora si el valor no cambia."
+          },
+          "occurredAt": {
+            "type": "string",
+            "description": "Cuándo ocurrió el cambio de valor: fecha `YYYY-MM-DD` (se guarda 12:00 UTC) o instante RFC 3339. Por defecto, ahora.",
+            "example": "2026-10-05"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Nota del movimiento que registra el cambio de valor."
+          }
+        }
+      },
+      "NewHoldingRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "assetClass",
+          "platform"
+        ],
+        "description": "Holding que crea una transferencia como destino (valor inicial: monto − comisión).",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "example": "USD cash"
+          },
+          "assetClass": {
+            "type": "string",
+            "maxLength": 60,
+            "example": "Cash"
+          },
+          "platform": {
+            "type": "string",
+            "maxLength": 120,
+            "example": "Balanz"
+          }
+        }
+      },
+      "CreateMovementRequest": {
+        "type": "object",
+        "required": [
+          "kind",
+          "amountUsd"
+        ],
+        "description": "Qué campos aplican depende de `kind`: `holdingId` para GAIN, LOSS, DEPOSIT y WITHDRAWAL; `fromHoldingId` y uno de `toHoldingId`/`toNewHolding` (más `feeUsd`) para TRANSFER.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "GAIN",
+              "LOSS",
+              "DEPOSIT",
+              "WITHDRAWAL",
+              "TRANSFER"
+            ]
+          },
+          "holdingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "fromHoldingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "toHoldingId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "toNewHolding": {
+            "$ref": "#/components/schemas/NewHoldingRequest"
+          },
+          "amountUsd": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 1000000000000000.0,
+            "example": 250
+          },
+          "feeUsd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Solo TRANSFER: lo que se pierde en el camino (≤ amountUsd). El destino recibe amountUsd − feeUsd.",
+            "example": 2
+          },
+          "occurredAt": {
+            "type": "string",
+            "description": "Fecha `YYYY-MM-DD` (12:00 UTC) o instante RFC 3339; no posterior a mañana ni anterior a 1970. Por defecto, ahora.",
+            "example": "2026-10-05"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200,
+            "example": "Dividends"
+          }
+        }
+      },
+      "MovementHoldingResponse": {
+        "type": "object",
+        "description": "Un holding tal como era cuando ocurrió el movimiento, y si todavía existe.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "assetClass": {
+            "type": "string"
+          },
+          "exists": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MovementResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "OPENING",
+              "CLOSING",
+              "GAIN",
+              "LOSS",
+              "DEPOSIT",
+              "WITHDRAWAL",
+              "TRANSFER",
+              "ADJUSTMENT"
+            ]
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "amountUsd": {
+            "type": "number",
+            "description": "Lo que se movió (nunca negativo; en ADJUSTMENT, |nuevo − anterior|)."
+          },
+          "feeUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Solo TRANSFER."
+          },
+          "holding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MovementHoldingResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "El holding afectado; en TRANSFER, el origen."
+          },
+          "toHolding": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MovementHoldingResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "TRANSFER: el destino."
+          },
+          "previousValueUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Cuando el movimiento viene de editar el valor."
+          },
+          "newValueUsd": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revertible": {
+            "type": "boolean",
+            "description": "Si hoy se puede deshacer (tipo y existencia de los holdings; el saldo se verifica al deshacer)."
+          }
+        }
+      },
+      "MovementListResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MovementResponse"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaco: pasarlo como `cursor` para la página siguiente; `null` en la última."
           }
         }
       }
@@ -1461,6 +1916,58 @@
               "detail": "Your sign-in can't be verified right now. Please try again shortly.",
               "instance": "/api/v1/wealth/summary",
               "traceId": "3f0e8a2c-5b7d-4e41-9c55-2b8f7d1e6a90"
+            }
+          }
+        }
+      },
+      "ConflictError": {
+        "description": "Conflicto con el estado actual",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetail"
+            },
+            "examples": {
+              "insufficient-balance": {
+                "value": {
+                  "type": "https://base.wealth/errors/insufficient-balance",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "Savings is worth $1,000.00: a loss can't be larger than that."
+                }
+              },
+              "not-revertible": {
+                "value": {
+                  "type": "https://base.wealth/errors/not-revertible",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "USD cash was removed, so this can't be undone."
+                }
+              },
+              "limit-exceeded": {
+                "value": {
+                  "type": "https://base.wealth/errors/limit-exceeded",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "You've reached the limit of 20000 recorded changes. Undo some to record new ones."
+                }
+              }
+            }
+          }
+        }
+      },
+      "TransactionsUnavailableError": {
+        "description": "La base no soporta transacciones (MongoDB standalone, sin replica set), o las claves de Supabase no se pudieron obtener (`.../auth-unavailable`)",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProblemDetail"
+            },
+            "example": {
+              "type": "https://base.wealth/errors/transactions-unavailable",
+              "title": "Service Unavailable",
+              "status": 503,
+              "detail": "This database doesn't support transactions. Run MongoDB as a replica set (see the README)."
             }
           }
         }

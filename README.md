@@ -40,7 +40,8 @@ internal/
 
 ### 1. Ejecutar la API 100% local (sin Atlas ni Supabase)
 ```powershell
-# MongoDB local (mongodb://localhost:27017, el default de MONGODB_URI)
+# MongoDB local como replica set de un nodo (mongodb://localhost:27017/?directConnection=true, el default de
+# MONGODB_URI). Las transacciones lo necesitan; el healthcheck lo inicializa solo.
 docker compose up -d
 
 # AUTH_DEV_USER_ID: los requests SIN token actúan como ese usuario. Los que traen token se verifican igual que en producción.
@@ -61,10 +62,12 @@ Si antes de este cambio cargaste datos en local con la sesión iniciada, quedaro
 go test -v ./...
 ```
 
-Los tests de Mongo (`persistence/mongo`, `app`) se saltan si no hay `MONGO_TEST_URI`. Para correrlos y medir coverage (mínimo 85%):
+Los tests de Mongo (`persistence/mongo`, `app`) se saltan si no hay `MONGO_TEST_URI`. Necesitan un replica set (las
+transacciones lo requieren). Para correrlos y medir coverage (mínimo 85%):
 ```powershell
-docker run -d --rm --name base-wealth-test-mongo -p 27018:27017 mongo:7
-$env:MONGO_TEST_URI = "mongodb://localhost:27018"; go test ./... -coverprofile=coverage.out; go tool cover -func=coverage.out | Select-Object -Last 1
+docker run -d --rm --name base-wealth-test-mongo -p 27018:27017 mongo:7 --replSet rs0 --bind_ip_all
+docker exec base-wealth-test-mongo mongosh --quiet --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]})"
+$env:MONGO_TEST_URI = "mongodb://localhost:27018/?directConnection=true"; go test ./... -coverprofile=coverage.out; go tool cover -func=coverage.out | Select-Object -Last 1
 docker stop base-wealth-test-mongo
 ```
 (`make test-coverage` hace lo mismo y falla por debajo del 85%.)
@@ -128,9 +131,16 @@ versión llegó a crearlo, `db.holdings.dropIndex("user_id_1_created_at_1")`.
 ## 🗄️ Persistencia: MongoDB
 
 El adaptador `internal/infrastructure/adapter/outbound/persistence/mongo/` implementa los puertos outbound
-(`HoldingRepository`, `PlatformRepository`, `SnapshotRepository`, `WealthAggregationPort`) sobre las
-colecciones `holdings` y `net_worth_snapshots`. Los montos se guardan como decimales en texto
-(escala 2) para no perder precisión.
+(`HoldingRepository`, `PlatformRepository`, `SnapshotRepository`, `MovementRepository`, `QuotaRepository`,
+`WealthAggregationPort`, `TransactionManager`) sobre las colecciones `holdings`, `net_worth_snapshots`, `movements`
+(la actividad: cada cambio de valor) y `quotas` (contadores por usuario). Los montos se guardan como decimales en
+texto (escala 2) para no perder precisión.
+
+**Transacciones.** Cada cambio de valor se escribe junto con su movimiento en una transacción (alta, edición y baja
+de holdings, movimientos, deshacer): todo o nada. MongoDB solo tiene transacciones en un **replica set**: Atlas ya
+lo es (incluido el tier gratuito); en local, `compose.yaml` levanta uno de un nodo. Contra un `mongod` standalone la
+API arranca y lee igual, avisa en el log, y esas escrituras responden `503` (`.../transactions-unavailable`). Un
+volumen creado antes con el compose standalone sirve tal cual: el contenedor nuevo lo reinicia como replica set.
 
 Las plataformas no se guardan aparte: son los nombres que usan los holdings del usuario, sin distinguir mayúsculas
 ("Binance" y "binance" son la misma, escrita como en su holding más antiguo, y así la muestran todos los endpoints).
@@ -174,14 +184,17 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 - **Agregar usuarios:** en Supabase, *Authentication → Users → Add user* (email + contraseña). Los sign-ups públicos están
   desactivados a propósito: solo entra quien vos des de alta. No hay que tocar nada en la API: la primera vez que un usuario
   nuevo inicia sesión ve su dashboard vacío.
-- **Cuotas por usuario** (todas las cuentas comparten la base): hasta **1000 holdings** y **5000 snapshots** por cuenta.
-  Al superarlas la API responde `409` con `type` `.../limit-exceeded`.
+- **Cuotas por usuario** (todas las cuentas comparten la base): hasta **1000 holdings**, **5000 snapshots** y **20000
+  movimientos** por cuenta. Al superarlas la API responde `409` con `type` `.../limit-exceeded`. Los movimientos se
+  cuentan en `quotas`, dentro de la misma transacción: dos pedidos simultáneos del mismo usuario se serializan, así
+  que las cuotas de holdings y movimientos son exactas (borrar un holding siempre funciona: su `CLOSING` no cuenta).
 - **Borrar los datos de una cuenta** (p. ej. al eliminar al usuario en Supabase): sus datos en MongoDB no se borran solos.
   ```js
   // mongosh, con el id (UUID) del usuario de Supabase
   const uid = "<uuid>";
   // ("platforms" solo existe en bases de versiones anteriores)
-  ["holdings", "net_worth_snapshots", "platforms"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
+  ["holdings", "net_worth_snapshots", "movements", "platforms"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
+  db.quotas.deleteOne({ _id: uid });
   ```
 - **Tests:** `internal/infrastructure/app/multiuser_test.go` levanta la API completa (router, auth, servicios y MongoDB real)
   con un JWKS de prueba y verifica con dos usuarios que ninguno ve ni modifica holdings, plataformas, clases de activo,
@@ -198,9 +211,12 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `GET` | `/swagger`, `/api/v1/openapi.json` | — (documentación) | Basic auth si hay `DOCS_PASSWORD`; en Vercel, `404` sin ella |
 | `GET` | `/api/v1/wealth/summary` | Dashboard, Platforms (net worth, YTD, liquidez, desgloses) | Sí |
 | `GET` | `/api/v1/holdings` | Assets, drill-down de Platforms, contador | Sí |
-| `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva; `409` al superar 1000 holdings) | Sí |
-| `PATCH` | `/api/v1/holdings/{id}` | Edit asset (solo cambia lo enviado; la plataforma con la grafía existente; `404` si no existe o es ajeno) | Sí |
-| `DELETE` | `/api/v1/holdings/{id}` | Assets (borra también la plataforma si quedó vacía) | Sí |
+| `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva; registra su `OPENING`; `409` al superar 1000 holdings) | Sí |
+| `PATCH` | `/api/v1/holdings/{id}` | Edit asset (solo cambia lo enviado; un valor nuevo queda registrado según `valueChangeReason`; `404` si no existe o es ajeno) | Sí |
+| `DELETE` | `/api/v1/holdings/{id}` | Assets (registra su `CLOSING`; borra también la plataforma si quedó vacía) | Sí |
+| `GET` | `/api/v1/movements` | Activity y detalle de un asset (`holdingId`, `kind`, `from`, `to`, `limit`, `cursor`) | Sí |
+| `POST` | `/api/v1/movements` | Gain/loss, deposit/withdrawal, transfer (`409` si un valor quedaría negativo) | Sí |
+| `DELETE` | `/api/v1/movements/{id}` | Undo (revierte como delta; `409` si no se puede) | Sí |
 | `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts" | Sí |
 | `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets | Sí |
 | `GET` | `/api/v1/wealth/estimate?contribution&yieldPct&years` | Estimate (hitos fijos 150k/250k) | Sí |
