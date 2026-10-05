@@ -110,3 +110,16 @@ func (s *SnapshotService) GetSnapshots(
 
 	return result, nil
 }
+
+// DeleteSnapshot removes one of the user's snapshots. The change shown on the next one is computed on read
+// (GetSnapshots), so it's then measured against the one before the deleted one.
+func (s *SnapshotService) DeleteSnapshot(ctx context.Context, userId model.UserId, id model.SnapshotId) error {
+	deleted, err := s.snapshotRepo.DeleteById(ctx, userId, id)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return appErrors.NewResourceNotFoundError(fmt.Sprintf("Snapshot %s not found", id.String()))
+	}
+	return nil
+}

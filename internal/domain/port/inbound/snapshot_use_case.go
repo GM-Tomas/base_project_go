@@ -15,4 +15,5 @@ type SnapshotWithChange struct {
 type SnapshotUseCase interface {
 	CreateSnapshot(ctx context.Context, userId model.UserId) (model.NetWorthSnapshot, error)
 	GetSnapshots(ctx context.Context, userId model.UserId) ([]SnapshotWithChange, error)
+	DeleteSnapshot(ctx context.Context, userId model.UserId, id model.SnapshotId) error
 }

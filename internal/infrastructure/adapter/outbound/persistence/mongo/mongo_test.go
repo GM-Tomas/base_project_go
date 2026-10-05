@@ -153,6 +153,63 @@ func TestHoldingRepository(t *testing.T) {
 	assert.Equal(t, int64(1), n)
 }
 
+func TestHoldingRepository_FindByIdAndUpdate(t *testing.T) {
+	db := testDB(t)
+	repo := NewMongoHoldingRepository(db)
+	ctx := context.Background()
+	owner, other := newUser(), newUser()
+	h := holding(owner, "BTC", "Crypto", "Binance", 100, at(1))
+	_, err := repo.Save(ctx, h)
+	require.NoError(t, err)
+
+	got, err := repo.FindById(ctx, owner, h.Id)
+	require.NoError(t, err)
+	assert.Equal(t, &h, got)
+	for _, missing := range []struct {
+		user model.UserId
+		id   model.HoldingId
+	}{{other, h.Id}, {owner, model.NewHoldingId()}} {
+		got, err = repo.FindById(ctx, missing.user, missing.id)
+		require.NoError(t, err)
+		assert.Nil(t, got, "someone else's holding is as missing as one that never was")
+	}
+
+	edited := h
+	edited.Name, edited.Value, edited.UpdatedAt = "Bitcoin", model.MustMoneyFromFloat(250.5), at(2)
+	found, err := repo.Update(ctx, edited)
+	require.NoError(t, err)
+	assert.True(t, found)
+	got, err = repo.FindById(ctx, owner, h.Id)
+	require.NoError(t, err)
+	assert.Equal(t, &edited, got)
+
+	// Never someone else's, and never an insert: an edit racing a delete doesn't bring the holding back.
+	hijack := edited
+	hijack.UserId, hijack.Name = other, "Hijacked"
+	ghost := holding(owner, "Ghost", "Cash", "Bank", 1, at(3))
+	for _, h := range []model.Holding{hijack, ghost} {
+		found, err = repo.Update(ctx, h)
+		require.NoError(t, err)
+		assert.False(t, found)
+	}
+	all, err := repo.FindAll(ctx, owner)
+	require.NoError(t, err)
+	assert.Equal(t, []model.Holding{edited}, all)
+	all, err = repo.FindAll(ctx, other)
+	require.NoError(t, err)
+	assert.Empty(t, all)
+
+	// A stored holding the domain can't read is an error, and so is a failed query.
+	bad := uuid.NewString()
+	insertRaw(t, db, "holdings", bson.M{"_id": bad, "user_id": owner.String(), "asset_class": "", "platform_name": "Bank", "value_usd": "1.00"})
+	_, err = repo.FindById(ctx, owner, model.HoldingIdFromUUID(uuid.MustParse(bad)))
+	assert.Error(t, err)
+	_, err = repo.FindById(cancelled(), owner, h.Id)
+	assert.Error(t, err)
+	_, err = repo.Update(cancelled(), edited)
+	assert.Error(t, err)
+}
+
 func TestHoldingRepository_SaveNeverOverwritesAnotherUsersHolding(t *testing.T) {
 	db := testDB(t)
 	repo := NewMongoHoldingRepository(db)

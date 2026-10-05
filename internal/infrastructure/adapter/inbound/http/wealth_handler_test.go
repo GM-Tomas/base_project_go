@@ -132,3 +132,23 @@ func TestWealthHandler_EstimateValidation(t *testing.T) {
 		assert.Contains(t, rec.Header().Get("Content-Type"), "application/problem+json", query)
 	}
 }
+
+func TestWealthHandler_DeleteSnapshot(t *testing.T) {
+	router, _, _, _, _ := setupTestRouter(model.NewUserId(uuid.New()))
+
+	rec := do(t, router, "POST", "/api/v1/wealth/snapshots", nil)
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var snap dto.SnapshotResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&snap))
+
+	rec = do(t, router, "DELETE", "/api/v1/wealth/snapshots/"+snap.Id, nil)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	rec = do(t, router, "GET", "/api/v1/wealth/snapshots", nil)
+	assert.JSONEq(t, "[]", rec.Body.String())
+
+	for _, id := range []string{snap.Id, "not-a-uuid"} {
+		rec = do(t, router, "DELETE", "/api/v1/wealth/snapshots/"+id, nil)
+		assert.Equal(t, http.StatusNotFound, rec.Code, id)
+		assert.Contains(t, rec.Body.String(), "Snapshot "+id+" not found")
+	}
+}

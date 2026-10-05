@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"math"
 	"sort"
 	"strings"
 	"testing"
@@ -25,6 +26,10 @@ type mockHoldingRepo struct {
 	countCalls    int
 	deleteErr     error
 	beforeSave    func() // lands a "concurrent" request between the service's checks and its insert
+	findErr       error
+	updateErr     error
+	beforeUpdate  func() // lands a "concurrent" request between the service's read and its update
+	updates       int
 }
 
 func newMockHoldingRepo() *mockHoldingRepo {
@@ -41,6 +46,33 @@ func (m *mockHoldingRepo) FindAll(ctx context.Context, userId model.UserId) ([]m
 		}
 	}
 	return list, nil
+}
+
+func (m *mockHoldingRepo) FindById(ctx context.Context, userId model.UserId, id model.HoldingId) (*model.Holding, error) {
+	if m.findErr != nil {
+		return nil, m.findErr
+	}
+	h, ok := m.holdings[id.String()]
+	if !ok || h.UserId != userId {
+		return nil, nil
+	}
+	return &h, nil
+}
+
+func (m *mockHoldingRepo) Update(ctx context.Context, holding model.Holding) (bool, error) {
+	if m.beforeUpdate != nil {
+		m.beforeUpdate()
+	}
+	if m.updateErr != nil {
+		return false, m.updateErr
+	}
+	h, ok := m.holdings[holding.Id.String()]
+	if !ok || h.UserId != holding.UserId {
+		return false, nil
+	}
+	m.holdings[holding.Id.String()] = holding
+	m.updates++
+	return true, nil
 }
 
 func (m *mockHoldingRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
@@ -84,7 +116,8 @@ func (m *mockHoldingRepo) AssetClassesInUse(ctx context.Context, userId model.Us
 
 // mockPlatformRepo derives platforms from the holdings, like the real one.
 type mockPlatformRepo struct {
-	holdings *mockHoldingRepo
+	holdings     *mockHoldingRepo
+	canonicalErr error
 }
 
 func newMockPlatformRepo(holdings *mockHoldingRepo) *mockPlatformRepo {
@@ -106,6 +139,9 @@ func (m *mockPlatformRepo) FindAll(ctx context.Context, userId model.UserId) ([]
 }
 
 func (m *mockPlatformRepo) Canonical(ctx context.Context, userId model.UserId, name model.PlatformName) (model.PlatformName, error) {
+	if m.canonicalErr != nil {
+		return model.PlatformName{}, m.canonicalErr
+	}
 	for _, h := range m.holdings.holdings {
 		if h.UserId == userId && strings.EqualFold(h.Platform.Value(), name.Value()) {
 			return h.Platform, nil
@@ -294,4 +330,144 @@ func TestHoldingService_ClientHangingUpAfterTheInsertDoesNotSkipTheCap(t *testin
 	assert.ErrorAs(t, err, &appErrors.LimitExceededError{})
 	n, _ := holdingRepo.Count(context.Background(), user)
 	assert.Equal(t, int64(model.MaxHoldingsPerUser), n)
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestHoldingService_UpdateChangesOnlyWhatIsSent(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	platformRepo := newMockPlatformRepo(holdingRepo)
+	created := time.Date(2026, 1, 10, 9, 0, 0, 0, time.UTC)
+	now := created
+	svc := service.NewHoldingService(holdingRepo, platformRepo, func() time.Time { return now })
+	ctx := context.Background()
+	user := model.NewUserId(uuid.New())
+	create := func(name, platform string) model.Holding {
+		h, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: user, Name: name, AssetClass: "Crypto", Platform: platform, ValueUsd: 100})
+		require.NoError(t, err)
+		return h
+	}
+	btc := create("BTC", "Ledger")
+	create("ETH", "Binance")
+	now = created.Add(48 * time.Hour)
+
+	got, err := svc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{UserId: user, Id: btc.Id, ValueUsd: ptr(20000.005)})
+	require.NoError(t, err)
+	assert.Equal(t, "20000.01", got.Value.String())
+	assert.Equal(t, "BTC", got.Name)
+	assert.Equal(t, "Crypto", got.AssetClass.Value())
+	assert.Equal(t, "Ledger", got.Platform.Value())
+	assert.Equal(t, created, got.CreatedAt)
+	assert.Equal(t, now, got.UpdatedAt)
+	assert.Equal(t, got, holdingRepo.holdings[btc.Id.String()], "what's returned is what's stored")
+
+	// Moving it to a platform the user has under another case keeps that spelling, and the platform it
+	// left (its only holding) is gone.
+	got, err = svc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{
+		UserId: user, Id: btc.Id, Name: ptr("  Bitcoin   (cold) "), AssetClass: ptr("Store of value"), Platform: ptr("binance"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Bitcoin (cold)", got.Name)
+	assert.Equal(t, "Store of value", got.AssetClass.Value())
+	assert.Equal(t, "Binance", got.Platform.Value())
+	platforms, _ := platformRepo.FindAll(ctx, user)
+	require.Len(t, platforms, 1)
+	assert.Equal(t, "Binance", platforms[0].Name.Value())
+}
+
+func TestHoldingService_UpdateWithNothingNewWritesNothing(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	created := time.Date(2026, 1, 10, 9, 0, 0, 0, time.UTC)
+	now := created
+	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), func() time.Time { return now })
+	user := model.NewUserId(uuid.New())
+	h, err := svc.CreateHolding(context.Background(), inbound.CreateHoldingCommand{UserId: user, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
+	require.NoError(t, err)
+	now = created.Add(time.Hour)
+
+	for name, cmd := range map[string]inbound.UpdateHoldingCommand{
+		"empty":       {},
+		"same values": {Name: ptr(" BTC "), AssetClass: ptr("Crypto"), Platform: ptr("ledger"), ValueUsd: ptr(100.004)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd.UserId, cmd.Id = user, h.Id
+			got, err := svc.UpdateHolding(context.Background(), cmd)
+			require.NoError(t, err)
+			assert.Equal(t, created, got.UpdatedAt)
+			assert.Zero(t, holdingRepo.updates)
+		})
+	}
+}
+
+func TestHoldingService_UpdateValidatesBeforeReading(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
+	holdingRepo.findErr = errors.New("must not be read")
+	long := strings.Repeat("x", model.MaxPlatformNameLength+1)
+
+	for name, tc := range map[string]struct {
+		cmd  inbound.UpdateHoldingCommand
+		want error
+	}{
+		"name too long":  {inbound.UpdateHoldingCommand{Name: ptr(long)}, model.ErrLabelTooLong},
+		"blank class":    {inbound.UpdateHoldingCommand{AssetClass: ptr(" ")}, model.ErrBlankLabel},
+		"blank platform": {inbound.UpdateHoldingCommand{Platform: ptr("")}, model.ErrBlankLabel},
+		"negative value": {inbound.UpdateHoldingCommand{ValueUsd: ptr(-1.0)}, model.ErrNegativeMoney},
+		"NaN value":      {inbound.UpdateHoldingCommand{ValueUsd: ptr(math.NaN())}, model.ErrNonFiniteMoney},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := svc.UpdateHolding(context.Background(), tc.cmd)
+			assert.ErrorIs(t, err, tc.want)
+		})
+	}
+}
+
+func TestHoldingService_UpdateOfAMissingHoldingIsNotFound(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	svc := service.NewHoldingService(holdingRepo, newMockPlatformRepo(holdingRepo), fixedClock(time.Now()))
+	ctx := context.Background()
+	owner, other := model.NewUserId(uuid.New()), model.NewUserId(uuid.New())
+	h, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: owner, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
+	require.NoError(t, err)
+
+	// Someone else's holding is as missing as one that never was.
+	for _, cmd := range []inbound.UpdateHoldingCommand{
+		{UserId: other, Id: h.Id, Name: ptr("Mine now")},
+		{UserId: owner, Id: model.NewHoldingId(), Name: ptr("Ghost")},
+	} {
+		_, err := svc.UpdateHolding(ctx, cmd)
+		assert.ErrorAs(t, err, &appErrors.ResourceNotFoundError{})
+	}
+	assert.Equal(t, "BTC", holdingRepo.holdings[h.Id.String()].Name)
+
+	// Deleted (from another device) between the read and the write: not found, and not brought back.
+	holdingRepo.beforeUpdate = func() { delete(holdingRepo.holdings, h.Id.String()) }
+	_, err = svc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{UserId: owner, Id: h.Id, Name: ptr("Edited")})
+	assert.ErrorAs(t, err, &appErrors.ResourceNotFoundError{})
+	assert.Empty(t, holdingRepo.holdings)
+}
+
+func TestHoldingService_UpdateReturnsStorageErrors(t *testing.T) {
+	holdingRepo := newMockHoldingRepo()
+	platformRepo := newMockPlatformRepo(holdingRepo)
+	svc := service.NewHoldingService(holdingRepo, platformRepo, fixedClock(time.Now()))
+	ctx := context.Background()
+	user := model.NewUserId(uuid.New())
+	h, err := svc.CreateHolding(ctx, inbound.CreateHoldingCommand{UserId: user, Name: "BTC", AssetClass: "Crypto", Platform: "Ledger", ValueUsd: 100})
+	require.NoError(t, err)
+	update := func() error {
+		_, err := svc.UpdateHolding(ctx, inbound.UpdateHoldingCommand{UserId: user, Id: h.Id, Platform: ptr("Binance")})
+		return err
+	}
+
+	holdingRepo.findErr = errors.New("find failed")
+	assert.EqualError(t, update(), "find failed")
+	holdingRepo.findErr = nil
+
+	platformRepo.canonicalErr = errors.New("canonical failed")
+	assert.EqualError(t, update(), "canonical failed")
+	platformRepo.canonicalErr = nil
+
+	holdingRepo.updateErr = errors.New("update failed")
+	assert.EqualError(t, update(), "update failed")
 }

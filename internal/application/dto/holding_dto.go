@@ -9,6 +9,14 @@ type CreateHoldingRequest struct {
 	ValueUsd   float64 `json:"valueUsd"`
 }
 
+// UpdateHoldingRequest is PATCH /holdings/{id}: only the fields sent change.
+type UpdateHoldingRequest struct {
+	Name       Optional[string]  `json:"name"`
+	AssetClass Optional[string]  `json:"assetClass"`
+	Platform   Optional[string]  `json:"platform"`
+	ValueUsd   Optional[float64] `json:"valueUsd"`
+}
+
 type HoldingResponse struct {
 	Id         string    `json:"id"`
 	Name       string    `json:"name"`

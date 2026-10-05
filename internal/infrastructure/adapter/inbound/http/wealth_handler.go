@@ -10,6 +10,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/adapter/inbound/http/middleware"
+	"github.com/go-chi/chi/v5"
 )
 
 // The Estimate view shows exactly two milestones ("next" and "bigger").
@@ -218,4 +219,26 @@ func (h *WealthHandler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(res)
+}
+
+func (h *WealthHandler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	userId, err := middleware.GetUserFromContext(r.Context())
+	if err != nil {
+		middleware.WriteUnauthorized(w, r, "")
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	snapshotId, err := model.ParseSnapshotId(idStr)
+	if err != nil {
+		middleware.HandleError(w, r, errors.NewResourceNotFoundError("Snapshot "+idStr+" not found"))
+		return
+	}
+
+	if err := h.snapshotUseCase.DeleteSnapshot(r.Context(), userId, snapshotId); err != nil {
+		middleware.HandleError(w, r, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

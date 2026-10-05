@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
@@ -59,15 +60,32 @@ func (r *MongoHoldingRepository) FindAll(
 	return holdings, nil
 }
 
+func (r *MongoHoldingRepository) FindById(
+	ctx context.Context,
+	userId model.UserId,
+	id model.HoldingId,
+) (*model.Holding, error) {
+	var doc holdingDoc
+	err := r.coll.FindOne(ctx, bson.M{"_id": id.UUID().String(), "user_id": userId.UUID().String()}).Decode(&doc)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	h, err := mapDocToHolding(doc)
+	if err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
 func (r *MongoHoldingRepository) Count(ctx context.Context, userId model.UserId) (int64, error) {
 	return r.coll.CountDocuments(ctx, bson.M{"user_id": userId.UUID().String()})
 }
 
-func (r *MongoHoldingRepository) Save(
-	ctx context.Context,
-	holding model.Holding,
-) (model.Holding, error) {
-	doc := holdingDoc{
+func toHoldingDoc(holding model.Holding) holdingDoc {
+	return holdingDoc{
 		ID:           holding.Id.UUID().String(),
 		UserID:       holding.UserId.UUID().String(),
 		Name:         holding.Name,
@@ -77,6 +95,13 @@ func (r *MongoHoldingRepository) Save(
 		CreatedAt:    holding.CreatedAt,
 		UpdatedAt:    holding.UpdatedAt,
 	}
+}
+
+func (r *MongoHoldingRepository) Save(
+	ctx context.Context,
+	holding model.Holding,
+) (model.Holding, error) {
+	doc := toHoldingDoc(holding)
 
 	// The owner is part of the filter: an id that belongs to someone else matches nothing, and the
 	// upsert's insert then fails on the duplicate _id instead of overwriting their holding.
@@ -90,6 +115,17 @@ func (r *MongoHoldingRepository) Save(
 	}
 
 	return holding, nil
+}
+
+// Update replaces the holding only where it already is the user's: no upsert, so it can't bring back a
+// holding deleted since it was read.
+func (r *MongoHoldingRepository) Update(ctx context.Context, holding model.Holding) (bool, error) {
+	doc := toHoldingDoc(holding)
+	res, err := r.coll.ReplaceOne(ctx, bson.M{"_id": doc.ID, "user_id": doc.UserID}, doc)
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
 }
 
 func (r *MongoHoldingRepository) DeleteById(

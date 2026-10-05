@@ -199,9 +199,11 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `GET` | `/api/v1/wealth/summary` | Dashboard, Platforms (net worth, YTD, liquidez, desgloses) | Sí |
 | `GET` | `/api/v1/holdings` | Assets, drill-down de Platforms, contador | Sí |
 | `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva; `409` al superar 1000 holdings) | Sí |
+| `PATCH` | `/api/v1/holdings/{id}` | Edit asset (solo cambia lo enviado; la plataforma con la grafía existente; `404` si no existe o es ajeno) | Sí |
 | `DELETE` | `/api/v1/holdings/{id}` | Assets (borra también la plataforma si quedó vacía) | Sí |
 | `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts" | Sí |
 | `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets | Sí |
 | `GET` | `/api/v1/wealth/estimate?contribution&yieldPct&years` | Estimate (hitos fijos 150k/250k) | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | History | Sí |
 | `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (`409` si ya hay uno en ese segundo o al superar 5000) | Sí |
+| `DELETE` | `/api/v1/wealth/snapshots/{id}` | History → "Delete checkpoint" (`404` si no existe o es ajeno) | Sí |

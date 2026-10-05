@@ -277,6 +277,37 @@ func TestMultiUser_EachAccountOnlySeesAndChangesItsOwnData(t *testing.T) {
 	assert.Equal(t, 501.0, e.summary(asBob).NetWorth.Usd)
 }
 
+func TestMultiUser_EditsAndSnapshotDeletesOnlyReachTheOwner(t *testing.T) {
+	e := newE2E(t, "")
+	asAlice, asBob := e.token(uuid.New(), nil), e.token(uuid.New(), nil)
+	btc := e.create(asAlice, "BTC", "Crypto", "Binance", 1000)
+	e.create(asAlice, "ETH", "Crypto", "Ledger", 10)
+	e.create(asBob, "ETH", "Crypto", "Ledger", 1)
+
+	// Alice moves BTC to her Ledger (spelled as she spells it) and updates its value; Binance is gone.
+	var edited holdingRes
+	require.Equal(t, http.StatusOK, e.do(asAlice, "PATCH", "/api/v1/holdings/"+btc.Id, map[string]any{"platform": "ledger", "valueUsd": 1200}, &edited))
+	assert.Equal(t, "Ledger", edited.Platform)
+	assert.Equal(t, 1200.0, edited.ValueUsd)
+	assert.Equal(t, []string{"Ledger"}, e.platformNames(asAlice))
+	assert.Equal(t, 1210.0, e.summary(asAlice).NetWorth.Usd)
+
+	// Bob can't edit her holding or delete her snapshot, even knowing their ids.
+	var snap struct{ Id string }
+	require.Equal(t, http.StatusCreated, e.do(asAlice, "POST", "/api/v1/wealth/snapshots", nil, &snap))
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "PATCH", "/api/v1/holdings/"+btc.Id, map[string]any{"valueUsd": 1}, nil))
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "DELETE", "/api/v1/wealth/snapshots/"+snap.Id, nil, nil))
+	assert.Equal(t, 1210.0, e.summary(asAlice).NetWorth.Usd)
+	assert.Equal(t, 1.0, e.summary(asBob).NetWorth.Usd)
+	var snaps []struct{ Id string }
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/wealth/snapshots", nil, &snaps))
+	require.Len(t, snaps, 1)
+
+	assert.Equal(t, http.StatusNoContent, e.do(asAlice, "DELETE", "/api/v1/wealth/snapshots/"+snap.Id, nil, nil))
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/wealth/snapshots", nil, &snaps))
+	assert.Empty(t, snaps)
+}
+
 func TestMultiUser_RejectsAnythingButAValidTokenForThisProject(t *testing.T) {
 	e := newE2E(t, "")
 	user := uuid.New()

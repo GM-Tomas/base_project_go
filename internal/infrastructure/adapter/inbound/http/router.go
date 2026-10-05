@@ -81,6 +81,7 @@ func NewRouter(params RouterParams) http.Handler {
 			// Exactly the surface the frontend consumes (base_project_fe/src/lib/api.ts).
 			r.Get("/holdings", params.HoldingHandler.GetAllHoldings)
 			r.Post("/holdings", params.HoldingHandler.CreateHolding)
+			r.Patch("/holdings/{id}", params.HoldingHandler.UpdateHolding)
 			r.Delete("/holdings/{id}", params.HoldingHandler.DeleteHolding)
 
 			r.Get("/platforms", params.PlatformHandler.GetAllPlatforms)
@@ -92,6 +93,7 @@ func NewRouter(params RouterParams) http.Handler {
 				r.Get("/estimate", params.WealthHandler.GetEstimate)
 				r.Get("/snapshots", params.WealthHandler.GetSnapshots)
 				r.Post("/snapshots", params.WealthHandler.CreateSnapshot)
+				r.Delete("/snapshots/{id}", params.WealthHandler.DeleteSnapshot)
 			})
 		})
 	})

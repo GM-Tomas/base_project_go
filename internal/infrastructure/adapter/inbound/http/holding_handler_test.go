@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,7 +169,7 @@ func TestRouter_OnlyExposesWhatTheFrontendUses(t *testing.T) {
 
 	for _, tc := range []struct{ method, path string }{
 		{"GET", "/api/v1/holdings/" + id},
-		{"PATCH", "/api/v1/holdings/" + id},
+		{"PUT", "/api/v1/holdings/" + id},
 		{"POST", "/api/v1/platforms"},
 		{"PATCH", "/api/v1/platforms/Binance"},
 		{"DELETE", "/api/v1/platforms/Binance"},
@@ -209,4 +210,82 @@ func TestHoldingHandler_PerUserCapIsAConflict(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&prob))
 	assert.Equal(t, middleware.ProblemBaseURI+"/limit-exceeded", prob.Type)
 	assert.Contains(t, prob.Detail, "1000 holdings")
+}
+
+func TestHoldingHandler_Update(t *testing.T) {
+	userId := model.NewUserId(uuid.New())
+	router, _, _, _, _ := setupTestRouter(userId)
+	create := func(name, platform string) dto.HoldingResponse {
+		rec := do(t, router, "POST", "/api/v1/holdings", dto.CreateHoldingRequest{Name: name, AssetClass: "Crypto", Platform: platform, ValueUsd: 2250})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		var h dto.HoldingResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&h))
+		return h
+	}
+	sol := create("Solana", "Binance")
+	create("BTC", "Ledger")
+
+	// Only what's sent changes; the platform is spelled as the user's holdings spell it, and the one it
+	// left (its only holding) is gone.
+	rec := do(t, router, "PATCH", "/api/v1/holdings/"+sol.Id, json.RawMessage(`{"name": "  Solana   (SOL) ", "platform": "ledger", "valueUsd": 2300.555}`))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got dto.HoldingResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&got))
+	assert.Equal(t, "Solana (SOL)", got.Name)
+	assert.Equal(t, "Crypto", got.AssetClass)
+	assert.Equal(t, "Ledger", got.Platform)
+	assert.Equal(t, 2300.56, got.ValueUsd)
+	assert.Equal(t, sol.CreatedAt, got.CreatedAt)
+	rec = do(t, router, "GET", "/api/v1/platforms", nil)
+	var platforms []dto.PlatformResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&platforms))
+	require.Len(t, platforms, 1)
+	assert.Equal(t, "Ledger", platforms[0].Name)
+
+	// Nothing sent, nothing changed.
+	rec = do(t, router, "PATCH", "/api/v1/holdings/"+sol.Id, json.RawMessage(`{}`))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var same dto.HoldingResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&same))
+	assert.Equal(t, got, same)
+}
+
+func TestHoldingHandler_UpdateValidation(t *testing.T) {
+	userId := model.NewUserId(uuid.New())
+	router, holdingRepo, _, _, _ := setupTestRouter(userId)
+	h := model.Holding{Id: model.NewHoldingId(), UserId: userId, Name: "BTC", AssetClass: model.MustAssetClass("Crypto"), Platform: model.MustPlatformName("Ledger"), Value: model.MustMoneyFromFloat(1)}
+	holdingRepo.holdings[h.Id.String()] = h
+	path := "/api/v1/holdings/" + h.Id.String()
+	problem := func(rec *httptest.ResponseRecorder) middleware.ProblemDetail {
+		t.Helper()
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		var prob middleware.ProblemDetail
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&prob))
+		return prob
+	}
+
+	// Every field a holding has is required: null and blanks are refused, with the create messages.
+	prob := problem(do(t, router, "PATCH", path, json.RawMessage(`{"name": null, "assetClass": "  ", "platform": null, "valueUsd": -1}`)))
+	assert.Equal(t, middleware.ProblemBaseURI+"/validation", prob.Type)
+	assert.Equal(t, "Name is required; Asset class is required; Platform is required; Value must not be negative", prob.Detail)
+	assert.Len(t, prob.Errors, 4)
+
+	assert.Equal(t, "Value is required", problem(do(t, router, "PATCH", path, json.RawMessage(`{"valueUsd": null}`))).Detail)
+	assert.Equal(t, "Value is too large", problem(do(t, router, "PATCH", path, json.RawMessage(`{"valueUsd": 1e30}`))).Detail)
+	assert.Equal(t, "Malformed JSON body", problem(do(t, router, "PATCH", path, json.RawMessage(`{"name": 5}`))).Detail)
+	// The domain's own limits, as on create.
+	prob = problem(do(t, router, "PATCH", path, json.RawMessage(`{"platform": "`+strings.Repeat("x", model.MaxPlatformNameLength+1)+`"}`)))
+	assert.Contains(t, prob.Detail, "exceeds max length")
+
+	assert.Equal(t, h, holdingRepo.holdings[h.Id.String()], "nothing was changed")
+}
+
+func TestHoldingHandler_UpdateOfAMissingHoldingIsNotFound(t *testing.T) {
+	router, _, _, _, _ := setupTestRouter(model.NewUserId(uuid.New()))
+
+	for _, id := range []string{uuid.NewString(), "not-a-uuid"} {
+		rec := do(t, router, "PATCH", "/api/v1/holdings/"+id, json.RawMessage(`{"name": "x"}`))
+		assert.Equal(t, http.StatusNotFound, rec.Code, id)
+		assert.Contains(t, rec.Body.String(), "Holding "+id+" not found")
+	}
 }

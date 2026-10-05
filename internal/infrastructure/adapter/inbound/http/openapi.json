@@ -358,6 +358,51 @@
         }
       }
     },
+    "/api/v1/wealth/snapshots/{id}": {
+      "delete": {
+        "tags": [
+          "Wealth"
+        ],
+        "summary": "Elimina un snapshot",
+        "description": "Borra el snapshot indicado. La variación del snapshot siguiente se calcula al leer (`GET /wealth/snapshots`), así que pasa a medirse contra el anterior que queda; el YTD del resumen también, si el borrado era su base.",
+        "operationId": "deleteSnapshot",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Identificador UUID del snapshot",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "example": "741e176b-9c29-4bd9-8a3e-0c6f0cc1ba27"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Snapshot eliminado (sin contenido)"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
+          }
+        }
+      }
+    },
     "/api/v1/holdings": {
       "get": {
         "tags": [
@@ -472,6 +517,73 @@
       }
     },
     "/api/v1/holdings/{id}": {
+      "patch": {
+        "tags": [
+          "Holdings"
+        ],
+        "summary": "Edita una posición financiera",
+        "description": "Cambia solo los campos enviados (*merge patch*): nombre, clase, plataforma y/o valor, con las mismas validaciones y mensajes que el alta. Los cuatro son obligatorios en un holding, así que `null` es un error de validación. La plataforma se guarda con la grafía que ya usan los holdings del usuario (sin distinguir mayúsculas); si el holding era el único de su plataforma anterior, esa plataforma desaparece. Un cuerpo vacío (`{}`) o con los valores actuales no escribe nada ni cambia `updatedAt`.",
+        "operationId": "updateHolding",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Identificador UUID de la posición",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "example": "f3b890a5-2962-4217-b714-3d07e60fa7e2"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateHoldingRequest"
+              },
+              "example": {
+                "platform": "Ledger",
+                "valueUsd": 20150.5
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "El holding como quedó",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldingResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
+          }
+        }
+      },
       "delete": {
         "tags": [
           "Holdings"
@@ -1217,6 +1329,37 @@
               "$ref": "#/components/schemas/FieldError"
             },
             "description": "Lista de errores de validación a nivel campo"
+          }
+        }
+      },
+      "UpdateHoldingRequest": {
+        "type": "object",
+        "description": "Campos a cambiar; los ausentes quedan como están.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "example": "Bitcoin (cold wallet)"
+          },
+          "assetClass": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "example": "Crypto"
+          },
+          "platform": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "example": "Ledger"
+          },
+          "valueUsd": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0.0,
+            "maximum": 1000000000000000.0,
+            "example": 20150.5
           }
         }
       }

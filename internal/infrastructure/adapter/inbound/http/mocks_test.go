@@ -31,6 +31,23 @@ func (m *mockHoldingRepo) FindAll(ctx context.Context, userId model.UserId) ([]m
 	return list, nil
 }
 
+func (m *mockHoldingRepo) FindById(ctx context.Context, userId model.UserId, id model.HoldingId) (*model.Holding, error) {
+	h, ok := m.holdings[id.String()]
+	if !ok || h.UserId != userId {
+		return nil, nil
+	}
+	return &h, nil
+}
+
+func (m *mockHoldingRepo) Update(ctx context.Context, holding model.Holding) (bool, error) {
+	h, ok := m.holdings[holding.Id.String()]
+	if !ok || h.UserId != holding.UserId {
+		return false, nil
+	}
+	m.holdings[holding.Id.String()] = holding
+	return true, nil
+}
+
 func (m *mockHoldingRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
 	all, _ := m.FindAll(ctx, userId)
 	return int64(len(all)), nil

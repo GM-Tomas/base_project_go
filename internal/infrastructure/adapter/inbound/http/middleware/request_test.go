@@ -64,10 +64,10 @@ func TestCorsMiddleware(t *testing.T) {
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }),
 	)
 
-	preflight := func(origin string) *httptest.ResponseRecorder {
+	preflight := func(origin string, method ...string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodOptions, "/api/v1/holdings", nil)
 		req.Header.Set("Origin", origin)
-		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+		req.Header.Set("Access-Control-Request-Method", append(method, http.MethodPost)[0])
 		req.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -77,6 +77,12 @@ func TestCorsMiddleware(t *testing.T) {
 	allowed := preflight("http://localhost:3000")
 	assert.Equal(t, "http://localhost:3000", allowed.Header().Get("Access-Control-Allow-Origin"))
 	assert.Contains(t, allowed.Header().Get("Access-Control-Allow-Methods"), http.MethodPost)
+	// Edits are PATCH (and PUT): a browser asks first, and must be told yes.
+	for _, method := range []string{http.MethodPatch, http.MethodPut, http.MethodDelete} {
+		rec := preflight("http://localhost:3000", method)
+		assert.Equal(t, "http://localhost:3000", rec.Header().Get("Access-Control-Allow-Origin"), method)
+		assert.Contains(t, rec.Header().Get("Access-Control-Allow-Methods"), method)
+	}
 
 	assert.Empty(t, preflight("https://evil.example.com").Header().Get("Access-Control-Allow-Origin"))
 }

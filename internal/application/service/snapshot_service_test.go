@@ -222,3 +222,25 @@ func TestSnapshotService_ClientHangingUpAfterTheInsertDoesNotSkipTheCap(t *testi
 	n, _ := snapshotRepo.Count(context.Background(), user)
 	assert.Equal(t, int64(model.MaxSnapshotsPerUser), n)
 }
+
+func TestSnapshotService_DeleteSnapshot(t *testing.T) {
+	repo := newMockSnapshotRepo()
+	svc := service.NewSnapshotService(repo, &mockWealthAggregationPort{netWorth: model.MustMoneyFromFloat(100)}, fixedClock(time.Now()))
+	ctx := context.Background()
+	owner, other := model.NewUserId(uuid.New()), model.NewUserId(uuid.New())
+	snap, err := svc.CreateSnapshot(ctx, owner)
+	require.NoError(t, err)
+
+	// Someone else's snapshot is as missing as one that never was.
+	assert.ErrorAs(t, svc.DeleteSnapshot(ctx, other, snap.Id), &appErrors.ResourceNotFoundError{})
+	require.Len(t, repo.snapshots, 1)
+
+	require.NoError(t, svc.DeleteSnapshot(ctx, owner, snap.Id))
+	assert.Empty(t, repo.snapshots)
+	err = svc.DeleteSnapshot(ctx, owner, snap.Id)
+	assert.ErrorAs(t, err, &appErrors.ResourceNotFoundError{})
+	assert.Contains(t, err.Error(), snap.Id.String())
+
+	repo.deleteErr = errors.New("db down")
+	assert.EqualError(t, svc.DeleteSnapshot(ctx, owner, snap.Id), "db down")
+}
