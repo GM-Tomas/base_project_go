@@ -4,9 +4,10 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 )
 
-// CalculateYtdGrowth computes the YTD percentage growth against yearStartSnapshot or earliestSnapshot.
+// CalculateYtdGrowth computes the YTD percentage growth of the net worth against yearStartSnapshot or
+// earliestSnapshot. A baseline that isn't above zero has nothing to compare against: no baseline.
 func CalculateYtdGrowth(
-	currentNetWorth model.Money,
+	currentNetWorth model.SignedMoney,
 	yearStartSnapshot *model.NetWorthSnapshot,
 	earliestSnapshot *model.NetWorthSnapshot,
 ) model.YtdGrowth {

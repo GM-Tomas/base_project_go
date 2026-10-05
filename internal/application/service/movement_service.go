@@ -9,19 +9,22 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
+	"github.com/GM-Tomas/base_project_go/internal/parallel"
 )
 
 // Why each kind can't take a holding below zero, after "<name> is worth <value>: ".
 var whyNotBelowZero = map[model.MovementKind]string{
-	model.MovementLoss:       "a loss can't be larger than that.",
-	model.MovementWithdrawal: "you can't withdraw more than that.",
-	model.MovementTransfer:   "you can't transfer more than that.",
+	model.MovementLoss:        "a loss can't be larger than that.",
+	model.MovementWithdrawal:  "you can't withdraw more than that.",
+	model.MovementTransfer:    "you can't transfer more than that.",
+	model.MovementDebtPayment: "you can't pay more than that.",
 }
 
 type MovementService struct {
 	tx        outbound.TransactionManager
 	holdings  outbound.HoldingRepository
 	platforms outbound.PlatformRepository
+	debts     outbound.DebtRepository
 	movements outbound.MovementRepository
 	ledger    ledger
 	clock     Clock
@@ -31,6 +34,7 @@ func NewMovementService(
 	tx outbound.TransactionManager,
 	holdings outbound.HoldingRepository,
 	platforms outbound.PlatformRepository,
+	debts outbound.DebtRepository,
 	movements outbound.MovementRepository,
 	quotas outbound.QuotaRepository,
 	clock Clock,
@@ -42,6 +46,7 @@ func NewMovementService(
 		tx:        tx,
 		holdings:  holdings,
 		platforms: platforms,
+		debts:     debts,
 		movements: movements,
 		ledger:    ledger{movements: movements, quotas: quotas},
 		clock:     clock,
@@ -57,7 +62,7 @@ func (s *MovementService) RecordMovement(ctx context.Context, cmd inbound.Record
 	kind, err := model.ParseMovementKind(cmd.Kind)
 	if err != nil || !kind.IsRecordable() {
 		return inbound.MovementView{}, appErrors.NewValidationErrors([]appErrors.ValidationError{
-			{Field: "kind", Message: "kind must be one of GAIN, LOSS, DEPOSIT, WITHDRAWAL, TRANSFER"},
+			{Field: "kind", Message: "kind must be one of GAIN, LOSS, DEPOSIT, WITHDRAWAL, TRANSFER, DEBT_PAYMENT, DEBT_CHARGE, DEBT_INTEREST"},
 		})
 	}
 	amount, err := model.PositiveAmount(cmd.AmountUsd)
@@ -82,6 +87,9 @@ func (s *MovementService) RecordMovement(ctx context.Context, cmd inbound.Record
 
 	if kind == model.MovementTransfer {
 		return s.transfer(ctx, cmd, movement)
+	}
+	if kind.IsDebtKind() {
+		return s.debtMovement(ctx, cmd, movement)
 	}
 	if cmd.HoldingId == nil {
 		return inbound.MovementView{}, required("holdingId", "holdingId is required")
@@ -199,6 +207,70 @@ func (s *MovementService) transfer(ctx context.Context, cmd inbound.RecordMoveme
 	return inbound.MovementView{Movement: movement, HoldingExists: true, ToHoldingExists: true, Revertible: true}, nil
 }
 
+// debtMovement records a debt's payment, charge or interest: the debt's balance changes, and so does the
+// holding the money came from (a payment) or went to (a charge), if one is named, in one transaction.
+func (s *MovementService) debtMovement(ctx context.Context, cmd inbound.RecordMovementCommand, movement model.Movement) (inbound.MovementView, error) {
+	if cmd.DebtId == nil {
+		return inbound.MovementView{}, required("debtId", "debtId is required")
+	}
+	var holdingId *model.HoldingId
+	switch movement.Kind {
+	case model.MovementDebtPayment:
+		holdingId = cmd.FromHoldingId
+	case model.MovementDebtCharge:
+		holdingId = cmd.ToHoldingId
+	}
+
+	err := s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		d, err := findDebt(ctx, s.debts, cmd.UserId, *cmd.DebtId)
+		if err != nil {
+			return err
+		}
+		debtRef := model.DebtRefOf(d)
+		movement.Debt, movement.Holding, movement.ToHolding = &debtRef, nil, nil
+		var h model.Holding
+		if holdingId != nil {
+			if h, err = findHolding(ctx, s.holdings, cmd.UserId, *holdingId); err != nil {
+				return err
+			}
+			ref := model.RefOf(h)
+			if movement.Kind == model.MovementDebtPayment {
+				movement.Holding = &ref
+			} else {
+				movement.ToHolding = &ref
+			}
+		}
+
+		delta, _ := movement.DebtEffect()
+		updated, err := d.WithDelta(delta)
+		if errors.Is(err, model.ErrNegativeBalance) {
+			return appErrors.NewInsufficientBalanceError(fmt.Sprintf("%s only has %s left to pay.", d.Name, d.Balance.USD()))
+		}
+		updated.UpdatedAt = movement.CreatedAt
+		if err := updateDebt(ctx, s.debts, updated); err != nil {
+			return err
+		}
+		for _, change := range movement.Effect() {
+			after, err := h.WithDelta(change.Delta)
+			if errors.Is(err, model.ErrNegativeBalance) {
+				return insufficient(h, whyNotBelowZero[movement.Kind])
+			}
+			after.UpdatedAt = movement.CreatedAt
+			if err := updateHolding(ctx, s.holdings, after); err != nil {
+				return err
+			}
+		}
+		return s.ledger.record(ctx, movement)
+	})
+	if err != nil {
+		return inbound.MovementView{}, err
+	}
+	return inbound.MovementView{
+		Movement: movement, HoldingExists: movement.Holding != nil, ToHoldingExists: movement.ToHolding != nil,
+		DebtExists: true, Revertible: true,
+	}, nil
+}
+
 // underHoldingsCap is the holdings cap checked inside the transaction that adds one. The transaction also
 // counts a movement (ledger.record), which serializes it with the user's other changes: the count is exact.
 func (s *MovementService) underHoldingsCap(ctx context.Context, userId model.UserId) error {
@@ -222,14 +294,29 @@ func (s *MovementService) ListMovements(ctx context.Context, userId model.UserId
 		return inbound.MovementList{}, err
 	}
 	var ids []model.HoldingId
+	var debtIds []model.DebtId
 	for _, m := range page.Items {
 		for _, ref := range []*model.HoldingRef{m.Holding, m.ToHolding} {
 			if ref != nil {
 				ids = append(ids, ref.Id)
 			}
 		}
+		if m.Debt != nil {
+			debtIds = append(debtIds, m.Debt.Id)
+		}
 	}
-	existing, err := s.holdings.ExistingIds(ctx, userId, ids)
+	var existing map[model.HoldingId]bool
+	var existingDebts map[model.DebtId]bool
+	err = parallel.Run(ctx,
+		func(ctx context.Context) (err error) {
+			existing, err = s.holdings.ExistingIds(ctx, userId, ids)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			existingDebts, err = s.debts.ExistingIds(ctx, userId, debtIds)
+			return err
+		},
+	)
 	if err != nil {
 		return inbound.MovementList{}, err
 	}
@@ -244,6 +331,10 @@ func (s *MovementService) ListMovements(ctx context.Context, userId model.UserId
 		if m.ToHolding != nil {
 			view.ToHoldingExists = existing[m.ToHolding.Id]
 			view.Revertible = view.Revertible && view.ToHoldingExists
+		}
+		if m.Debt != nil {
+			view.DebtExists = existingDebts[m.Debt.Id]
+			view.Revertible = view.Revertible && view.DebtExists
 		}
 		list.Items[i] = view
 	}
@@ -277,6 +368,24 @@ func (s *MovementService) RevertMovement(ctx context.Context, userId model.UserI
 			}
 			reverted.UpdatedAt = now
 			if err := updateHolding(ctx, s.holdings, reverted); err != nil {
+				return err
+			}
+		}
+		if delta, ok := m.DebtEffect(); ok {
+			d, err := s.debts.FindById(ctx, userId, m.Debt.Id)
+			if err != nil {
+				return err
+			}
+			if d == nil {
+				return appErrors.NewNotRevertibleError(fmt.Sprintf("%s was removed, so this can't be undone.", m.Debt.Name))
+			}
+			reverted, err := d.WithDelta(delta.Neg())
+			if errors.Is(err, model.ErrNegativeBalance) {
+				return appErrors.NewInsufficientBalanceError(fmt.Sprintf(
+					"%s has %s left to pay: undoing this would take it below zero.", d.Name, d.Balance.USD()))
+			}
+			reverted.UpdatedAt = now
+			if err := updateDebt(ctx, s.debts, reverted); err != nil {
 				return err
 			}
 		}

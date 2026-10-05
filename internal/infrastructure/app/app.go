@@ -46,6 +46,7 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 	log.Println("MongoDB connection established successfully.")
 
 	holdingRepo := mongopersistence.NewMongoHoldingRepository(mongoDB)
+	debtRepo := mongopersistence.NewMongoDebtRepository(mongoDB)
 	platformRepo := mongopersistence.NewMongoPlatformRepository(mongoDB)
 	snapshotRepo := mongopersistence.NewMongoSnapshotRepository(mongoDB)
 	movementRepo := mongopersistence.NewMongoMovementRepository(mongoDB)
@@ -55,11 +56,12 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// Application Services
 	holdingService := appService.NewHoldingService(transactions, holdingRepo, platformRepo, movementRepo, quotaRepo, appService.RealClock)
-	movementService := appService.NewMovementService(transactions, holdingRepo, platformRepo, movementRepo, quotaRepo, appService.RealClock)
+	debtService := appService.NewDebtService(transactions, debtRepo, movementRepo, quotaRepo, appService.RealClock)
+	movementService := appService.NewMovementService(transactions, holdingRepo, platformRepo, debtRepo, movementRepo, quotaRepo, appService.RealClock)
 	platformService := appService.NewPlatformService(platformRepo)
 	assetClassService := appService.NewAssetClassService(holdingRepo, cfg.DefaultAssetClasses)
 	snapshotService := appService.NewSnapshotService(snapshotRepo, wealthAggAdapter, appService.RealClock)
-	projectionService := appService.NewProjectionService(wealthAggAdapter, appService.RealClock)
+	projectionService := appService.NewProjectionService(wealthAggAdapter, debtRepo, appService.RealClock)
 	wealthService := appService.NewWealthQueryService(
 		wealthAggAdapter,
 		snapshotRepo,
@@ -69,6 +71,7 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 
 	// HTTP Handlers
 	routes.HoldingHandler = appHttp.NewHoldingHandler(holdingService)
+	routes.DebtHandler = appHttp.NewDebtHandler(debtService)
 	routes.MovementHandler = appHttp.NewMovementHandler(movementService)
 	routes.PlatformHandler = appHttp.NewPlatformHandler(platformService)
 	routes.AssetClassHandler = appHttp.NewAssetClassHandler(assetClassService)

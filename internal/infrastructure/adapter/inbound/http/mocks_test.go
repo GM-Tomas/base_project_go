@@ -251,15 +251,82 @@ func (m *mockSnapshotRepo) FindEarliest(ctx context.Context, userId model.UserId
 }
 
 type mockWealthAggregationPort struct {
-	netWorth     model.Money
+	assets       model.Money
+	debts        model.DebtTotals
 	byAssetClass []outbound.AssetClassAggregate
 	byPlatform   []outbound.PlatformAggregate
 }
 
-func (m *mockWealthAggregationPort) NetWorth(ctx context.Context, userId model.UserId) (model.Money, error) {
-	return m.netWorth, nil
+func (m *mockWealthAggregationPort) Totals(ctx context.Context, userId model.UserId) (outbound.WealthTotals, error) {
+	return outbound.WealthTotals{Assets: m.assets, Debts: m.debts.Balance}, nil
 }
 
 func (m *mockWealthAggregationPort) Breakdown(ctx context.Context, userId model.UserId) (outbound.WealthBreakdown, error) {
-	return outbound.WealthBreakdown{NetWorth: m.netWorth, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform}, nil
+	return outbound.WealthBreakdown{Assets: m.assets, Debts: m.debts, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform}, nil
+}
+
+// mockDebtRepo keeps debts in memory, isolated by user, listed largest first.
+type mockDebtRepo struct {
+	debts map[string]model.Debt
+}
+
+func newMockDebtRepo() *mockDebtRepo { return &mockDebtRepo{debts: map[string]model.Debt{}} }
+
+func (m *mockDebtRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.Debt, error) {
+	var list []model.Debt
+	for _, d := range m.debts {
+		if d.UserId == userId {
+			list = append(list, d)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if c := list[i].Balance.Cmp(list[j].Balance); c != 0 {
+			return c > 0
+		}
+		return list[i].Name < list[j].Name
+	})
+	return list, nil
+}
+
+func (m *mockDebtRepo) FindById(ctx context.Context, userId model.UserId, id model.DebtId) (*model.Debt, error) {
+	if d, ok := m.debts[id.String()]; ok && d.UserId == userId {
+		return &d, nil
+	}
+	return nil, nil
+}
+
+func (m *mockDebtRepo) Count(ctx context.Context, userId model.UserId) (int64, error) {
+	list, _ := m.FindAll(ctx, userId)
+	return int64(len(list)), nil
+}
+
+func (m *mockDebtRepo) Insert(ctx context.Context, debt model.Debt) error {
+	m.debts[debt.Id.String()] = debt
+	return nil
+}
+
+func (m *mockDebtRepo) Update(ctx context.Context, debt model.Debt) (bool, error) {
+	if d, ok := m.debts[debt.Id.String()]; !ok || d.UserId != debt.UserId {
+		return false, nil
+	}
+	m.debts[debt.Id.String()] = debt
+	return true, nil
+}
+
+func (m *mockDebtRepo) DeleteById(ctx context.Context, userId model.UserId, id model.DebtId) (bool, error) {
+	if d, ok := m.debts[id.String()]; !ok || d.UserId != userId {
+		return false, nil
+	}
+	delete(m.debts, id.String())
+	return true, nil
+}
+
+func (m *mockDebtRepo) ExistingIds(ctx context.Context, userId model.UserId, ids []model.DebtId) (map[model.DebtId]bool, error) {
+	existing := map[model.DebtId]bool{}
+	for _, id := range ids {
+		if d, ok := m.debts[id.String()]; ok && d.UserId == userId {
+			existing[id] = true
+		}
+	}
+	return existing, nil
 }

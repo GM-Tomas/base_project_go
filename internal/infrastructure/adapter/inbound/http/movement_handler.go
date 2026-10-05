@@ -95,6 +95,15 @@ func (h *MovementHandler) RecordMovement(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	if req.DebtId != "" {
+		// Like a holding's: an id that isn't a UUID can't exist.
+		id, err := model.ParseDebtId(req.DebtId)
+		if err != nil {
+			middleware.HandleError(w, r, errors.NewResourceNotFoundError("Debt "+req.DebtId+" not found"))
+			return
+		}
+		cmd.DebtId = &id
+	}
 	if n := req.ToNewHolding; n != nil {
 		cmd.ToNewHolding = &inbound.NewHoldingInput{Name: n.Name, AssetClass: n.AssetClass, Platform: n.Platform}
 	}
@@ -161,11 +170,18 @@ func parseMovementQuery(r *http.Request) (inbound.MovementQuery, []errors.Valida
 			query.Filter.HoldingId = &id
 		}
 	}
+	if raw := q.Get("debtId"); raw != "" {
+		if id, err := model.ParseDebtId(raw); err != nil {
+			fail("debtId", "debtId must be a debt's id")
+		} else {
+			query.Filter.DebtId = &id
+		}
+	}
 	if raw := q.Get("kind"); raw != "" {
 		for _, part := range strings.Split(raw, ",") {
 			kind, err := model.ParseMovementKind(strings.TrimSpace(part))
 			if err != nil {
-				fail("kind", "kind must be a comma-separated list of OPENING, CLOSING, GAIN, LOSS, DEPOSIT, WITHDRAWAL, TRANSFER, ADJUSTMENT")
+				fail("kind", "kind must be a comma-separated list of OPENING, CLOSING, GAIN, LOSS, DEPOSIT, WITHDRAWAL, TRANSFER, ADJUSTMENT, DEBT_PAYMENT, DEBT_CHARGE, DEBT_INTEREST")
 				break
 			}
 			query.Filter.Kinds = append(query.Filter.Kinds, kind)
@@ -277,6 +293,7 @@ func toMovementResponse(view inbound.MovementView) dto.MovementResponse {
 		AmountUsd:        m.Amount.Float64(),
 		Holding:          toMovementHoldingResponse(m.Holding, view.HoldingExists),
 		ToHolding:        toMovementHoldingResponse(m.ToHolding, view.ToHoldingExists),
+		Debt:             toMovementDebtResponse(m.Debt, view.DebtExists),
 		PreviousValueUsd: optionalUsd(m.PreviousValue),
 		NewValueUsd:      optionalUsd(m.NewValue),
 		Revertible:       view.Revertible,
@@ -288,4 +305,11 @@ func toMovementResponse(view inbound.MovementView) dto.MovementResponse {
 		res.Note = &m.Note
 	}
 	return res
+}
+
+func toMovementDebtResponse(ref *model.DebtRef, exists bool) *dto.MovementDebtResponse {
+	if ref == nil {
+		return nil
+	}
+	return &dto.MovementDebtResponse{Id: ref.Id.String(), Name: ref.Name, Lender: optionalText(ref.Lender), Exists: exists}
 }

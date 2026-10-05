@@ -62,12 +62,12 @@ func (s *SnapshotService) CreateSnapshot(
 		return model.NetWorthSnapshot{}, errSnapshotsLimit
 	}
 
-	netWorth, err := s.wealthAggregationPort.NetWorth(ctx, userId)
+	totals, err := s.wealthAggregationPort.Totals(ctx, userId)
 	if err != nil {
 		return model.NetWorthSnapshot{}, err
 	}
 
-	snapshot := model.NewNetWorthSnapshot(model.NewSnapshotId(), userId, capturedAt, netWorth)
+	snapshot := model.NewNetWorthSnapshot(model.NewSnapshotId(), userId, capturedAt, totals.Assets, totals.Debts)
 	saved, err := s.snapshotRepo.Save(ctx, snapshot)
 	if err != nil {
 		return model.NetWorthSnapshot{}, err
@@ -94,6 +94,7 @@ func (s *SnapshotService) GetSnapshots(
 		return nil, err
 	}
 
+	// Each one's change is of the net worth, from the one before; none when that one wasn't above zero.
 	result := make([]inbound.SnapshotWithChange, len(snapshots))
 	for i, snap := range snapshots {
 		var decimalGrowth *decimal.Decimal

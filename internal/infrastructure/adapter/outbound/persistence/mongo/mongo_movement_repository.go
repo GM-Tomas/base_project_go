@@ -24,6 +24,12 @@ type holdingRefDoc struct {
 	AssetClass string `bson:"asset_class"`
 }
 
+type debtRefDoc struct {
+	ID     string `bson:"id"`
+	Name   string `bson:"name"`
+	Lender string `bson:"lender,omitempty"`
+}
+
 type movementDoc struct {
 	ID               string         `bson:"_id"`
 	UserID           string         `bson:"user_id"`
@@ -33,6 +39,7 @@ type movementDoc struct {
 	FeeUSD           string         `bson:"fee_usd,omitempty"`
 	Holding          *holdingRefDoc `bson:"holding,omitempty"`
 	ToHolding        *holdingRefDoc `bson:"to_holding,omitempty"`
+	Debt             *debtRefDoc    `bson:"debt,omitempty"`
 	PreviousValueUSD string         `bson:"previous_value_usd,omitempty"`
 	NewValueUSD      string         `bson:"new_value_usd,omitempty"`
 	Note             string         `bson:"note,omitempty"`
@@ -82,6 +89,9 @@ func (r *MongoMovementRepository) List(
 	if filter.HoldingId != nil {
 		id := filter.HoldingId.UUID().String()
 		conditions = append(conditions, bson.M{"$or": bson.A{bson.M{"holding.id": id}, bson.M{"to_holding.id": id}}})
+	}
+	if filter.DebtId != nil {
+		conditions = append(conditions, bson.M{"debt.id": filter.DebtId.UUID().String()})
 	}
 	if len(filter.Kinds) > 0 {
 		kinds := make(bson.A, len(filter.Kinds))
@@ -171,6 +181,9 @@ func toMovementDoc(m model.Movement) movementDoc {
 	if m.Kind == model.MovementTransfer {
 		doc.FeeUSD = m.Fee.Amount().StringFixed(2)
 	}
+	if d := m.Debt; d != nil {
+		doc.Debt = &debtRefDoc{ID: d.Id.UUID().String(), Name: d.Name, Lender: d.Lender}
+	}
 	return doc
 }
 
@@ -252,6 +265,14 @@ func mapDocToMovement(doc movementDoc) (model.Movement, error) {
 	if err != nil {
 		return model.Movement{}, err
 	}
+	var debt *model.DebtRef
+	if doc.Debt != nil {
+		debtId, err := uuid.Parse(doc.Debt.ID)
+		if err != nil {
+			return model.Movement{}, err
+		}
+		debt = &model.DebtRef{Id: model.DebtIdFromUUID(debtId), Name: doc.Debt.Name, Lender: doc.Debt.Lender}
+	}
 	return model.Movement{
 		Id:            model.MovementIdFromUUID(id),
 		UserId:        model.NewUserId(userId),
@@ -261,6 +282,7 @@ func mapDocToMovement(doc movementDoc) (model.Movement, error) {
 		Fee:           fee,
 		Holding:       holding,
 		ToHolding:     toHolding,
+		Debt:          debt,
 		PreviousValue: previous,
 		NewValue:      next,
 		Note:          doc.Note,

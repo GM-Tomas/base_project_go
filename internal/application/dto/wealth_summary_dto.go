@@ -2,8 +2,19 @@ package dto
 
 import "time"
 
+// NetWorthDTO is assets minus debts: below zero when more is owed than owned.
 type NetWorthDTO struct {
 	Usd float64 `json:"usd"`
+}
+
+type AssetsDTO struct {
+	Usd float64 `json:"usd"`
+}
+
+type DebtsDTO struct {
+	Usd               float64 `json:"usd"`
+	Count             int     `json:"count"`
+	MonthlyPaymentUsd float64 `json:"monthlyPaymentUsd"`
 }
 
 type YtdDTO struct {
@@ -36,6 +47,8 @@ type PlatformBreakdown struct {
 
 type WealthSummaryResponse struct {
 	NetWorth      NetWorthDTO           `json:"netWorth"`
+	Assets        AssetsDTO             `json:"assets"`
+	Debts         DebtsDTO              `json:"debts"`
 	HoldingsCount int                   `json:"holdingsCount"`
 	Ytd           YtdDTO                `json:"ytd"`
 	Liquidity     LiquidityDTO          `json:"liquidity"`

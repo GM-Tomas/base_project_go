@@ -110,16 +110,17 @@ func TestNewNetWorthSnapshot(t *testing.T) {
 	id := model.NewSnapshotId()
 	user := model.NewUserId(uuid.New())
 	at := time.Now()
-	total := model.MustMoneyFromFloat(5)
+	assets, debts := model.MustMoneyFromFloat(5), model.MustMoneyFromFloat(7.5)
 
-	s := model.NewNetWorthSnapshot(id, user, at, total)
+	s := model.NewNetWorthSnapshot(id, user, at, assets, debts)
 
-	assert.Equal(t, model.NetWorthSnapshot{Id: id, UserId: user, CapturedAt: at, TotalValue: total}, s)
+	assert.Equal(t, model.NetWorthSnapshot{Id: id, UserId: user, CapturedAt: at, Assets: assets, Debts: debts, TotalValue: model.NetOf(assets, debts)}, s)
+	assert.Equal(t, "-2.50", s.TotalValue.String(), "the net worth: below zero when more is owed")
 }
 
 func TestYtdGrowth(t *testing.T) {
 	at := time.Now()
-	g := model.NewYtdGrowthFrom(model.YtdBasisYearStartSnapshot, model.MustMoneyFromFloat(100), at, decimal.NewFromInt(5))
+	g := model.NewYtdGrowthFrom(model.YtdBasisYearStartSnapshot, model.MustMoneyFromFloat(100).Signed(), at, decimal.NewFromInt(5))
 	assert.Equal(t, model.YtdBasisYearStartSnapshot, g.Basis)
 	assert.Equal(t, "100.00", g.BaselineValue.String())
 	assert.Equal(t, at, *g.BaselineAt)

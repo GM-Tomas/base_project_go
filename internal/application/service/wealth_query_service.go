@@ -51,8 +51,9 @@ func (s *WealthQueryService) GetSummary(
 	ctx context.Context,
 	userId model.UserId,
 ) (dto.WealthSummaryResponse, error) {
-	// The holdings (one read gives the net worth and both breakdowns) and the two possible YTD baselines
-	// are independent: read all at once, so the summary waits for one round trip rather than one per read.
+	// The holdings and debts (one read gives the totals and both breakdowns) and the two possible YTD
+	// baselines are independent: read all at once, so the summary waits for one round trip rather than one
+	// per read.
 	currentYear := s.clock().Year()
 	var (
 		breakdown             outbound.WealthBreakdown
@@ -75,7 +76,8 @@ func (s *WealthQueryService) GetSummary(
 	if err != nil {
 		return dto.WealthSummaryResponse{}, err
 	}
-	netWorth, byClass, byPlatform := breakdown.NetWorth, breakdown.ByAssetClass, breakdown.ByPlatform
+	assets, debts, byClass, byPlatform := breakdown.Assets, breakdown.Debts, breakdown.ByAssetClass, breakdown.ByPlatform
+	netWorth := model.NetOf(assets, debts.Balance)
 
 	ytd := domainService.CalculateYtdGrowth(netWorth, firstOfYear, earliest)
 
@@ -115,10 +117,10 @@ func (s *WealthQueryService) GetSummary(
 		LiquidAssetClasses: s.liquidAssetClasses,
 	}
 
-	// ByAssetClass
+	// ByAssetClass and ByPlatform: shares of what's owned (the net worth can be zero or below).
 	byAssetClassDTOs := make([]dto.AssetClassBreakdown, len(byClass))
 	for i, agg := range byClass {
-		pct := agg.Value.PercentOf(netWorth)
+		pct := agg.Value.PercentOf(assets)
 		var pctF float64
 		if pct != nil {
 			pctF, _ = pct.Round(1).Float64()
@@ -134,7 +136,7 @@ func (s *WealthQueryService) GetSummary(
 	// ByPlatform
 	byPlatformDTOs := make([]dto.PlatformBreakdown, len(byPlatform))
 	for i, agg := range byPlatform {
-		pct := agg.Value.PercentOf(netWorth)
+		pct := agg.Value.PercentOf(assets)
 		var pctF float64
 		if pct != nil {
 			pctF, _ = pct.Round(1).Float64()
@@ -151,6 +153,12 @@ func (s *WealthQueryService) GetSummary(
 	return dto.WealthSummaryResponse{
 		NetWorth: dto.NetWorthDTO{
 			Usd: netWorth.Float64(),
+		},
+		Assets: dto.AssetsDTO{Usd: assets.Float64()},
+		Debts: dto.DebtsDTO{
+			Usd:               debts.Balance.Float64(),
+			Count:             debts.Count,
+			MonthlyPaymentUsd: debts.MonthlyPayment.Float64(),
 		},
 		HoldingsCount: totalCount,
 		Ytd:           ytdDTO,

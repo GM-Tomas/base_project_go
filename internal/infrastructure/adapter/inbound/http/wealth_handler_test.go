@@ -16,7 +16,7 @@ import (
 func TestWealthHandler_Summary(t *testing.T) {
 	userId := model.NewUserId(uuid.New())
 	router, _, _, _, wealthAgg := setupTestRouter(userId)
-	wealthAgg.netWorth = model.MustMoneyFromFloat(12345.67)
+	wealthAgg.assets = model.MustMoneyFromFloat(12345.67)
 
 	req := httptest.NewRequest("GET", "/api/v1/wealth/summary", nil)
 	req.Header.Set("Authorization", "Bearer token")

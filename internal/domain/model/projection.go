@@ -26,9 +26,11 @@ type Milestone struct {
 
 type ProjectionPoint struct {
 	Year             int
-	FutureValue      Money
+	FutureValue      Money // the portfolio's
 	TotalContributed Money
 	InterestEarned   Money
+	DebtBalance      Money       // what's still owed then
+	NetWorth         SignedMoney // FutureValue − DebtBalance
 }
 
 const (
@@ -53,11 +55,14 @@ func YieldPctFromFloat(v float64) (decimal.Decimal, error) {
 }
 
 type ProjectionParams struct {
-	Principal           Money
+	Principal           Money // the portfolio (assets) the projection starts from
 	MonthlyContribution Money
 	AnnualYieldPct      decimal.Decimal
 	Years               int
 	Milestones          []Money
+	// DebtBalances is what's owed now and after each month of the horizon (Years*12+1 values), each debt
+	// paid off on its own terms; nil without debts. Net worth, and so the milestones, discount it.
+	DebtBalances []decimal.Decimal
 }
 
 func NewProjectionParams(

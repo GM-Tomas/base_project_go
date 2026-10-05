@@ -17,12 +17,12 @@ const (
 // YtdGrowth represents YTD performance calculation result.
 type YtdGrowth struct {
 	Basis         YtdBasis
-	BaselineValue *Money
+	BaselineValue *SignedMoney
 	BaselineAt    *time.Time
 	GrowthPct     decimal.Decimal
 }
 
-func NewYtdGrowthFrom(basis YtdBasis, baselineValue Money, baselineAt time.Time, growthPct decimal.Decimal) YtdGrowth {
+func NewYtdGrowthFrom(basis YtdBasis, baselineValue SignedMoney, baselineAt time.Time, growthPct decimal.Decimal) YtdGrowth {
 	return YtdGrowth{
 		Basis:         basis,
 		BaselineValue: &baselineValue,

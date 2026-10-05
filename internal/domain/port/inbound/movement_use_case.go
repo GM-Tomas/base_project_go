@@ -14,14 +14,16 @@ type NewHoldingInput struct {
 	Platform   string
 }
 
-// RecordMovementCommand is a movement a user records: a gain, loss, deposit or withdrawal on HoldingId, or a
-// transfer from FromHoldingId to ToHoldingId or to a new holding.
+// RecordMovementCommand is a movement a user records: a gain, loss, deposit or withdrawal on HoldingId; a
+// transfer from FromHoldingId to ToHoldingId or to a new holding; or a debt's payment (from FromHoldingId,
+// if any), charge (into ToHoldingId, if any) or interest, on DebtId.
 type RecordMovementCommand struct {
 	UserId        model.UserId
 	Kind          string
 	HoldingId     *model.HoldingId
 	FromHoldingId *model.HoldingId
 	ToHoldingId   *model.HoldingId
+	DebtId        *model.DebtId
 	ToNewHolding  *NewHoldingInput
 	AmountUsd     float64
 	FeeUsd        float64
@@ -29,12 +31,13 @@ type RecordMovementCommand struct {
 	Note          string
 }
 
-// MovementView is a movement as the activity log shows it: whether the holdings it names still exist, and
-// so whether it can still be undone.
+// MovementView is a movement as the activity log shows it: whether the holdings and the debt it names still
+// exist, and so whether it can still be undone.
 type MovementView struct {
 	Movement        model.Movement
 	HoldingExists   bool
 	ToHoldingExists bool
+	DebtExists      bool
 	Revertible      bool
 }
 
@@ -52,6 +55,7 @@ type MovementList struct {
 type MovementUseCase interface {
 	RecordMovement(ctx context.Context, command RecordMovementCommand) (MovementView, error)
 	ListMovements(ctx context.Context, userId model.UserId, query MovementQuery) (MovementList, error)
-	// RevertMovement undoes a movement's effect on the holdings it touched, as deltas, and deletes it.
+	// RevertMovement undoes a movement's effect on the holdings and the debt it touched, as deltas, and
+	// deletes it.
 	RevertMovement(ctx context.Context, userId model.UserId, id model.MovementId) error
 }

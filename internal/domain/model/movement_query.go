@@ -8,8 +8,9 @@ import (
 
 // MovementFilter narrows the activity log; the zero value is all of it.
 type MovementFilter struct {
-	// HoldingId keeps one holding's movements: where it's the holding, or a transfer's destination.
+	// HoldingId keeps one holding's movements: where it's the holding, or where the money arrived.
 	HoldingId *HoldingId
+	DebtId    *DebtId        // keeps one debt's movements
 	Kinds     []MovementKind // any of these
 	From, To  *time.Time     // occurredAt within [From, To]
 }

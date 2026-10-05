@@ -16,7 +16,10 @@ type ProjectionRequest struct {
 }
 
 type ProjectionResult struct {
+	// Principal is the portfolio (the assets): the projection grows it. Debts are what's owed now, paid off
+	// on their own terms in the series' DebtBalance.
 	Principal           model.Money
+	Debts               model.Money
 	MonthlyContribution model.Money
 	AnnualYieldPct      decimal.Decimal
 	Years               int

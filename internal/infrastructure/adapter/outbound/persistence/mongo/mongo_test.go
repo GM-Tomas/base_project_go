@@ -699,7 +699,7 @@ func TestSnapshotRepository(t *testing.T) {
 	assert.Nil(t, earliest)
 
 	snap := func(u model.UserId, t time.Time, v float64) model.NetWorthSnapshot {
-		return model.NewNetWorthSnapshot(model.NewSnapshotId(), u, t, model.MustMoneyFromFloat(v))
+		return model.NewNetWorthSnapshot(model.NewSnapshotId(), u, t, model.MustMoneyFromFloat(v), model.ZeroMoney)
 	}
 	lastYear := snap(user, time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC), 50)
 	jan5 := snap(user, at(5), 200)
@@ -764,7 +764,7 @@ func TestSnapshotRepository_Errors(t *testing.T) {
 
 	_, err := repo.FindAll(cancelled(), user)
 	assert.Error(t, err)
-	_, err = repo.Save(cancelled(), model.NewNetWorthSnapshot(model.NewSnapshotId(), user, at(1), model.ZeroMoney))
+	_, err = repo.Save(cancelled(), model.NewNetWorthSnapshot(model.NewSnapshotId(), user, at(1), model.ZeroMoney, model.ZeroMoney))
 	assert.Error(t, err)
 	assert.NotErrorIs(t, err, appErrors.DuplicateResourceError{})
 	_, err = repo.ExistsAt(cancelled(), user, at(1))
@@ -802,10 +802,14 @@ func TestMapDocToSnapshot_RejectsCorruptDocs(t *testing.T) {
 	require.NoError(t, err)
 
 	for name, corrupt := range map[string]func(*snapshotDoc){
-		"id":       func(d *snapshotDoc) { d.ID = "x" },
-		"user id":  func(d *snapshotDoc) { d.UserID = "x" },
-		"value":    func(d *snapshotDoc) { d.TotalValueUSD = "abc" },
-		"negative": func(d *snapshotDoc) { d.TotalValueUSD = "-1" },
+		"id":      func(d *snapshotDoc) { d.ID = "x" },
+		"user id": func(d *snapshotDoc) { d.UserID = "x" },
+		"value":   func(d *snapshotDoc) { d.TotalValueUSD = "abc" },
+		// From before debts, a total was all owned: it can't be below zero.
+		"negative without assets": func(d *snapshotDoc) { d.TotalValueUSD = "-1" },
+		"assets":                  func(d *snapshotDoc) { d.AssetsUSD = "abc" },
+		"negative assets":         func(d *snapshotDoc) { d.AssetsUSD = "-1" },
+		"debts":                   func(d *snapshotDoc) { d.AssetsUSD, d.DebtsUSD = "1.00", "abc" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			doc := valid
@@ -823,9 +827,10 @@ func TestWealthAggregation(t *testing.T) {
 	ctx := context.Background()
 	user := newUser()
 
-	empty, err := agg.NetWorth(ctx, user)
+	empty, err := agg.Totals(ctx, user)
 	require.NoError(t, err)
-	assert.True(t, empty.IsZero())
+	assert.True(t, empty.Assets.IsZero())
+	assert.True(t, empty.Debts.IsZero())
 
 	for _, h := range []model.Holding{
 		holding(user, "a", "Equity", "IBKR", 100, at(1)),
@@ -842,13 +847,13 @@ func TestWealthAggregation(t *testing.T) {
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": "Cash", "platform_name": "Bank", "value_usd": "-5"})
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": "", "platform_name": "Bank", "value_usd": "1"})
 
-	total, err := agg.NetWorth(ctx, user)
+	totals, err := agg.Totals(ctx, user)
 	require.NoError(t, err)
-	assert.Equal(t, "311.00", total.String())
+	assert.Equal(t, "311.00", totals.Assets.String())
 
 	// One read for all three: they agree.
 	summary := breakdown(t, db, ctx, user)
-	assert.Equal(t, total, summary.NetWorth)
+	assert.Equal(t, totals.Assets, summary.Assets)
 	byClass := summary.ByAssetClass
 	type classRow struct {
 		Class string
@@ -876,7 +881,7 @@ func TestWealthAggregation(t *testing.T) {
 		{"Bank", "151.00", 2},
 		{"IBKR", "150.00", 2},
 		{"Binance", "10.00", 1},
-	}, rows, "desc by value; holdings without a valid amount don't count, like in NetWorth")
+	}, rows, "desc by value; holdings without a valid amount don't count, like in Totals")
 }
 
 func TestWealthAggregation_Errors(t *testing.T) {
@@ -884,13 +889,13 @@ func TestWealthAggregation_Errors(t *testing.T) {
 	agg := NewMongoWealthAggregationAdapter(db)
 	user := newUser()
 
-	_, err := agg.NetWorth(cancelled(), user)
+	_, err := agg.Totals(cancelled(), user)
 	assert.Error(t, err)
 	_, err = agg.Breakdown(cancelled(), user)
 	assert.Error(t, err)
 
 	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "value_usd": 5})
-	_, err = agg.NetWorth(context.Background(), user)
+	_, err = agg.Totals(context.Background(), user)
 	assert.Error(t, err)
 	_, err = agg.Breakdown(context.Background(), user)
 	assert.ErrorContains(t, err, "value_usd", "holdings decode")
@@ -935,14 +940,14 @@ func TestWealthAggregation_BreakdownReadsHoldingsOnce(t *testing.T) {
 	defer func() { _ = monitored.Disconnect(ctx) }()
 	database := monitored.Database(db.Database.Name())
 	agg := NewMongoWealthAggregationAdapter(&MongoDB{
-		Client: monitored, Database: database,
-		Holdings: database.Collection("holdings"), Snapshots: database.Collection("net_worth_snapshots"), Platforms: database.Collection("platforms"),
+		Client: monitored, Database: database, Holdings: database.Collection("holdings"), Debts: database.Collection("debts"),
+		Snapshots: database.Collection("net_worth_snapshots"), Platforms: database.Collection("platforms"),
 	})
 
 	got, err := agg.Breakdown(ctx, user)
 	require.NoError(t, err)
-	assert.Equal(t, "150.00", got.NetWorth.String())
-	assert.ElementsMatch(t, []string{"find holdings", "find platforms"}, commands)
+	assert.Equal(t, "150.00", got.Assets.String())
+	assert.ElementsMatch(t, []string{"find holdings", "find platforms", "find debts"}, commands)
 }
 
 func collectionOf(e *event.CommandStartedEvent) string {
@@ -1040,4 +1045,5 @@ func TestEnsureIndexes_CoversEveryPerUserQuery(t *testing.T) {
 
 	assert.ElementsMatch(t, []string{"_id", "user_id+created_at+_id", "user_id+asset_class"}, keysOf("holdings"))
 	assert.ElementsMatch(t, []string{"_id", "user_id+captured_at unique"}, keysOf("net_worth_snapshots"))
+	assert.ElementsMatch(t, []string{"_id", "user_id+created_at+_id"}, keysOf("debts"))
 }

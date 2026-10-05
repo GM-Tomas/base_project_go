@@ -19,15 +19,27 @@ type PlatformAggregate struct {
 	Count int
 }
 
-// WealthBreakdown is a user's wealth and how it splits, from one read of their holdings: the three always
-// agree, even while the holdings change.
+// WealthTotals is what a user owns (their holdings) and what they owe (their debts).
+type WealthTotals struct {
+	Assets model.Money
+	Debts  model.Money
+}
+
+// NetWorth is assets minus debts.
+func (t WealthTotals) NetWorth() model.SignedMoney {
+	return model.NetOf(t.Assets, t.Debts)
+}
+
+// WealthBreakdown is a user's wealth and how it splits, from one read of their holdings (the assets and
+// both breakdowns always agree, even while the holdings change) and one of their debts.
 type WealthBreakdown struct {
-	NetWorth     model.Money
+	Assets       model.Money
+	Debts        model.DebtTotals
 	ByAssetClass []AssetClassAggregate
 	ByPlatform   []PlatformAggregate
 }
 
 type WealthAggregationPort interface {
-	NetWorth(ctx context.Context, userId model.UserId) (model.Money, error)
+	Totals(ctx context.Context, userId model.UserId) (WealthTotals, error)
 	Breakdown(ctx context.Context, userId model.UserId) (WealthBreakdown, error)
 }

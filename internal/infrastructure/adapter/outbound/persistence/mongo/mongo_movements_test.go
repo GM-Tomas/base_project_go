@@ -352,5 +352,6 @@ func TestEnsureIndexes_CoverTheActivityLog(t *testing.T) {
 		"user_id_1_occurred_at_-1_created_at_-1__id_-1",
 		"user_id_1_holding.id_1_occurred_at_-1_created_at_-1__id_-1",
 		"user_id_1_to_holding.id_1_occurred_at_-1_created_at_-1__id_-1",
+		"user_id_1_debt.id_1_occurred_at_-1_created_at_-1__id_-1",
 	}, names)
 }

@@ -9,17 +9,48 @@ import (
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
+	"github.com/GM-Tomas/base_project_go/internal/parallel"
 	"github.com/shopspring/decimal"
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type MongoWealthAggregationAdapter struct {
 	holdingsColl  *mongo.Collection
+	debtsColl     *mongo.Collection
 	platformsColl *mongo.Collection // read-only, see legacyPlatformTypes
 }
 
 func NewMongoWealthAggregationAdapter(db *MongoDB) *MongoWealthAggregationAdapter {
-	return &MongoWealthAggregationAdapter{holdingsColl: db.Holdings, platformsColl: db.Platforms}
+	return &MongoWealthAggregationAdapter{holdingsColl: db.Holdings, debtsColl: db.Debts, platformsColl: db.Platforms}
+}
+
+// debtTotals is what the user owes, from their debts' balances and monthly payments. As with holdings
+// (see readableValue), an amount that can't be read isn't counted.
+func debtTotals(ctx context.Context, debts *mongo.Collection, userId model.UserId) (model.DebtTotals, error) {
+	cursor, err := debts.Find(ctx, bson.M{"user_id": userId.UUID().String()},
+		options.Find().SetProjection(bson.M{"balance_usd": 1, "monthly_payment_usd": 1}))
+	if err != nil {
+		return model.DebtTotals{}, err
+	}
+	var docs []debtDoc
+	if err := cursor.All(ctx, &docs); err != nil {
+		return model.DebtTotals{}, err
+	}
+	totals := model.DebtTotals{Balance: model.ZeroMoney, MonthlyPayment: model.ZeroMoney}
+	for _, doc := range docs {
+		balance, err := readMoney(doc.BalanceUSD)
+		if err != nil {
+			continue
+		}
+		totals.Balance = totals.Balance.Plus(balance)
+		totals.Count++
+		if payment, err := readOptionalMoney(doc.MonthlyPaymentUSD); err == nil && payment != nil {
+			totals.MonthlyPayment = totals.MonthlyPayment.Plus(*payment)
+		}
+	}
+	return totals, nil
 }
 
 var _ outbound.WealthAggregationPort = (*MongoWealthAggregationAdapter)(nil)
@@ -49,37 +80,63 @@ func amountsOf(docs []holdingDoc) []amount {
 	return amounts
 }
 
-func (a *MongoWealthAggregationAdapter) NetWorth(
-	ctx context.Context,
-	userId model.UserId,
-) (model.Money, error) {
-	docs, err := readHoldings(ctx, a.holdingsColl, userId, "value_usd")
+// Totals reads what the user owns and what they owe, at once.
+func (a *MongoWealthAggregationAdapter) Totals(ctx context.Context, userId model.UserId) (outbound.WealthTotals, error) {
+	var (
+		docs  []holdingDoc
+		debts model.DebtTotals
+	)
+	err := parallel.Run(ctx,
+		func(ctx context.Context) (err error) {
+			docs, err = readHoldings(ctx, a.holdingsColl, userId, "value_usd")
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			debts, err = debtTotals(ctx, a.debtsColl, userId)
+			return err
+		},
+	)
 	if err != nil {
-		return model.ZeroMoney, err
+		return outbound.WealthTotals{}, err
 	}
-	return netWorthOf(amountsOf(docs)), nil
+	return outbound.WealthTotals{Assets: assetsOf(amountsOf(docs)), Debts: debts.Balance}, nil
 }
 
 // Breakdown reads the user's holdings once, alongside the platform types earlier versions stored, for
-// the net worth and both breakdowns.
+// the assets and both breakdowns, and their debts at the same time.
 func (a *MongoWealthAggregationAdapter) Breakdown(
 	ctx context.Context,
 	userId model.UserId,
 ) (outbound.WealthBreakdown, error) {
-	docs, types, err := holdingsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId,
-		"asset_class", "platform_name", "value_usd")
+	var (
+		docs  []holdingDoc
+		types map[string]model.PlatformType
+		debts model.DebtTotals
+	)
+	err := parallel.Run(ctx,
+		func(ctx context.Context) (err error) {
+			docs, types, err = holdingsWithTypes(ctx, a.holdingsColl, a.platformsColl, userId,
+				"asset_class", "platform_name", "value_usd")
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			debts, err = debtTotals(ctx, a.debtsColl, userId)
+			return err
+		},
+	)
 	if err != nil {
 		return outbound.WealthBreakdown{}, err
 	}
 	amounts := amountsOf(docs)
 	return outbound.WealthBreakdown{
-		NetWorth:     netWorthOf(amounts),
+		Assets:       assetsOf(amounts),
+		Debts:        debts,
 		ByAssetClass: classBreakdown(docs, amounts),
 		ByPlatform:   platformBreakdown(groupPlatforms(docs, amounts), types),
 	}, nil
 }
 
-func netWorthOf(amounts []amount) model.Money {
+func assetsOf(amounts []amount) model.Money {
 	total := model.ZeroMoney
 	for _, a := range amounts {
 		if a.readable {

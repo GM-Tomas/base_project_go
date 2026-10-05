@@ -108,6 +108,12 @@ func isDomainValidationError(err error) bool {
 		model.ErrFeeExceedsAmount,
 		model.ErrOccurredAtOutOfRange,
 		model.ErrUnknownValueChangeReason,
+		model.ErrUnknownDebtKind,
+		model.ErrInterestRateOutOfRange,
+		model.ErrDueDayOutOfRange,
+		model.ErrUnknownBalanceChangeReason,
+		model.ErrPaymentRaisesBalance,
+		model.ErrChargeLowersBalance,
 	} {
 		if errors.Is(err, target) {
 			return true

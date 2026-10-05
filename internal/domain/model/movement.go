@@ -10,8 +10,9 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// MovementKind is what a movement records. Users record gains, losses, deposits, withdrawals and transfers;
-// the rest the system records when holdings are added, removed or edited.
+// MovementKind is what a movement records. Users record gains, losses, deposits, withdrawals, transfers and
+// what happens to debts (payments, charges, interest); the rest the system records when holdings and debts
+// are added, removed or edited.
 type MovementKind string
 
 const (
@@ -23,14 +24,28 @@ const (
 	MovementWithdrawal MovementKind = "WITHDRAWAL" // money taken out
 	MovementTransfer   MovementKind = "TRANSFER"   // from one holding to another, maybe with a fee
 	MovementAdjustment MovementKind = "ADJUSTMENT" // a correction: neither performance nor money in or out
+	// A debt's: a payment lowers it (from a holding, maybe), a charge raises it (into a holding, maybe), and
+	// so does interest.
+	MovementDebtPayment  MovementKind = "DEBT_PAYMENT"
+	MovementDebtCharge   MovementKind = "DEBT_CHARGE"
+	MovementDebtInterest MovementKind = "DEBT_INTEREST"
 )
 
 // RecordableKinds are the kinds users record themselves (POST /movements), in the order the API lists them.
-var RecordableKinds = []MovementKind{MovementGain, MovementLoss, MovementDeposit, MovementWithdrawal, MovementTransfer}
+var RecordableKinds = []MovementKind{
+	MovementGain, MovementLoss, MovementDeposit, MovementWithdrawal, MovementTransfer,
+	MovementDebtPayment, MovementDebtCharge, MovementDebtInterest,
+}
 
 var allMovementKinds = []MovementKind{
 	MovementOpening, MovementClosing, MovementGain, MovementLoss, MovementDeposit, MovementWithdrawal,
-	MovementTransfer, MovementAdjustment,
+	MovementTransfer, MovementAdjustment, MovementDebtPayment, MovementDebtCharge, MovementDebtInterest,
+}
+
+// IsDebtKind says whether the kind is something that happened to a debt (OPENING, CLOSING and ADJUSTMENT
+// can be too: see Movement.Debt).
+func (k MovementKind) IsDebtKind() bool {
+	return k == MovementDebtPayment || k == MovementDebtCharge || k == MovementDebtInterest
 }
 
 const (
@@ -83,8 +98,8 @@ func RefOf(h Holding) HoldingRef {
 	return HoldingRef{Id: h.Id, Name: h.Name, Platform: h.Platform, AssetClass: h.AssetClass}
 }
 
-// Movement is one recorded change of value. Holdings keep their current value; movements say how it got
-// there (and let a mistake be undone).
+// Movement is one recorded change of value. Holdings and debts keep their current value; movements say how
+// it got there (and let a mistake be undone).
 type Movement struct {
 	Id         MovementId
 	UserId     UserId
@@ -94,10 +109,15 @@ type Movement struct {
 	// ADJUSTMENT it's |NewValue − PreviousValue|.
 	Amount Money
 	Fee    Money // TRANSFER only: what was lost on the way (the destination gets Amount − Fee)
-	// Holding is the holding the movement is about; for a TRANSFER, where the money left.
-	Holding   *HoldingRef
-	ToHolding *HoldingRef // TRANSFER: where it arrived
-	// PreviousValue and NewValue are set when the movement comes from editing a holding's value.
+	// Holding is the holding the movement is about; for a TRANSFER or a DEBT_PAYMENT, where the money left.
+	Holding *HoldingRef
+	// ToHolding is where the money arrived: a TRANSFER's destination, the holding a DEBT_CHARGE went into.
+	ToHolding *HoldingRef
+	// Debt is the debt the movement is about: every DEBT_* kind, and the OPENING, CLOSING and ADJUSTMENT of
+	// a debt (which then have no Holding).
+	Debt *DebtRef
+	// PreviousValue and NewValue are set when the movement comes from editing a holding's value (or a debt's
+	// balance).
 	PreviousValue *Money
 	NewValue      *Money
 	Note          string
@@ -110,25 +130,53 @@ type BalanceChange struct {
 	Delta   decimal.Decimal
 }
 
-// Effect is what the movement did to holding values. Undoing it applies the same changes with the signs
-// flipped, as deltas: movements recorded since are kept.
+// Effect is what the movement did to holding values (a debt's own, see DebtEffect). Undoing it applies the
+// same changes with the signs flipped, as deltas: movements recorded since are kept.
 func (m Movement) Effect() []BalanceChange {
 	amount := m.Amount.Amount()
 	switch m.Kind {
 	case MovementOpening, MovementGain, MovementDeposit:
-		return []BalanceChange{{m.Holding.Id, amount}}
-	case MovementClosing, MovementLoss, MovementWithdrawal:
-		return []BalanceChange{{m.Holding.Id, amount.Neg()}}
+		if m.Holding != nil {
+			return []BalanceChange{{m.Holding.Id, amount}}
+		}
+	case MovementClosing, MovementLoss, MovementWithdrawal, MovementDebtPayment:
+		if m.Holding != nil {
+			return []BalanceChange{{m.Holding.Id, amount.Neg()}}
+		}
 	case MovementTransfer:
 		return []BalanceChange{{m.Holding.Id, amount.Neg()}, {m.ToHolding.Id, amount.Sub(m.Fee.Amount())}}
+	case MovementDebtCharge:
+		if m.ToHolding != nil {
+			return []BalanceChange{{m.ToHolding.Id, amount}}
+		}
 	case MovementAdjustment:
-		return []BalanceChange{{m.Holding.Id, m.NewValue.Amount().Sub(m.PreviousValue.Amount())}}
+		if m.Holding != nil {
+			return []BalanceChange{{m.Holding.Id, m.NewValue.Amount().Sub(m.PreviousValue.Amount())}}
+		}
 	}
 	return nil
 }
 
-// Revertible says whether the kind can be undone. Holdings come and go by being added and removed, so
-// OPENING and CLOSING can't.
+// DebtEffect is what the movement did to its debt's balance (positive: more owed); false when it isn't
+// about a debt. Undoing it applies the change with the sign flipped, as Effect's are.
+func (m Movement) DebtEffect() (decimal.Decimal, bool) {
+	if m.Debt == nil {
+		return decimal.Zero, false
+	}
+	amount := m.Amount.Amount()
+	switch m.Kind {
+	case MovementOpening, MovementDebtCharge, MovementDebtInterest:
+		return amount, true
+	case MovementClosing, MovementDebtPayment:
+		return amount.Neg(), true
+	case MovementAdjustment:
+		return m.NewValue.Amount().Sub(m.PreviousValue.Amount()), true
+	}
+	return decimal.Zero, false
+}
+
+// Revertible says whether the kind can be undone. Holdings and debts come and go by being added and removed,
+// so OPENING and CLOSING can't.
 func (k MovementKind) Revertible() bool {
 	return k != MovementOpening && k != MovementClosing
 }

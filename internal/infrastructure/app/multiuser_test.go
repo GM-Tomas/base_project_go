@@ -457,3 +457,128 @@ func TestMultiUser_MovementsStayWithTheirOwner(t *testing.T) {
 	assert.Equal(t, "USD cash", log.Items[0].Holding.Name)
 	assert.False(t, log.Items[0].Holding.Exists)
 }
+
+func TestMultiUser_DebtsStayWithTheirOwner(t *testing.T) {
+	e := newE2E(t, "")
+	asAlice, asBob := e.token(uuid.New(), nil), e.token(uuid.New(), nil)
+	savings := e.create(asAlice, "Savings", "Cash", "Santander", 1000)
+	wallet := e.create(asBob, "Wallet", "Cash", "Mercado Pago", 50)
+
+	var visa struct{ Id string }
+	require.Equal(t, http.StatusCreated, e.do(asAlice, "POST", "/api/v1/debts", map[string]any{
+		"name": "Visa", "kind": "CREDIT_CARD", "balanceUsd": 1250, "monthlyPaymentUsd": 300,
+	}, &visa))
+	// Her net worth now counts what she owes.
+	var summary struct {
+		NetWorth struct{ Usd float64 }
+		Debts    struct {
+			Usd               float64
+			Count             int
+			MonthlyPaymentUsd float64
+		}
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/wealth/summary", nil, &summary))
+	assert.Equal(t, -250.0, summary.NetWorth.Usd)
+	assert.Equal(t, 1250.0, summary.Debts.Usd)
+	assert.Equal(t, 1, summary.Debts.Count)
+	assert.Equal(t, 300.0, summary.Debts.MonthlyPaymentUsd)
+
+	// She pays it from her savings: both change together, in one transaction.
+	var payment struct{ Id string }
+	require.Equal(t, http.StatusCreated, e.do(asAlice, "POST", "/api/v1/movements", map[string]any{
+		"kind": "DEBT_PAYMENT", "debtId": visa.Id, "fromHoldingId": savings.Id, "amountUsd": 300,
+	}, &payment))
+	var debts []struct {
+		Id         string
+		BalanceUsd float64
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/debts", nil, &debts))
+	require.Len(t, debts, 1)
+	assert.Equal(t, 950.0, debts[0].BalanceUsd)
+	assert.Equal(t, []string{"Savings"}, e.holdingNames(asAlice))
+
+	// Bob sees none of it, and can't touch it: not her debt, not with his money, not her payment.
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/debts", nil, &debts))
+	assert.Empty(t, debts)
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "PATCH", "/api/v1/debts/"+visa.Id, map[string]any{"balanceUsd": 0}, nil))
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "DELETE", "/api/v1/debts/"+visa.Id, nil, nil))
+	for _, body := range []map[string]any{
+		{"kind": "DEBT_PAYMENT", "debtId": visa.Id, "fromHoldingId": wallet.Id, "amountUsd": 1},
+		{"kind": "DEBT_CHARGE", "debtId": visa.Id, "amountUsd": 1},
+		{"kind": "DEBT_INTEREST", "debtId": visa.Id, "amountUsd": 1},
+	} {
+		assert.Equal(t, http.StatusNotFound, e.do(asBob, "POST", "/api/v1/movements", body, nil), body)
+	}
+	var bobs struct{ Items []struct{ Kind string } }
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/movements?debtId="+visa.Id, nil, &bobs))
+	assert.Empty(t, bobs.Items)
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "DELETE", "/api/v1/movements/"+payment.Id, nil, nil))
+	assert.Equal(t, 50.0, e.summary(asBob).NetWorth.Usd)
+
+	// Her debt's own activity, and her snapshot with what she owed.
+	var log struct {
+		Items []struct {
+			Kind string
+			Debt struct {
+				Name   string
+				Exists bool
+			}
+		}
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/movements?debtId="+visa.Id, nil, &log))
+	require.Len(t, log.Items, 2)
+	assert.Equal(t, "DEBT_PAYMENT", log.Items[0].Kind)
+	assert.Equal(t, "Visa", log.Items[0].Debt.Name)
+	var snapshot struct{ TotalValueUsd, AssetsUsd, DebtsUsd float64 }
+	require.Equal(t, http.StatusCreated, e.do(asAlice, "POST", "/api/v1/wealth/snapshots", nil, &snapshot))
+	assert.Equal(t, 700.0, snapshot.AssetsUsd)
+	assert.Equal(t, 950.0, snapshot.DebtsUsd)
+	assert.Equal(t, -250.0, snapshot.TotalValueUsd)
+
+	// Undone: both back. Removed: its history stays, naming it.
+	assert.Equal(t, http.StatusNoContent, e.do(asAlice, "DELETE", "/api/v1/movements/"+payment.Id, nil, nil))
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/debts", nil, &debts))
+	assert.Equal(t, 1250.0, debts[0].BalanceUsd)
+	assert.Equal(t, http.StatusNoContent, e.do(asAlice, "DELETE", "/api/v1/debts/"+visa.Id, nil, nil))
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/movements?debtId="+visa.Id, nil, &log))
+	require.Len(t, log.Items, 2)
+	assert.Equal(t, "CLOSING", log.Items[0].Kind)
+	assert.False(t, log.Items[0].Debt.Exists)
+	assert.Equal(t, 1000.0, e.summary(asAlice).NetWorth.Usd)
+}
+
+func TestMultiUser_DebtCapHoldsUnderConcurrentCreates(t *testing.T) {
+	e := newE2E(t, "")
+	user := uuid.New()
+	token := e.token(user, nil)
+
+	const prefilled = model.MaxDebtsPerUser - 5
+	now := time.Now().UTC()
+	docs := make([]any, prefilled)
+	for i := range docs {
+		docs[i] = bson.M{
+			"_id": uuid.NewString(), "user_id": user.String(), "name": fmt.Sprintf("d%d", i), "kind": "OTHER",
+			"balance_usd": "1.00", "created_at": now, "updated_at": now,
+		}
+	}
+	_, err := e.collection("debts").InsertMany(context.Background(), docs)
+	require.NoError(t, err)
+
+	// 20 creates at once for 5 free slots.
+	codes := make([]int, 20)
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			codes[i] = e.do(token, "POST", "/api/v1/debts", map[string]any{"name": fmt.Sprintf("burst %d", i), "balanceUsd": 1}, nil)
+		}(i)
+	}
+	wg.Wait()
+	for _, code := range codes {
+		require.Contains(t, []int{http.StatusCreated, http.StatusConflict}, code)
+	}
+	var list []struct{ Id string }
+	require.Equal(t, http.StatusOK, e.do(token, "GET", "/api/v1/debts", nil, &list))
+	assert.Equal(t, model.MaxDebtsPerUser, len(list), "every free slot used, none twice")
+}

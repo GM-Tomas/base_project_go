@@ -135,6 +135,8 @@ func (h *WealthHandler) GetEstimate(w http.ResponseWriter, r *http.Request) {
 			FutureValueUsd:      pt.FutureValue.Float64(),
 			TotalContributedUsd: pt.TotalContributed.Float64(),
 			InterestEarnedUsd:   pt.InterestEarned.Float64(),
+			DebtBalanceUsd:      pt.DebtBalance.Float64(),
+			NetWorthUsd:         pt.NetWorth.Float64(),
 		}
 	}
 
@@ -151,6 +153,7 @@ func (h *WealthHandler) GetEstimate(w http.ResponseWriter, r *http.Request) {
 	annualYieldFloat, _ := result.AnnualYieldPct.Float64()
 	response := dto.ProjectionResponse{
 		PrincipalUsd:           result.Principal.Float64(),
+		DebtsUsd:               result.Debts.Float64(),
 		MonthlyContributionUsd: result.MonthlyContribution.Float64(),
 		AnnualYieldPct:         annualYieldFloat,
 		Years:                  result.Years,
@@ -183,12 +186,8 @@ func (h *WealthHandler) GetSnapshots(w http.ResponseWriter, r *http.Request) {
 			val, _ := s.ChangePctFromPrevious.Round(1).Float64()
 			changePct = &val
 		}
-		res[i] = dto.SnapshotResponse{
-			Id:                    s.Snapshot.Id.String(),
-			CapturedAt:            s.Snapshot.CapturedAt,
-			TotalValueUsd:         s.Snapshot.TotalValue.Float64(),
-			ChangePctFromPrevious: changePct,
-		}
+		res[i] = toSnapshotResponse(s.Snapshot)
+		res[i].ChangePctFromPrevious = changePct
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -209,11 +208,7 @@ func (h *WealthHandler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := dto.SnapshotResponse{
-		Id:            snapshot.Id.String(),
-		CapturedAt:    snapshot.CapturedAt,
-		TotalValueUsd: snapshot.TotalValue.Float64(),
-	}
+	res := toSnapshotResponse(snapshot)
 
 	w.Header().Set("Location", "/api/v1/wealth/snapshots/"+snapshot.Id.String())
 	w.Header().Set("Content-Type", "application/json")
@@ -241,4 +236,14 @@ func (h *WealthHandler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func toSnapshotResponse(s model.NetWorthSnapshot) dto.SnapshotResponse {
+	return dto.SnapshotResponse{
+		Id:            s.Id.String(),
+		CapturedAt:    s.CapturedAt,
+		TotalValueUsd: s.TotalValue.Float64(),
+		AssetsUsd:     s.Assets.Float64(),
+		DebtsUsd:      s.Debts.Float64(),
+	}
 }

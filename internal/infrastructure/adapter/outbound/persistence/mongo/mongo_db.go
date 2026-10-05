@@ -16,6 +16,7 @@ type MongoDB struct {
 	Client    *mongo.Client
 	Database  *mongo.Database
 	Holdings  *mongo.Collection
+	Debts     *mongo.Collection
 	Snapshots *mongo.Collection
 	Movements *mongo.Collection
 	// Quotas holds per-user counters that transactions keep exact (see MongoQuotaRepository).
@@ -50,6 +51,7 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 		Client:    client,
 		Database:  database,
 		Holdings:  database.Collection("holdings"),
+		Debts:     database.Collection("debts"),
 		Snapshots: database.Collection("net_worth_snapshots"),
 		Movements: database.Collection("movements"),
 		Quotas:    database.Collection("quotas"),
@@ -57,7 +59,7 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 	}
 	if !db.supportsTransactions(pingCtx) {
 		log.Println("WARNING: MongoDB isn't a replica set, so it has no transactions: recording a change of value " +
-			"(adding, editing or removing a holding, a movement) will answer 503. Run it as a replica set (see the README).")
+			"(adding, editing or removing a holding or a debt, a movement) will answer 503. Run it as a replica set (see the README).")
 	}
 
 	// Synchronous on purpose: a background goroutine can be frozen on Vercel before it finishes, and
@@ -117,14 +119,24 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 		log.Printf("Warning creating holdings indexes: %v", err)
 	}
 
-	// Movements: the activity log newest first (also by period), and one holding's, as either end of a
-	// transfer (movementsNewestFirst after the filtered fields, so the index serves the sort too).
+	// Movements: the activity log newest first (also by period), one holding's, as either end of a
+	// transfer, and one debt's (movementsNewestFirst after the filtered fields, so the index serves the sort
+	// too).
 	_, err = db.Movements.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: append(bson.D{{Key: "user_id", Value: 1}}, movementsNewestFirst...)},
 		{Keys: append(bson.D{{Key: "user_id", Value: 1}, {Key: "holding.id", Value: 1}}, movementsNewestFirst...)},
 		{Keys: append(bson.D{{Key: "user_id", Value: 1}, {Key: "to_holding.id", Value: 1}}, movementsNewestFirst...)},
+		{Keys: append(bson.D{{Key: "user_id", Value: 1}, {Key: "debt.id", Value: 1}}, movementsNewestFirst...)},
 	})
 	if err != nil {
 		log.Printf("Warning creating movements indexes: %v", err)
+	}
+
+	// Debts: the user's, in the order they're read (then sorted by balance, which is text).
+	_, err = db.Debts.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: 1}, {Key: "_id", Value: 1}},
+	})
+	if err != nil {
+		log.Printf("Warning creating debts index: %v", err)
 	}
 }

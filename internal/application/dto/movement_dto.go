@@ -10,12 +10,15 @@ type NewHoldingRequest struct {
 }
 
 // CreateMovementRequest is POST /movements. Which fields apply depends on kind: holdingId for GAIN, LOSS,
-// DEPOSIT and WITHDRAWAL; fromHoldingId, then toHoldingId or toNewHolding (and feeUsd) for TRANSFER.
+// DEPOSIT and WITHDRAWAL; fromHoldingId, then toHoldingId or toNewHolding (and feeUsd) for TRANSFER; debtId
+// for DEBT_PAYMENT (and fromHoldingId, where the money came from, if any), DEBT_CHARGE (and toHoldingId,
+// where it went, if any) and DEBT_INTEREST.
 type CreateMovementRequest struct {
 	Kind          string             `json:"kind"`
 	HoldingId     string             `json:"holdingId"`
 	FromHoldingId string             `json:"fromHoldingId"`
 	ToHoldingId   string             `json:"toHoldingId"`
+	DebtId        string             `json:"debtId"`
 	ToNewHolding  *NewHoldingRequest `json:"toNewHolding"`
 	AmountUsd     float64            `json:"amountUsd"`
 	FeeUsd        float64            `json:"feeUsd"`
@@ -33,6 +36,14 @@ type MovementHoldingResponse struct {
 	Exists     bool   `json:"exists"`
 }
 
+// MovementDebtResponse is a debt as the movement remembers it, and whether it still exists.
+type MovementDebtResponse struct {
+	Id     string  `json:"id"`
+	Name   string  `json:"name"`
+	Lender *string `json:"lender"`
+	Exists bool    `json:"exists"`
+}
+
 type MovementResponse struct {
 	Id               string                   `json:"id"`
 	Kind             string                   `json:"kind"`
@@ -42,6 +53,7 @@ type MovementResponse struct {
 	FeeUsd           *float64                 `json:"feeUsd"`
 	Holding          *MovementHoldingResponse `json:"holding"`
 	ToHolding        *MovementHoldingResponse `json:"toHolding"`
+	Debt             *MovementDebtResponse    `json:"debt"`
 	PreviousValueUsd *float64                 `json:"previousValueUsd"`
 	NewValueUsd      *float64                 `json:"newValueUsd"`
 	Note             *string                  `json:"note"`

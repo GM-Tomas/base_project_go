@@ -93,23 +93,25 @@ func (m *mockSnapshotRepo) FindEarliest(ctx context.Context, userId model.UserId
 }
 
 type mockWealthAggregationPort struct {
-	netWorth     model.Money
+	assets       model.Money
+	debts        model.DebtTotals
 	byAssetClass []outbound.AssetClassAggregate
 	byPlatform   []outbound.PlatformAggregate
+	totalsErr    error
 }
 
-func (m *mockWealthAggregationPort) NetWorth(ctx context.Context, userId model.UserId) (model.Money, error) {
-	return m.netWorth, nil
+func (m *mockWealthAggregationPort) Totals(ctx context.Context, userId model.UserId) (outbound.WealthTotals, error) {
+	return outbound.WealthTotals{Assets: m.assets, Debts: m.debts.Balance}, m.totalsErr
 }
 
 func (m *mockWealthAggregationPort) Breakdown(ctx context.Context, userId model.UserId) (outbound.WealthBreakdown, error) {
-	return outbound.WealthBreakdown{NetWorth: m.netWorth, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform}, nil
+	return outbound.WealthBreakdown{Assets: m.assets, Debts: m.debts, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform}, nil
 }
 
 func TestSnapshotService_CreateAndGet(t *testing.T) {
 	snapshotRepo := newMockSnapshotRepo()
 	wealthAgg := &mockWealthAggregationPort{
-		netWorth: model.MustMoneyFromFloat(100000.0),
+		assets: model.MustMoneyFromFloat(100000.0),
 	}
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	svc := service.NewSnapshotService(snapshotRepo, wealthAgg, fixedClock(now))
@@ -137,12 +139,12 @@ func TestSnapshotService_CreateAndGet(t *testing.T) {
 func TestSnapshotService_CapsSnapshotsPerUser(t *testing.T) {
 	snapshotRepo := newMockSnapshotRepo()
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
+	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{assets: model.ZeroMoney}, fixedClock(now))
 	full, other := model.NewUserId(uuid.New()), model.NewUserId(uuid.New())
 
 	for i := 0; i < model.MaxSnapshotsPerUser; i++ {
 		snapshotRepo.snapshots = append(snapshotRepo.snapshots,
-			model.NewNetWorthSnapshot(model.NewSnapshotId(), full, now.Add(-time.Duration(i+1)*time.Hour), model.ZeroMoney))
+			model.NewNetWorthSnapshot(model.NewSnapshotId(), full, now.Add(-time.Duration(i+1)*time.Hour), model.ZeroMoney, model.ZeroMoney))
 	}
 
 	_, err := svc.CreateSnapshot(context.Background(), full)
@@ -161,11 +163,11 @@ func TestSnapshotService_CapHoldsWhenSnapshotsRace(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			snapshotRepo := newMockSnapshotRepo()
 			now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-			svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
+			svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{assets: model.ZeroMoney}, fixedClock(now))
 			ctx := context.Background()
 			user := model.NewUserId(uuid.New())
 			add := func(at time.Time) {
-				snapshotRepo.snapshots = append(snapshotRepo.snapshots, model.NewNetWorthSnapshot(model.NewSnapshotId(), user, at, model.ZeroMoney))
+				snapshotRepo.snapshots = append(snapshotRepo.snapshots, model.NewNetWorthSnapshot(model.NewSnapshotId(), user, at, model.ZeroMoney, model.ZeroMoney))
 			}
 			for i := 0; i < model.MaxSnapshotsPerUser-1; i++ {
 				add(now.Add(-time.Duration(i+1) * time.Hour))
@@ -193,7 +195,7 @@ func TestSnapshotService_CapHoldsWhenSnapshotsRace(t *testing.T) {
 func TestSnapshotService_WithdrawsTheSnapshotWhenTheRecountFails(t *testing.T) {
 	snapshotRepo := newMockSnapshotRepo()
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
+	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{assets: model.ZeroMoney}, fixedClock(now))
 	snapshotRepo.countErr, snapshotRepo.countErrAfter = errors.New("db blip"), 1
 
 	_, err := svc.CreateSnapshot(context.Background(), model.NewUserId(uuid.New()))
@@ -205,10 +207,10 @@ func TestSnapshotService_WithdrawsTheSnapshotWhenTheRecountFails(t *testing.T) {
 func TestSnapshotService_ClientHangingUpAfterTheInsertDoesNotSkipTheCap(t *testing.T) {
 	snapshotRepo := newMockSnapshotRepo()
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{netWorth: model.ZeroMoney}, fixedClock(now))
+	svc := service.NewSnapshotService(snapshotRepo, &mockWealthAggregationPort{assets: model.ZeroMoney}, fixedClock(now))
 	user := model.NewUserId(uuid.New())
 	add := func(at time.Time) {
-		snapshotRepo.snapshots = append(snapshotRepo.snapshots, model.NewNetWorthSnapshot(model.NewSnapshotId(), user, at, model.ZeroMoney))
+		snapshotRepo.snapshots = append(snapshotRepo.snapshots, model.NewNetWorthSnapshot(model.NewSnapshotId(), user, at, model.ZeroMoney, model.ZeroMoney))
 	}
 	for i := 0; i < model.MaxSnapshotsPerUser-1; i++ {
 		add(now.Add(-time.Duration(i+1) * time.Hour))
@@ -225,7 +227,7 @@ func TestSnapshotService_ClientHangingUpAfterTheInsertDoesNotSkipTheCap(t *testi
 
 func TestSnapshotService_DeleteSnapshot(t *testing.T) {
 	repo := newMockSnapshotRepo()
-	svc := service.NewSnapshotService(repo, &mockWealthAggregationPort{netWorth: model.MustMoneyFromFloat(100)}, fixedClock(time.Now()))
+	svc := service.NewSnapshotService(repo, &mockWealthAggregationPort{assets: model.MustMoneyFromFloat(100)}, fixedClock(time.Now()))
 	ctx := context.Background()
 	owner, other := model.NewUserId(uuid.New()), model.NewUserId(uuid.New())
 	snap, err := svc.CreateSnapshot(ctx, owner)
@@ -243,4 +245,43 @@ func TestSnapshotService_DeleteSnapshot(t *testing.T) {
 
 	repo.deleteErr = errors.New("db down")
 	assert.EqualError(t, svc.DeleteSnapshot(ctx, owner, snap.Id), "db down")
+}
+
+func TestSnapshotService_RecordsWhatWasOwnedAndOwed(t *testing.T) {
+	snapshotRepo := newMockSnapshotRepo()
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	agg := &mockWealthAggregationPort{
+		assets: model.MustMoneyFromFloat(1000),
+		debts:  model.DebtTotals{Balance: model.MustMoneyFromFloat(1500), Count: 1},
+	}
+	svc := service.NewSnapshotService(snapshotRepo, agg, fixedClock(now))
+	user := model.NewUserId(uuid.New())
+
+	owing, err := svc.CreateSnapshot(context.Background(), user)
+	require.NoError(t, err)
+	assert.Equal(t, "1000.00", owing.Assets.String())
+	assert.Equal(t, "1500.00", owing.Debts.String())
+	assert.Equal(t, "-500.00", owing.TotalValue.String())
+
+	// The change from a net worth below zero has no percentage; from one above, it does.
+	agg.debts = model.DebtTotals{Balance: model.ZeroMoney}
+	svc = service.NewSnapshotService(snapshotRepo, agg, fixedClock(now.Add(time.Hour)))
+	_, err = svc.CreateSnapshot(context.Background(), user)
+	require.NoError(t, err)
+	agg.assets = model.MustMoneyFromFloat(1100)
+	svc = service.NewSnapshotService(snapshotRepo, agg, fixedClock(now.Add(2*time.Hour)))
+	_, err = svc.CreateSnapshot(context.Background(), user)
+	require.NoError(t, err)
+
+	history, err := svc.GetSnapshots(context.Background(), user)
+	require.NoError(t, err)
+	require.Len(t, history, 3)
+	assert.Nil(t, history[1].ChangePctFromPrevious, "from -500")
+	require.NotNil(t, history[2].ChangePctFromPrevious)
+	assert.Equal(t, "10.0", history[2].ChangePctFromPrevious.StringFixed(1))
+
+	agg.totalsErr = errors.New("boom")
+	svc = service.NewSnapshotService(snapshotRepo, agg, fixedClock(now.Add(3*time.Hour)))
+	_, err = svc.CreateSnapshot(context.Background(), user)
+	assert.EqualError(t, err, "boom")
 }

@@ -7,15 +7,20 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	domainService "github.com/GM-Tomas/base_project_go/internal/domain/service"
+	"github.com/GM-Tomas/base_project_go/internal/parallel"
 )
 
+// ProjectionService projects the portfolio (the assets) with compound interest and monthly contributions.
+// Debts aren't part of it: each is paid off on its own terms, and the net worth is what's left after them.
 type ProjectionService struct {
 	wealthAggregationPort outbound.WealthAggregationPort
+	debtRepo              outbound.DebtRepository
 	clock                 Clock
 }
 
 func NewProjectionService(
 	wealthAggregationPort outbound.WealthAggregationPort,
+	debtRepo outbound.DebtRepository,
 	clock Clock,
 ) *ProjectionService {
 	if clock == nil {
@@ -23,6 +28,7 @@ func NewProjectionService(
 	}
 	return &ProjectionService{
 		wealthAggregationPort: wealthAggregationPort,
+		debtRepo:              debtRepo,
 		clock:                 clock,
 	}
 }
@@ -33,11 +39,6 @@ func (s *ProjectionService) Project(
 	ctx context.Context,
 	request inbound.ProjectionRequest,
 ) (inbound.ProjectionResult, error) {
-	principal, err := s.wealthAggregationPort.NetWorth(ctx, request.UserId)
-	if err != nil {
-		return inbound.ProjectionResult{}, err
-	}
-
 	monthlyContribution, err := model.NewMoneyFromFloat(request.MonthlyContribution)
 	if err != nil {
 		return inbound.ProjectionResult{}, err
@@ -58,7 +59,7 @@ func (s *ProjectionService) Project(
 	}
 
 	params, err := model.NewProjectionParams(
-		principal,
+		model.ZeroMoney,
 		monthlyContribution,
 		annualYieldPct,
 		request.Years,
@@ -68,10 +69,35 @@ func (s *ProjectionService) Project(
 		return inbound.ProjectionResult{}, err
 	}
 
+	var (
+		totals outbound.WealthTotals
+		debts  []model.Debt
+	)
+	err = parallel.Run(ctx,
+		func(ctx context.Context) (err error) {
+			totals, err = s.wealthAggregationPort.Totals(ctx, request.UserId)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			debts, err = s.debtRepo.FindAll(ctx, request.UserId)
+			return err
+		},
+	)
+	if err != nil {
+		return inbound.ProjectionResult{}, err
+	}
+	params.Principal = totals.Assets
+	params.DebtBalances = domainService.TotalDebtBalances(debts, params.Years*12)
+	owed := model.ZeroMoney
+	for _, d := range debts {
+		owed = owed.Plus(d.Balance)
+	}
+
 	now := s.clock()
 
 	return inbound.ProjectionResult{
 		Principal:           params.Principal,
+		Debts:               owed,
 		MonthlyContribution: params.MonthlyContribution,
 		AnnualYieldPct:      params.AnnualYieldPct,
 		Years:               params.Years,

@@ -130,3 +130,32 @@ func (id MovementId) UUID() uuid.UUID {
 func (id MovementId) String() string {
 	return id.value.String()
 }
+
+// DebtId represents the unique identifier of a Debt.
+type DebtId struct {
+	value uuid.UUID
+}
+
+func NewDebtId() DebtId {
+	return DebtId{value: uuid.New()}
+}
+
+func DebtIdFromUUID(u uuid.UUID) DebtId {
+	return DebtId{value: u}
+}
+
+func ParseDebtId(s string) (DebtId, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return DebtId{}, fmt.Errorf("%w: %s", ErrInvalidUUID, s)
+	}
+	return DebtId{value: u}, nil
+}
+
+func (id DebtId) UUID() uuid.UUID {
+	return id.value
+}
+
+func (id DebtId) String() string {
+	return id.value.String()
+}

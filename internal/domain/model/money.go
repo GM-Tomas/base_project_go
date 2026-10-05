@@ -13,7 +13,7 @@ var (
 	ErrNegativeMoney  = errors.New("money must not be negative")
 	ErrNonFiniteMoney = errors.New("money must be a finite number")
 	hundred           = decimal.NewFromInt(100)
-	ZeroMoney         = Money{amount: decimal.NewFromInt(0).Truncate(2)}
+	ZeroMoney         = Money{amount: decimal.New(0, -2)} // as NewMoney keeps it: scale 2
 )
 
 // Money represents a non-negative USD amount, always scale 2.

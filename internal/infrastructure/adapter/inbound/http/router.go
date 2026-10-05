@@ -13,6 +13,7 @@ type RouterParams struct {
 	JWTValidator      middleware.JWTValidator
 	HealthHandler     *HealthHandler
 	HoldingHandler    *HoldingHandler
+	DebtHandler       *DebtHandler
 	MovementHandler   *MovementHandler
 	PlatformHandler   *PlatformHandler
 	AssetClassHandler *AssetClassHandler
@@ -84,6 +85,11 @@ func NewRouter(params RouterParams) http.Handler {
 			r.Post("/holdings", params.HoldingHandler.CreateHolding)
 			r.Patch("/holdings/{id}", params.HoldingHandler.UpdateHolding)
 			r.Delete("/holdings/{id}", params.HoldingHandler.DeleteHolding)
+
+			r.Get("/debts", params.DebtHandler.GetDebts)
+			r.Post("/debts", params.DebtHandler.CreateDebt)
+			r.Patch("/debts/{id}", params.DebtHandler.UpdateDebt)
+			r.Delete("/debts/{id}", params.DebtHandler.DeleteDebt)
 
 			r.Get("/movements", params.MovementHandler.ListMovements)
 			r.Post("/movements", params.MovementHandler.RecordMovement)

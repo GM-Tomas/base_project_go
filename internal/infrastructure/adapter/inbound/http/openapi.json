@@ -28,6 +28,10 @@
       "description": "Gestión de posiciones y activos de inversión"
     },
     {
+      "name": "Debts",
+      "description": "Lo que el usuario debe (tarjetas, préstamos, hipotecas) y cuándo se termina de pagar cada deuda."
+    },
+    {
       "name": "Platforms",
       "description": "Gestión de entidades y plataformas financieras"
     },
@@ -632,6 +636,219 @@
         }
       }
     },
+    "/api/v1/debts": {
+      "get": {
+        "tags": [
+          "Debts"
+        ],
+        "summary": "Lista las deudas del usuario",
+        "description": "Por saldo descendente, después por nombre. Cada una trae cuándo se cancela con su cuota (`payoff`).",
+        "operationId": "getDebts",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Las deudas",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DebtResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Debts"
+        ],
+        "summary": "Agrega una deuda",
+        "description": "Registra su `OPENING` (con el saldo inicial) en la misma transacción. Hasta 200 deudas por usuario.",
+        "operationId": "createDebt",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDebtRequest"
+              },
+              "example": {
+                "name": "Visa",
+                "lender": "Banco Galicia",
+                "kind": "CREDIT_CARD",
+                "balanceUsd": 1250.4,
+                "interestRatePct": 65,
+                "monthlyPaymentUsd": 300,
+                "dueDay": 10
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "La deuda creada",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebtResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ConflictError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
+          }
+        }
+      }
+    },
+    "/api/v1/debts/{id}": {
+      "patch": {
+        "tags": [
+          "Debts"
+        ],
+        "summary": "Edita una deuda",
+        "description": "Cambia solo lo enviado (*merge patch*; `null` borra los opcionales). Un cambio de `balanceUsd` queda registrado como movimiento según `balanceChangeReason`, calculado contra el saldo leído en la misma transacción. Un cuerpo vacío o con los valores actuales no escribe nada.",
+        "operationId": "updateDebt",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Identificador UUID de la deuda",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDebtRequest"
+              },
+              "example": {
+                "balanceUsd": 950.4,
+                "balanceChangeReason": "PAYMENT",
+                "dueDay": 15
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "La deuda como quedó",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebtResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Debts"
+        ],
+        "summary": "Elimina una deuda",
+        "description": "Registra su `CLOSING` (con el saldo que tenía) en la misma transacción; su actividad se conserva.",
+        "operationId": "deleteDebt",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Identificador UUID de la deuda",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deuda eliminada (sin contenido)"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
+          }
+        }
+      }
+    },
     "/api/v1/movements": {
       "get": {
         "tags": [
@@ -656,12 +873,21 @@
             "description": "Solo los de ese holding (como origen o destino de una transferencia)."
           },
           {
+            "name": "debtId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Solo los de esa deuda."
+          },
+          {
             "name": "kind",
             "in": "query",
             "schema": {
               "type": "string"
             },
-            "description": "Lista separada por comas, p. ej. `GAIN,LOSS`."
+            "description": "Lista separada por comas de OPENING, CLOSING, GAIN, LOSS, DEPOSIT, WITHDRAWAL, TRANSFER, ADJUSTMENT, DEBT_PAYMENT, DEBT_CHARGE, DEBT_INTEREST; p. ej. `GAIN,LOSS`."
           },
           {
             "name": "from",
@@ -1004,7 +1230,7 @@
           "usd": {
             "type": "number",
             "format": "double",
-            "description": "Patrimonio neto total expresado en USD (escala 2)",
+            "description": "Patrimonio neto: assets − deudas (puede ser negativo), USD con escala 2.",
             "example": 84250.0
           }
         }
@@ -1149,6 +1375,8 @@
         "type": "object",
         "required": [
           "netWorth",
+          "assets",
+          "debts",
           "holdingsCount",
           "ytd",
           "liquidity",
@@ -1158,6 +1386,12 @@
         "properties": {
           "netWorth": {
             "$ref": "#/components/schemas/NetWorthDTO"
+          },
+          "assets": {
+            "$ref": "#/components/schemas/AssetsDTO"
+          },
+          "debts": {
+            "$ref": "#/components/schemas/DebtsDTO"
           },
           "holdingsCount": {
             "type": "integer",
@@ -1181,7 +1415,8 @@
               "$ref": "#/components/schemas/PlatformBreakdown"
             }
           }
-        }
+        },
+        "description": "`byAssetClass` y `byPlatform` (y sus `pct`) son sobre los assets; el YTD, sobre el patrimonio neto (sin porcentaje si la base no es mayor que 0: `NO_BASELINE`)."
       },
       "ProjectionPointResponse": {
         "type": "object",
@@ -1189,7 +1424,9 @@
           "year",
           "futureValueUsd",
           "totalContributedUsd",
-          "interestEarnedUsd"
+          "interestEarnedUsd",
+          "debtBalanceUsd",
+          "netWorthUsd"
         ],
         "properties": {
           "year": {
@@ -1214,6 +1451,18 @@
             "format": "double",
             "description": "Interés compuesto ganado acumulado (futureValueUsd - totalContributedUsd)",
             "example": 46270.15
+          },
+          "debtBalanceUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "Lo que se debe ese año: cada deuda se amortiza con su cuota y su tasa (sin cuota, su saldo queda constante).",
+            "example": 0
+          },
+          "netWorthUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "futureValueUsd − debtBalanceUsd.",
+            "example": 184520.15
           }
         }
       },
@@ -1260,6 +1509,7 @@
         "type": "object",
         "required": [
           "principalUsd",
+          "debtsUsd",
           "monthlyContributionUsd",
           "annualYieldPct",
           "years",
@@ -1270,7 +1520,14 @@
           "principalUsd": {
             "type": "number",
             "format": "double",
-            "example": 84250.0
+            "example": 84250.0,
+            "description": "El portafolio (los assets) del que parte la proyección."
+          },
+          "debtsUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "Lo que se debe hoy.",
+            "example": 0
           },
           "monthlyContributionUsd": {
             "type": "number",
@@ -1297,7 +1554,8 @@
               "$ref": "#/components/schemas/MilestoneResponse"
             }
           }
-        }
+        },
+        "description": "Proyecta el portafolio (los assets) con interés compuesto mensual y aportes; las deudas se pagan aparte, con su cuota y su tasa. Los hitos se evalúan sobre el patrimonio neto, mes a mes."
       },
       "SnapshotResponse": {
         "type": "object",
@@ -1305,6 +1563,8 @@
           "id",
           "capturedAt",
           "totalValueUsd",
+          "assetsUsd",
+          "debtsUsd",
           "changePctFromPrevious"
         ],
         "properties": {
@@ -1321,12 +1581,25 @@
           "totalValueUsd": {
             "type": "number",
             "format": "double",
+            "example": 84250.0,
+            "description": "El patrimonio neto: `assetsUsd − debtsUsd` (negativo si se debía más de lo que se tenía)."
+          },
+          "assetsUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "Lo que se tenía. En snapshots anteriores a las deudas, igual a `totalValueUsd`.",
             "example": 84250.0
+          },
+          "debtsUsd": {
+            "type": "number",
+            "format": "double",
+            "description": "Lo que se debía (0 en snapshots anteriores a las deudas).",
+            "example": 0
           },
           "changePctFromPrevious": {
             "type": "number",
             "nullable": true,
-            "description": "Variación porcentual contra el snapshot cronológico anterior (null para el primero)",
+            "description": "Variación porcentual del patrimonio neto contra el snapshot anterior (null para el primero, o si el anterior no era mayor que 0)",
             "example": 3.4
           }
         }
@@ -1641,7 +1914,7 @@
           "kind",
           "amountUsd"
         ],
-        "description": "Qué campos aplican depende de `kind`: `holdingId` para GAIN, LOSS, DEPOSIT y WITHDRAWAL; `fromHoldingId` y uno de `toHoldingId`/`toNewHolding` (más `feeUsd`) para TRANSFER.",
+        "description": "Qué campos aplican depende de `kind`: `holdingId` para GAIN, LOSS, DEPOSIT y WITHDRAWAL; `fromHoldingId` y uno de `toHoldingId`/`toNewHolding` (más `feeUsd`) para TRANSFER; `debtId` para DEBT_PAYMENT (y `fromHoldingId`, de dónde salió la plata, si se indica), DEBT_CHARGE (y `toHoldingId`, a dónde fue, si se indica) y DEBT_INTEREST. Un pago no puede superar el saldo de la deuda (`409`: *\"Visa only has $1,250.00 left to pay.\"*) ni el valor del holding de origen.",
         "properties": {
           "kind": {
             "type": "string",
@@ -1650,7 +1923,10 @@
               "LOSS",
               "DEPOSIT",
               "WITHDRAWAL",
-              "TRANSFER"
+              "TRANSFER",
+              "DEBT_PAYMENT",
+              "DEBT_CHARGE",
+              "DEBT_INTEREST"
             ]
           },
           "holdingId": {
@@ -1667,6 +1943,11 @@
           },
           "toNewHolding": {
             "$ref": "#/components/schemas/NewHoldingRequest"
+          },
+          "debtId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "DEBT_PAYMENT, DEBT_CHARGE y DEBT_INTEREST: la deuda."
           },
           "amountUsd": {
             "type": "number",
@@ -1731,7 +2012,10 @@
               "DEPOSIT",
               "WITHDRAWAL",
               "TRANSFER",
-              "ADJUSTMENT"
+              "ADJUSTMENT",
+              "DEBT_PAYMENT",
+              "DEBT_CHARGE",
+              "DEBT_INTEREST"
             ]
           },
           "occurredAt": {
@@ -1762,7 +2046,7 @@
                 "type": "null"
               }
             ],
-            "description": "El holding afectado; en TRANSFER, el origen."
+            "description": "El holding afectado; en TRANSFER y DEBT_PAYMENT, de dónde salió la plata."
           },
           "toHolding": {
             "oneOf": [
@@ -1773,7 +2057,18 @@
                 "type": "null"
               }
             ],
-            "description": "TRANSFER: el destino."
+            "description": "A dónde llegó la plata: el destino de un TRANSFER, el holding al que fue un DEBT_CHARGE."
+          },
+          "debt": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MovementDebtResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "La deuda afectada: los DEBT_* y el OPENING, CLOSING o ADJUSTMENT de una deuda (que entonces no tienen `holding`)."
           },
           "previousValueUsd": {
             "type": [
@@ -1796,7 +2091,7 @@
           },
           "revertible": {
             "type": "boolean",
-            "description": "Si hoy se puede deshacer (tipo y existencia de los holdings; el saldo se verifica al deshacer)."
+            "description": "Si hoy se puede deshacer (tipo y existencia de los holdings y la deuda; el saldo se verifica al deshacer)."
           }
         }
       },
@@ -1815,6 +2110,385 @@
               "null"
             ],
             "description": "Opaco: pasarlo como `cursor` para la página siguiente; `null` en la última."
+          }
+        }
+      },
+      "CreateDebtRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "balanceUsd"
+        ],
+        "description": "Solo `name` y `balanceUsd` son obligatorios; `kind` es `OTHER` si no se manda.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "example": "Visa"
+          },
+          "balanceUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000000000000.0,
+            "description": "Lo que queda por pagar.",
+            "example": 1250.4
+          },
+          "lender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120,
+            "description": "A quién se le debe (opcional).",
+            "example": "Banco Galicia"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "CREDIT_CARD",
+              "LOAN",
+              "MORTGAGE",
+              "PERSONAL",
+              "OTHER"
+            ],
+            "default": "OTHER",
+            "example": "CREDIT_CARD"
+          },
+          "interestRatePct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 200,
+            "description": "Tasa anual en %, si se conoce.",
+            "example": 65
+          },
+          "monthlyPaymentUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1000000000000000.0,
+            "description": "Cuota mensual, si hay una fija.",
+            "example": 300
+          },
+          "dueDay": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 31,
+            "description": "Día del mes en que vence la cuota.",
+            "example": 10
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          }
+        }
+      },
+      "UpdateDebtRequest": {
+        "type": "object",
+        "description": "*Merge patch*: cambia solo lo enviado. `null` borra los opcionales (`lender`, `interestRatePct`, `monthlyPaymentUsd`, `dueDay`, `notes`); para `name`, `kind` y `balanceUsd` es un error de validación.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "balanceUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000000000000.0
+          },
+          "lender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120,
+            "description": "A quién se le debe (opcional).",
+            "example": "Banco Galicia"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "CREDIT_CARD",
+              "LOAN",
+              "MORTGAGE",
+              "PERSONAL",
+              "OTHER"
+            ],
+            "default": "OTHER",
+            "example": "CREDIT_CARD"
+          },
+          "interestRatePct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 200,
+            "description": "Tasa anual en %, si se conoce.",
+            "example": 65
+          },
+          "monthlyPaymentUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1000000000000000.0,
+            "description": "Cuota mensual, si hay una fija.",
+            "example": 300
+          },
+          "dueDay": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 31,
+            "description": "Día del mes en que vence la cuota.",
+            "example": 10
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "balanceChangeReason": {
+            "type": "string",
+            "enum": [
+              "PAYMENT",
+              "CHARGE",
+              "INTEREST",
+              "CORRECTION"
+            ],
+            "default": "CORRECTION",
+            "description": "Qué fue el cambio de `balanceUsd`: un pago (`DEBT_PAYMENT`, solo si baja), cargos nuevos (`DEBT_CHARGE`) o intereses (`DEBT_INTEREST`), solo si sube, o una corrección (`ADJUSTMENT`, en cualquier sentido). Se ignora si el saldo no cambia."
+          },
+          "occurredAt": {
+            "type": "string",
+            "description": "Cuándo ocurrió el cambio de saldo: fecha `YYYY-MM-DD` (12:00 UTC) o instante RFC 3339. Por defecto, ahora.",
+            "example": "2026-10-05"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Nota del movimiento que registra el cambio de saldo."
+          }
+        }
+      },
+      "DebtPayoffResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "months",
+          "payoffMonth",
+          "totalInterestUsd"
+        ],
+        "description": "Cuándo se cancela la deuda pagando su cuota: saldo ← saldo × (1 + tasa/12) − cuota, mes a mes (interés redondeado a centavos), hasta 600 meses. `months`, `payoffMonth` y `totalInterestUsd` vienen con `ON_TRACK`.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "PAID_OFF",
+              "ON_TRACK",
+              "NEVER",
+              "NO_PAYMENT"
+            ],
+            "description": "`PAID_OFF`: saldo 0. `ON_TRACK`: se cancela. `NEVER`: la cuota no cubre el interés del mes o tardaría más de 50 años. `NO_PAYMENT`: sin cuota."
+          },
+          "months": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "example": 5
+          },
+          "payoffMonth": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`YYYY-MM`",
+            "example": "2027-03"
+          },
+          "totalInterestUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 140.2
+          }
+        }
+      },
+      "DebtResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "lender",
+          "kind",
+          "balanceUsd",
+          "interestRatePct",
+          "monthlyPaymentUsd",
+          "dueDay",
+          "notes",
+          "createdAt",
+          "updatedAt",
+          "payoff"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Visa"
+          },
+          "balanceUsd": {
+            "type": "number",
+            "example": 1250.4
+          },
+          "lender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 120,
+            "description": "A quién se le debe (opcional).",
+            "example": "Banco Galicia"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "CREDIT_CARD",
+              "LOAN",
+              "MORTGAGE",
+              "PERSONAL",
+              "OTHER"
+            ],
+            "default": "OTHER",
+            "example": "CREDIT_CARD"
+          },
+          "interestRatePct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 200,
+            "description": "Tasa anual en %, si se conoce.",
+            "example": 65
+          },
+          "monthlyPaymentUsd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1000000000000000.0,
+            "description": "Cuota mensual, si hay una fija.",
+            "example": 300
+          },
+          "dueDay": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 31,
+            "description": "Día del mes en que vence la cuota.",
+            "example": 10
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "payoff": {
+            "$ref": "#/components/schemas/DebtPayoffResponse"
+          }
+        }
+      },
+      "MovementDebtResponse": {
+        "type": "object",
+        "description": "Una deuda tal como era cuando ocurrió el movimiento, y si todavía existe.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "lender": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "exists": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AssetsDTO": {
+        "type": "object",
+        "required": [
+          "usd"
+        ],
+        "properties": {
+          "usd": {
+            "type": "number",
+            "description": "Lo que el usuario tiene: la suma de sus holdings.",
+            "example": 120000
+          }
+        }
+      },
+      "DebtsDTO": {
+        "type": "object",
+        "required": [
+          "usd",
+          "count",
+          "monthlyPaymentUsd"
+        ],
+        "properties": {
+          "usd": {
+            "type": "number",
+            "description": "Lo que debe: la suma de los saldos de sus deudas.",
+            "example": 20000
+          },
+          "count": {
+            "type": "integer",
+            "example": 2
+          },
+          "monthlyPaymentUsd": {
+            "type": "number",
+            "description": "La suma de las cuotas mensuales (de las deudas que tienen una).",
+            "example": 950
           }
         }
       }

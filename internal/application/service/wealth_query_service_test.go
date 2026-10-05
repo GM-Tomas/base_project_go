@@ -18,7 +18,7 @@ import (
 func TestWealthQueryService_GetSummary(t *testing.T) {
 	snapshotRepo := newMockSnapshotRepo()
 	wealthAgg := &mockWealthAggregationPort{
-		netWorth: model.MustMoneyFromFloat(100000.0),
+		assets: model.MustMoneyFromFloat(100000.0),
 		byAssetClass: []outbound.AssetClassAggregate{
 			{AssetClass: model.MustAssetClass("Cash"), Value: model.MustMoneyFromFloat(40000.0), Count: 2},
 			{AssetClass: model.MustAssetClass("Equity"), Value: model.MustMoneyFromFloat(60000.0), Count: 3},
@@ -85,7 +85,7 @@ func TestWealthQueryService_GetSummary_ReadsEverythingAtOnce(t *testing.T) {
 		started.Done()
 		started.Wait()
 	}
-	agg := &slowAggregation{mockWealthAggregationPort: mockWealthAggregationPort{netWorth: model.MustMoneyFromFloat(10)}, onRead: onRead}
+	agg := &slowAggregation{mockWealthAggregationPort: mockWealthAggregationPort{assets: model.MustMoneyFromFloat(10)}, onRead: onRead}
 	snapshots := &slowSnapshots{mockSnapshotRepo: newMockSnapshotRepo(), onRead: onRead}
 	svc := service.NewWealthQueryService(agg, snapshots, fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)), nil)
 
@@ -113,4 +113,40 @@ func TestWealthQueryService_GetSummary_AFailingReadFailsItWithItsError(t *testin
 	_, err := svc.GetSummary(context.Background(), model.NewUserId(uuid.New()))
 
 	assert.ErrorIs(t, err, broken)
+}
+
+func TestWealthQueryService_GetSummary_NetsOutDebts(t *testing.T) {
+	snapshots := newMockSnapshotRepo()
+	user := model.NewUserId(uuid.New())
+	// January's net worth was 2,000; now 3,000 is owned and 4,500 owed.
+	snapshots.firstOfYear = ptr(model.NewNetWorthSnapshot(model.NewSnapshotId(), user,
+		time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), model.MustMoneyFromFloat(3000), model.MustMoneyFromFloat(1000)))
+	agg := &mockWealthAggregationPort{
+		assets: model.MustMoneyFromFloat(3000),
+		debts:  model.DebtTotals{Balance: model.MustMoneyFromFloat(4500), Count: 2, MonthlyPayment: model.MustMoneyFromFloat(450)},
+		byAssetClass: []outbound.AssetClassAggregate{
+			{AssetClass: model.MustAssetClass("Cash"), Value: model.MustMoneyFromFloat(3000), Count: 1},
+		},
+	}
+	svc := service.NewWealthQueryService(agg, snapshots, fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)), nil)
+
+	summary, err := svc.GetSummary(context.Background(), user)
+	require.NoError(t, err)
+	assert.Equal(t, -1500.0, summary.NetWorth.Usd)
+	assert.Equal(t, 3000.0, summary.Assets.Usd)
+	assert.Equal(t, 4500.0, summary.Debts.Usd)
+	assert.Equal(t, 2, summary.Debts.Count)
+	assert.Equal(t, 450.0, summary.Debts.MonthlyPaymentUsd)
+	assert.Equal(t, 100.0, summary.ByAssetClass[0].Pct, "a share of what's owned")
+	assert.Equal(t, "YEAR_START_SNAPSHOT", summary.Ytd.Basis)
+	assert.Equal(t, -175.0, summary.Ytd.GrowthPct, "from 2,000 to -1,500")
+	assert.Equal(t, 2000.0, *summary.Ytd.BaselineValueUsd)
+
+	// A baseline that wasn't above zero has nothing to compare with.
+	snapshots.firstOfYear = ptr(model.NewNetWorthSnapshot(model.NewSnapshotId(), user,
+		time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), model.MustMoneyFromFloat(100), model.MustMoneyFromFloat(100)))
+	summary, err = svc.GetSummary(context.Background(), user)
+	require.NoError(t, err)
+	assert.Equal(t, "NO_BASELINE", summary.Ytd.Basis)
+	assert.Nil(t, summary.Ytd.BaselineValueUsd)
 }

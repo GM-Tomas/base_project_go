@@ -121,7 +121,8 @@ reconstruye) seguiría respondiendo `503` hasta el próximo build de producción
 Supabase se usa **solo como proveedor de identidad** (login). El proyecto debe firmar los JWT con **claves asimétricas** (Authentication → JWT Keys): la API
 valida contra el JWKS público. Con el secreto HS256 legacy el JWKS está vacío y todo request con token da `503`.
 
-Los índices de MongoDB (un snapshot por segundo y por usuario, listado de holdings por usuario) se crean solos al arrancar.
+Los índices de MongoDB (un snapshot por segundo y por usuario, listados de holdings, deudas y actividad por usuario) se
+crean solos al arrancar.
 Al actualizar una base existente, dos índices de `holdings` que crearon versiones anteriores ya no los usa ninguna
 consulta y se pueden borrar: `db.holdings.dropIndex("user_id_1_platform_name_1")` y, si algún build previo de esta
 versión llegó a crearlo, `db.holdings.dropIndex("user_id_1_created_at_1")`.
@@ -131,13 +132,19 @@ versión llegó a crearlo, `db.holdings.dropIndex("user_id_1_created_at_1")`.
 ## 🗄️ Persistencia: MongoDB
 
 El adaptador `internal/infrastructure/adapter/outbound/persistence/mongo/` implementa los puertos outbound
-(`HoldingRepository`, `PlatformRepository`, `SnapshotRepository`, `MovementRepository`, `QuotaRepository`,
-`WealthAggregationPort`, `TransactionManager`) sobre las colecciones `holdings`, `net_worth_snapshots`, `movements`
-(la actividad: cada cambio de valor) y `quotas` (contadores por usuario). Los montos se guardan como decimales en
-texto (escala 2) para no perder precisión.
+(`HoldingRepository`, `DebtRepository`, `PlatformRepository`, `SnapshotRepository`, `MovementRepository`,
+`QuotaRepository`, `WealthAggregationPort`, `TransactionManager`) sobre las colecciones `holdings`, `debts` (lo que se
+debe), `net_worth_snapshots`, `movements` (la actividad: cada cambio de valor de un holding o del saldo de una deuda) y
+`quotas` (contadores por usuario). Los montos y las tasas se guardan como decimales en texto (escala 2) para no perder
+precisión.
+
+**Patrimonio neto = assets − deudas.** El resumen, los snapshots y los hitos de la proyección usan el neto, que puede ser
+negativo. Cada snapshot guarda también lo que se tenía (`assets_usd`) y lo que se debía (`debts_usd`); los anteriores a
+las deudas no los tienen y se leen como assets = total y deudas = 0. La proyección parte del portafolio (los assets) y
+amortiza cada deuda aparte, con su cuota y su tasa.
 
 **Transacciones.** Cada cambio de valor se escribe junto con su movimiento en una transacción (alta, edición y baja
-de holdings, movimientos, deshacer): todo o nada. MongoDB solo tiene transacciones en un **replica set**: Atlas ya
+de holdings y deudas, movimientos, pagos de deudas desde un holding, deshacer): todo o nada. MongoDB solo tiene transacciones en un **replica set**: Atlas ya
 lo es (incluido el tier gratuito); en local, `compose.yaml` levanta uno de un nodo. Contra un `mongod` standalone la
 API arranca y lee igual, avisa en el log, y esas escrituras responden `503` (`.../transactions-unavailable`). Un
 volumen creado antes con el compose standalone sirve tal cual: el contenedor nuevo lo reinicia como replica set.
@@ -176,7 +183,8 @@ Authorization: Bearer <session.access_token>
 
 La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Supabase y ve y modifica **solo sus datos**.
 
-- **Cómo se aísla:** cada documento de MongoDB (`holdings`, `net_worth_snapshots`) guarda el `user_id` (el `sub` del JWT)
+- **Cómo se aísla:** cada documento de MongoDB (`holdings`, `debts`, `net_worth_snapshots`, `movements`) guarda el
+  `user_id` (el `sub` del JWT)
   y **toda** lectura, escritura y borrado filtra por él, incluidos las plataformas, los agregados del resumen y la proyección.
   Dos cuentas pueden tener una plataforma "Binance" o un snapshot en el mismo segundo sin chocar.
 - **Recursos ajenos:** borrar un holding de otra cuenta (aunque se conozca su id) responde `404`, igual que uno inexistente,
@@ -184,21 +192,22 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 - **Agregar usuarios:** en Supabase, *Authentication → Users → Add user* (email + contraseña). Los sign-ups públicos están
   desactivados a propósito: solo entra quien vos des de alta. No hay que tocar nada en la API: la primera vez que un usuario
   nuevo inicia sesión ve su dashboard vacío.
-- **Cuotas por usuario** (todas las cuentas comparten la base): hasta **1000 holdings**, **5000 snapshots** y **20000
-  movimientos** por cuenta. Al superarlas la API responde `409` con `type` `.../limit-exceeded`. Los movimientos se
-  cuentan en `quotas`, dentro de la misma transacción: dos pedidos simultáneos del mismo usuario se serializan, así
-  que las cuotas de holdings y movimientos son exactas (borrar un holding siempre funciona: su `CLOSING` no cuenta).
+- **Cuotas por usuario** (todas las cuentas comparten la base): hasta **1000 holdings**, **200 deudas**, **5000
+  snapshots** y **20000 movimientos** por cuenta. Al superarlas la API responde `409` con `type` `.../limit-exceeded`.
+  Los movimientos se cuentan en `quotas`, dentro de la misma transacción: dos pedidos simultáneos del mismo usuario se
+  serializan, así que las cuotas de holdings, deudas y movimientos son exactas (borrar un holding o una deuda siempre
+  funciona: su `CLOSING` no cuenta).
 - **Borrar los datos de una cuenta** (p. ej. al eliminar al usuario en Supabase): sus datos en MongoDB no se borran solos.
   ```js
   // mongosh, con el id (UUID) del usuario de Supabase
   const uid = "<uuid>";
   // ("platforms" solo existe en bases de versiones anteriores)
-  ["holdings", "net_worth_snapshots", "movements", "platforms"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
+  ["holdings", "debts", "net_worth_snapshots", "movements", "platforms"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
   db.quotas.deleteOne({ _id: uid });
   ```
 - **Tests:** `internal/infrastructure/app/multiuser_test.go` levanta la API completa (router, auth, servicios y MongoDB real)
-  con un JWKS de prueba y verifica con dos usuarios que ninguno ve ni modifica holdings, plataformas, clases de activo,
-  snapshots, resumen o proyección del otro, que un `userId` en el body o la query se ignora, y que en modo dev las cuentas
+  con un JWKS de prueba y verifica con dos usuarios que ninguno ve ni modifica holdings, deudas, movimientos,
+  plataformas, clases de activo, snapshots, resumen o proyección del otro, que un `userId` en el body o la query se ignora, y que en modo dev las cuentas
   reales siguen separadas.
 
 ---
@@ -209,17 +218,21 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 |---|---|---|---|
 | `GET` | `/api/v1/health` | — (monitoreo) | No |
 | `GET` | `/swagger`, `/api/v1/openapi.json` | — (documentación) | Basic auth si hay `DOCS_PASSWORD`; en Vercel, `404` sin ella |
-| `GET` | `/api/v1/wealth/summary` | Dashboard, Platforms (net worth, YTD, liquidez, desgloses) | Sí |
+| `GET` | `/api/v1/wealth/summary` | Dashboard, Platforms (net worth = assets − deudas, YTD, liquidez, desgloses) | Sí |
 | `GET` | `/api/v1/holdings` | Assets, drill-down de Platforms, contador | Sí |
 | `POST` | `/api/v1/holdings` | Modal "Add an asset" (crea la plataforma si es nueva; registra su `OPENING`; `409` al superar 1000 holdings) | Sí |
 | `PATCH` | `/api/v1/holdings/{id}` | Edit asset (solo cambia lo enviado; un valor nuevo queda registrado según `valueChangeReason`; `404` si no existe o es ajeno) | Sí |
 | `DELETE` | `/api/v1/holdings/{id}` | Assets (registra su `CLOSING`; borra también la plataforma si quedó vacía) | Sí |
-| `GET` | `/api/v1/movements` | Activity y detalle de un asset (`holdingId`, `kind`, `from`, `to`, `limit`, `cursor`) | Sí |
-| `POST` | `/api/v1/movements` | Gain/loss, deposit/withdrawal, transfer (`409` si un valor quedaría negativo) | Sí |
+| `GET` | `/api/v1/debts` | Debts (por saldo; cada una con su `payoff`: cuándo se cancela con su cuota) | Sí |
+| `POST` | `/api/v1/debts` | "Add a debt" (registra su `OPENING`; `409` al superar 200 deudas) | Sí |
+| `PATCH` | `/api/v1/debts/{id}` | Edit debt (*merge patch*, `null` borra los opcionales; un saldo nuevo queda registrado según `balanceChangeReason`) | Sí |
+| `DELETE` | `/api/v1/debts/{id}` | Debts (registra su `CLOSING`) | Sí |
+| `GET` | `/api/v1/movements` | Activity y detalle de un asset o una deuda (`holdingId`, `debtId`, `kind`, `from`, `to`, `limit`, `cursor`) | Sí |
+| `POST` | `/api/v1/movements` | Gain/loss, deposit/withdrawal, transfer; pago, cargo e interés de una deuda (`409` si un valor o saldo quedaría negativo) | Sí |
 | `DELETE` | `/api/v1/movements/{id}` | Undo (revierte como delta; `409` si no se puede) | Sí |
 | `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts" | Sí |
 | `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets | Sí |
-| `GET` | `/api/v1/wealth/estimate?contribution&yieldPct&years` | Estimate (hitos fijos 150k/250k) | Sí |
+| `GET` | `/api/v1/wealth/estimate?contribution&yieldPct&years` | Estimate (parte de los assets; deudas amortizadas aparte; hitos 150k/250k sobre el neto) | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | History | Sí |
 | `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (`409` si ya hay uno en ese segundo o al superar 5000) | Sí |
 | `DELETE` | `/api/v1/wealth/snapshots/{id}` | History → "Delete checkpoint" (`404` si no existe o es ajeno) | Sí |
