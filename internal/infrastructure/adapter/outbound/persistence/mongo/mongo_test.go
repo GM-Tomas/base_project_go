@@ -855,6 +855,13 @@ func TestWealthAggregation_BreakdownReadsHoldingsOnce(t *testing.T) {
 	}
 	_, err := db.Holdings.InsertMany(ctx, docs)
 	require.NoError(t, err)
+	// More than a default first batch (101) of types earlier versions stored, too.
+	legacy := make([]any, 150)
+	for i := range legacy {
+		legacy[i] = bson.M{"_id": uuid.NewString(), "user_id": user.String(), "lower_name": fmt.Sprintf("old %d", i), "type": "Broker"}
+	}
+	_, err = db.Platforms.InsertMany(ctx, legacy)
+	require.NoError(t, err)
 
 	var mu sync.Mutex
 	var commands []string

@@ -1,11 +1,8 @@
 package parallel_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -65,10 +62,7 @@ func TestRun_APanicIsAnError(t *testing.T) {
 	assert.ErrorContains(t, err, "panic: money must not be negative")
 }
 
-func TestRun_APanicAfterAnotherErrorIsLogged(t *testing.T) {
-	var logs bytes.Buffer
-	log.SetOutput(&logs)
-	defer log.SetOutput(os.Stderr)
+func TestRun_APanicAfterAnotherErrorStillFailsTheRun(t *testing.T) {
 	timeout := errors.New("timeout")
 
 	err := parallel.Run(context.Background(),
@@ -79,8 +73,11 @@ func TestRun_APanicAfterAnotherErrorIsLogged(t *testing.T) {
 		},
 	)
 
-	assert.ErrorIs(t, err, timeout)
-	assert.Contains(t, logs.String(), "panic: corrupt data (stack: ")
+	// A bug outranks the failure it followed, and both reach the request's one log line, unwrapped.
+	assert.ErrorContains(t, err, "panic: corrupt data (stack: ")
+	assert.ErrorContains(t, err, ", after another call failed: timeout")
+	assert.NotErrorIs(t, err, timeout)
+	assert.NotContains(t, err.Error(), "\n")
 }
 
 func TestRun_ACanceledCallerCancelsEveryFn(t *testing.T) {

@@ -5,10 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/app"
 	"github.com/GM-Tomas/base_project_go/internal/infrastructure/config"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,6 +42,7 @@ func TestBuildApp_FailsWhenMongoIsUnreachable(t *testing.T) {
 func TestBuildApp_PreviewNeverConnectsToTheDatabase(t *testing.T) {
 	cfg := config.LoadConfig()
 	cfg.Preview = true
+	cfg.HideDocs = false
 	cfg.MongoDBURI = "mongodb://127.0.0.1:1/?serverSelectionTimeoutMS=100" // would fail if it tried
 
 	a, err := app.BuildApp(context.Background(), cfg)
@@ -54,6 +58,24 @@ func TestBuildApp_PreviewNeverConnectsToTheDatabase(t *testing.T) {
 	rec := httptest.NewRecorder()
 	a.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/health", nil))
 	assert.Equal(t, http.StatusOK, rec.Code)
+
+	// A preview's router has none of the database's handlers, so it serves only these. A route added
+	// outside RouterParams.NoData's branch is served on previews too: make sure it can be, then list it.
+	var routes []string
+	err = chi.Walk(a.Handler.(chi.Routes), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		rec := httptest.NewRecorder()
+		a.Handler.ServeHTTP(rec, httptest.NewRequest(method, strings.ReplaceAll(route, "*", "x"), nil))
+		assert.NotEqual(t, http.StatusInternalServerError, rec.Code, method+" "+route)
+		if !slices.Contains(routes, route) {
+			routes = append(routes, route)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		"/api/v1/health", "/api/v1/*", "/api/v1/openapi.json",
+		"/docs", "/docs/*", "/docs/openapi.json", "/openapi.json", "/swagger", "/swagger/*",
+	}, routes)
 }
 
 func TestBuildApp_DevUserServesProtectedRoutesWithoutToken(t *testing.T) {

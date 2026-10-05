@@ -61,28 +61,16 @@ func (r *MongoPlatformRepository) Canonical(
 	userId model.UserId,
 	name model.PlatformName,
 ) (model.PlatformName, error) {
-	cursor, err := r.holdingsColl.Find(ctx,
-		bson.M{"user_id": userId.UUID().String()},
-		options.Find().SetProjection(bson.M{"platform_name": 1}).SetSort(holdingsOldestFirst).SetBatchSize(holdingsPerReply),
-	)
+	docs, err := readHoldings(ctx, r.holdingsColl, userId, "platform_name")
 	if err != nil {
 		return model.PlatformName{}, err
 	}
-	defer cursor.Close(ctx)
-
 	// Oldest first, so the first holding of this platform is the one that spells it (platformSpellings).
 	want := platformKey(name)
-	for cursor.Next(ctx) {
-		var doc holdingDoc
-		if err := cursor.Decode(&doc); err != nil {
-			return model.PlatformName{}, err
-		}
+	for _, doc := range docs {
 		if stored, ok := storedPlatformName(doc); ok && platformKey(stored) == want {
 			return stored, nil
 		}
-	}
-	if err := cursor.Err(); err != nil {
-		return model.PlatformName{}, err
 	}
 	return name, nil
 }
@@ -243,7 +231,8 @@ func legacyPlatformTypes(ctx context.Context, platforms *mongo.Collection, userI
 		bson.M{"user_id": userId.UUID().String()},
 		options.Find().
 			SetProjection(bson.M{"lower_name": 1, "type": 1}).
-			SetSort(bson.D{{Key: "lower_name", Value: 1}}), // the same winner every time if two now share a key
+			SetSort(bson.D{{Key: "lower_name", Value: 1}}). // the same winner every time if two now share a key
+			SetBatchSize(holdingsPerReply),                 // one reply, like the holdings read alongside
 	)
 	if err != nil {
 		return nil, err
