@@ -226,13 +226,17 @@ func groupPlatforms(docs []holdingDoc, amounts []amount) map[string]*platformGro
 // when users could still pick one (Broker, Wallet...). Nothing writes there anymore: the type stays with
 // that name (also if the platform is used again after its last holding went), any other one is plain
 // Other. Unusable entries are skipped rather than failing the listing.
+// legacyPlatformsPerReply fits far more types than any account stored, so they come back in one reply like
+// the holdings read alongside (a few more would only take a second one).
+const legacyPlatformsPerReply = int32(1000)
+
 func legacyPlatformTypes(ctx context.Context, platforms *mongo.Collection, userId model.UserId) (map[string]model.PlatformType, error) {
 	cursor, err := platforms.Find(ctx,
 		bson.M{"user_id": userId.UUID().String()},
 		options.Find().
 			SetProjection(bson.M{"lower_name": 1, "type": 1}).
 			SetSort(bson.D{{Key: "lower_name", Value: 1}}). // the same winner every time if two now share a key
-			SetBatchSize(holdingsPerReply),                 // one reply, like the holdings read alongside
+			SetBatchSize(legacyPlatformsPerReply),
 	)
 	if err != nil {
 		return nil, err
