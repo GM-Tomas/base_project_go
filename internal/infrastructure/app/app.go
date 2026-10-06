@@ -53,20 +53,25 @@ func BuildApp(ctx context.Context, cfg config.Config) (*App, error) {
 	quotaRepo := mongopersistence.NewMongoQuotaRepository(mongoDB)
 	transactions := mongopersistence.NewMongoTransactionManager(mongoDB)
 	wealthAggAdapter := mongopersistence.NewMongoWealthAggregationAdapter(mongoDB)
+	classSettingsRepo := mongopersistence.NewMongoAssetClassSettingsRepository(mongoDB)
+	platformSettingsRepo := mongopersistence.NewMongoPlatformSettingsRepository(mongoDB)
+	classDefaults := appService.NewClassDefaults(cfg.DefaultAssetClasses, cfg.LiquidAssetClasses)
 
 	// Application Services
-	holdingService := appService.NewHoldingService(transactions, holdingRepo, platformRepo, movementRepo, quotaRepo, appService.RealClock)
+	holdingService := appService.NewHoldingService(transactions, holdingRepo, platformRepo, classSettingsRepo, movementRepo, quotaRepo, appService.RealClock)
 	debtService := appService.NewDebtService(transactions, debtRepo, movementRepo, quotaRepo, appService.RealClock)
 	movementService := appService.NewMovementService(transactions, holdingRepo, platformRepo, debtRepo, movementRepo, quotaRepo, appService.RealClock)
-	platformService := appService.NewPlatformService(platformRepo)
-	assetClassService := appService.NewAssetClassService(holdingRepo, cfg.DefaultAssetClasses)
+	platformService := appService.NewPlatformService(transactions, platformRepo, holdingRepo, platformSettingsRepo, quotaRepo, appService.RealClock)
+	assetClassService := appService.NewAssetClassService(transactions, holdingRepo, classSettingsRepo, quotaRepo, wealthAggAdapter, classDefaults, appService.RealClock)
 	snapshotService := appService.NewSnapshotService(snapshotRepo, wealthAggAdapter, appService.RealClock)
-	projectionService := appService.NewProjectionService(wealthAggAdapter, debtRepo, appService.RealClock)
+	projectionService := appService.NewProjectionService(wealthAggAdapter, debtRepo, classSettingsRepo, appService.RealClock)
 	wealthService := appService.NewWealthQueryService(
 		wealthAggAdapter,
 		snapshotRepo,
+		classSettingsRepo,
+		platformSettingsRepo,
 		appService.RealClock,
-		cfg.LiquidAssetClasses,
+		classDefaults,
 	)
 
 	// HTTP Handlers

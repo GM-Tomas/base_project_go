@@ -25,4 +25,10 @@ type HoldingRepository interface {
 	// as stored; it says how many of them the user has.
 	SetExpectedReturns(ctx context.Context, userId model.UserId, returns map[model.HoldingId]*decimal.Decimal,
 		updatedAt time.Time) (int, error)
+	// ReassignAssetClass moves the user's holdings of class from (as the domain reads their classes) to
+	// class to, touching nothing else of them; it says how many it moved.
+	ReassignAssetClass(ctx context.Context, userId model.UserId, from, to model.AssetClass) (int, error)
+	// ReassignPlatform names the platform of the user's holdings on the one with this key (see
+	// model.PlatformKey) to, touching nothing else of them; it says how many it renamed.
+	ReassignPlatform(ctx context.Context, userId model.UserId, key string, to model.PlatformName) (int, error)
 }

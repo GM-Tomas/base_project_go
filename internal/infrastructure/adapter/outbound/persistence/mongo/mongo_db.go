@@ -25,6 +25,10 @@ type MongoDB struct {
 	Preferences *mongo.Collection
 	// Platforms is only read, for the types that earlier versions stored (Broker, Wallet...).
 	Platforms *mongo.Collection
+	// AssetClassSettings and PlatformSettings hold what users set for their classes and platforms (see
+	// MongoAssetClassSettingsRepository and MongoPlatformSettingsRepository).
+	AssetClassSettings *mongo.Collection
+	PlatformSettings   *mongo.Collection
 }
 
 func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error) {
@@ -59,6 +63,9 @@ func NewMongoDB(ctx context.Context, uri string, dbName string) (*MongoDB, error
 		Quotas:      database.Collection("quotas"),
 		Preferences: database.Collection("preferences"),
 		Platforms:   database.Collection("platforms"),
+
+		AssetClassSettings: database.Collection("asset_class_settings"),
+		PlatformSettings:   database.Collection("platform_settings"),
 	}
 	if !db.supportsTransactions(pingCtx) {
 		log.Println("WARNING: MongoDB isn't a replica set, so it has no transactions: recording a change of value " +
@@ -133,6 +140,16 @@ func (db *MongoDB) ensureIndexes(ctx context.Context) {
 	})
 	if err != nil {
 		log.Printf("Warning creating movements indexes: %v", err)
+	}
+
+	// Class and platform settings: the user's (their _id, the user's id and the class's or platform's, keeps
+	// one per class or platform), read in _id order.
+	for _, coll := range []*mongo.Collection{db.AssetClassSettings, db.PlatformSettings} {
+		if _, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
+			Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "_id", Value: 1}},
+		}); err != nil {
+			log.Printf("Warning creating %s index: %v", coll.Name(), err)
+		}
 	}
 
 	// Debts: the user's, in the order they're read (then sorted by balance, which is text).

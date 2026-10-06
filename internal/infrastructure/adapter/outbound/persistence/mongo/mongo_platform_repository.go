@@ -6,9 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
-	"sync"
 	"time"
-	"unicode"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
@@ -16,8 +14,6 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/unicode/norm"
 )
 
 // MongoPlatformRepository derives the user's platforms from their holdings: a platform is a name holdings
@@ -34,13 +30,14 @@ func NewMongoPlatformRepository(db *MongoDB) *MongoPlatformRepository {
 
 var _ outbound.PlatformRepository = (*MongoPlatformRepository)(nil)
 
-// FindAll lists the user's platforms alphabetically, each created when its first holding was.
+// FindAll lists the user's platforms alphabetically, each created when its first holding was, with what
+// its holdings are worth (those with a readable amount, as every total).
 func (r *MongoPlatformRepository) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
-	docs, types, err := holdingsWithTypes(ctx, r.holdingsColl, r.platformsColl, userId, "platform_name", "created_at")
+	docs, types, err := holdingsWithTypes(ctx, r.holdingsColl, r.platformsColl, userId, "platform_name", "created_at", "value_usd")
 	if err != nil {
 		return nil, err
 	}
-	groups := groupPlatforms(docs, nil)
+	groups := groupPlatforms(docs, amountsOf(docs))
 	platforms := make([]model.Platform, 0, len(groups))
 	for _, g := range slices.SortedFunc(maps.Values(groups), byName) {
 		platforms = append(platforms, model.Platform{
@@ -48,6 +45,9 @@ func (r *MongoPlatformRepository) FindAll(ctx context.Context, userId model.User
 			Name:      g.name,
 			Type:      typeOf(types, g.key),
 			CreatedAt: g.firstUsed,
+			Key:       g.key,
+			Count:     g.count,
+			Value:     g.total,
 		})
 	}
 	return platforms, nil
@@ -75,6 +75,18 @@ func (r *MongoPlatformRepository) Canonical(
 	return name, nil
 }
 
+func (r *MongoPlatformRepository) Names(ctx context.Context, userId model.UserId) (map[string]model.PlatformName, error) {
+	docs, err := readHoldings(ctx, r.holdingsColl, userId, "platform_name")
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]model.PlatformName)
+	for key, g := range groupPlatforms(docs, nil) {
+		names[key] = g.name
+	}
+	return names, nil
+}
+
 // platformGroup is one platform: the holdings whose platform names have the same platformKey. The platform
 // list shows every platform holdings name; the totals, like every total, count only readable amounts.
 type platformGroup struct {
@@ -86,21 +98,10 @@ type platformGroup struct {
 	count     int                // holdings with a readable amount
 }
 
-// platformKey is what makes two platform names the same platform: Unicode's canonical caseless match
-// ("Binance" and "binance", "Straße" and "STRASSE", "Café" typed with a precomposed "é" or with "e" and
-// a combining accent).
+// platformKey is model.PlatformKey: what makes two platform names the same platform.
 func platformKey(name model.PlatformName) string {
-	folder := folders.Get().(*cases.Caser)
-	defer folders.Put(folder)
-	return norm.NFD.String(folder.String(norm.NFD.String(name.Value())))
+	return model.PlatformKey(name)
 }
-
-// folders reuses case folders, which aren't safe for concurrent use, across the many platformKey calls a
-// listing makes.
-var folders = sync.Pool{New: func() any {
-	folder := cases.Fold()
-	return &folder
-}}
 
 // holdingsOldestFirst is the order the spelling rule is defined in (see platformSpellings).
 var holdingsOldestFirst = bson.D{{Key: "created_at", Value: 1}, {Key: "_id", Value: 1}}
@@ -133,17 +134,9 @@ func byName(a, b *platformGroup) int {
 	return cmp.Or(strings.Compare(a.sortName, b.sortName), strings.Compare(a.key, b.key))
 }
 
-// sortName is how a label sorts as a person reads it: case and accents ignored.
+// sortName is model.SortName: how a label sorts as a person reads it.
 func sortName(label string) string {
-	unaccented := strings.Map(func(r rune) rune {
-		if unicode.Is(unicode.Mn, r) {
-			return -1
-		}
-		return r
-	}, norm.NFD.String(label))
-	folder := folders.Get().(*cases.Caser)
-	defer folders.Put(folder)
-	return folder.String(norm.NFC.String(unaccented))
+	return model.SortName(label)
 }
 
 // holdingsWithTypes reads the user's holdings (see readHoldings) and the types earlier versions stored

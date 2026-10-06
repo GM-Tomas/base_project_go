@@ -12,4 +12,7 @@ type PlatformRepository interface {
 	FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error)
 	// Canonical is the spelling the user's holdings already use for this platform, or name for a new one.
 	Canonical(ctx context.Context, userId model.UserId, name model.PlatformName) (model.PlatformName, error)
+	// Names is each of the user's platforms by key (see model.PlatformKey), spelled as FindAll spells it:
+	// one read, so it can be used inside a transaction.
+	Names(ctx context.Context, userId model.UserId) (map[string]model.PlatformName, error)
 }

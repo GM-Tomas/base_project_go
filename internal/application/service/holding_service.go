@@ -9,6 +9,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
+	"github.com/GM-Tomas/base_project_go/internal/parallel"
 	"github.com/shopspring/decimal"
 )
 
@@ -24,18 +25,23 @@ func RealClock() time.Time {
 // HoldingService adds, edits and removes holdings. Each change of value is recorded in the activity log in
 // the same transaction: an OPENING when one is added, a CLOSING when it's removed, and what an edit of its
 // value was (see model.ValueChangeReason).
+//
+// The holdings it answers with have their class's default return filled in (see
+// model.Holding.EffectiveReturnPct), read in the same transaction as a change.
 type HoldingService struct {
-	tx           outbound.TransactionManager
-	holdingRepo  outbound.HoldingRepository
-	platformRepo outbound.PlatformRepository
-	ledger       ledger
-	clock        Clock
+	tx            outbound.TransactionManager
+	holdingRepo   outbound.HoldingRepository
+	platformRepo  outbound.PlatformRepository
+	classSettings outbound.AssetClassSettingsRepository
+	ledger        ledger
+	clock         Clock
 }
 
 func NewHoldingService(
 	tx outbound.TransactionManager,
 	holdingRepo outbound.HoldingRepository,
 	platformRepo outbound.PlatformRepository,
+	classSettings outbound.AssetClassSettingsRepository,
 	movementRepo outbound.MovementRepository,
 	quotaRepo outbound.QuotaRepository,
 	clock Clock,
@@ -44,21 +50,49 @@ func NewHoldingService(
 		clock = RealClock
 	}
 	return &HoldingService{
-		tx:           tx,
-		holdingRepo:  holdingRepo,
-		platformRepo: platformRepo,
-		ledger:       ledger{movements: movementRepo, quotas: quotaRepo},
-		clock:        clock,
+		tx:            tx,
+		holdingRepo:   holdingRepo,
+		platformRepo:  platformRepo,
+		classSettings: classSettings,
+		ledger:        ledger{movements: movementRepo, quotas: quotaRepo},
+		clock:         clock,
 	}
 }
 
 var _ inbound.HoldingUseCase = (*HoldingService)(nil)
 
+// GetAllHoldings reads the holdings and the classes' settings at once.
 func (s *HoldingService) GetAllHoldings(
 	ctx context.Context,
 	userId model.UserId,
 ) ([]model.Holding, error) {
-	return s.holdingRepo.FindAll(ctx, userId)
+	var (
+		holdings []model.Holding
+		classes  model.Classes
+	)
+	err := parallel.Run(ctx,
+		func(ctx context.Context) (err error) {
+			holdings, err = s.holdingRepo.FindAll(ctx, userId)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			classes, err = s.classes(ctx, userId)
+			return err
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return withClassReturns(classes, holdings), nil
+}
+
+// classes is how the user set up their classes (only their default returns matter here).
+func (s *HoldingService) classes(ctx context.Context, userId model.UserId) (model.Classes, error) {
+	settings, err := s.classSettings.FindAll(ctx, userId)
+	if err != nil {
+		return model.Classes{}, err
+	}
+	return model.NewClasses(model.ClassDefaults{}, settings), nil
 }
 
 // CreateHolding validates everything before touching storage, then adds the holding and its OPENING in one
@@ -106,7 +140,15 @@ func (s *HoldingService) CreateHolding(
 		if saved, err = s.holdingRepo.Save(ctx, h); err != nil {
 			return err
 		}
-		return s.ledger.record(ctx, lifecycleMovement(model.MovementOpening, saved, now))
+		if err := s.ledger.record(ctx, lifecycleMovement(model.MovementOpening, saved, now)); err != nil {
+			return err
+		}
+		classes, err := s.classes(ctx, command.UserId)
+		if err != nil {
+			return err
+		}
+		saved = withClassReturns(classes, []model.Holding{saved})[0]
+		return nil
 	})
 	if err != nil {
 		return model.Holding{}, err
@@ -201,10 +243,15 @@ func (s *HoldingService) UpdateHolding(
 
 	var result model.Holding
 	err = s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		classes, err := s.classes(ctx, command.UserId)
+		if err != nil {
+			return err
+		}
 		current, err := findHolding(ctx, s.holdingRepo, command.UserId, command.Id)
 		if err != nil {
 			return err
 		}
+		current = withClassReturns(classes, []model.Holding{current})[0]
 		updated := current
 		if name != nil {
 			updated.Name = *name
@@ -223,6 +270,7 @@ func (s *HoldingService) UpdateHolding(
 				return err
 			}
 		}
+		updated.ClassReturnPct = classes.ReturnPct(updated.AssetClass)
 		valueChanged := updated.Value.Cmp(current.Value) != 0
 		if !valueChanged && updated.Name == current.Name && updated.AssetClass == current.AssetClass &&
 			updated.Platform == current.Platform && model.SameReturn(updated.ExpectedReturnPct, current.ExpectedReturnPct) {
@@ -301,10 +349,15 @@ func (s *HoldingService) SetExpectedReturns(
 
 	var result []model.Holding
 	err := s.tx.WithinTransaction(ctx, func(ctx context.Context) error {
+		classes, err := s.classes(ctx, userId)
+		if err != nil {
+			return err
+		}
 		holdings, err := s.holdingRepo.FindAll(ctx, userId)
 		if err != nil {
 			return err
 		}
+		holdings = withClassReturns(classes, holdings)
 		byId := make(map[model.HoldingId]model.Holding, len(holdings))
 		for _, h := range holdings {
 			byId[h.Id] = h

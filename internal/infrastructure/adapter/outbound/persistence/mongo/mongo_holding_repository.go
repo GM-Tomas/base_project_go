@@ -310,3 +310,59 @@ func (r *MongoHoldingRepository) SetExpectedReturns(
 	}
 	return int(res.MatchedCount), nil
 }
+
+// ReassignAssetClass finds the user's holdings of the class as the domain reads stored classes (spellings
+// it reads as one move together), then moves them in one write.
+func (r *MongoHoldingRepository) ReassignAssetClass(
+	ctx context.Context,
+	userId model.UserId,
+	from, to model.AssetClass,
+) (int, error) {
+	docs, err := readHoldings(ctx, r.coll, userId, "asset_class")
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for _, doc := range docs {
+		if class, err := model.NewAssetClass(doc.AssetClass); err == nil && class == from {
+			ids = append(ids, doc.ID)
+		}
+	}
+	return r.setOnEach(ctx, userId, ids, "asset_class", to.Value())
+}
+
+// ReassignPlatform finds the user's holdings on the platform with this key, however each spells it, then
+// renames it on all of them in one write.
+func (r *MongoHoldingRepository) ReassignPlatform(
+	ctx context.Context,
+	userId model.UserId,
+	key string,
+	to model.PlatformName,
+) (int, error) {
+	docs, err := readHoldings(ctx, r.coll, userId, "platform_name")
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for _, doc := range docs {
+		if name, ok := storedPlatformName(doc); ok && platformKey(name) == key {
+			ids = append(ids, doc.ID)
+		}
+	}
+	return r.setOnEach(ctx, userId, ids, "platform_name", to.Value())
+}
+
+// setOnEach sets one field of these holdings of the user's, and says how many it found.
+func (r *MongoHoldingRepository) setOnEach(ctx context.Context, userId model.UserId, ids []string, field, value string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	res, err := r.coll.UpdateMany(ctx,
+		bson.M{"user_id": userId.UUID().String(), "_id": bson.M{"$in": ids}},
+		bson.M{"$set": bson.M{field: value}},
+	)
+	if err != nil {
+		return 0, err
+	}
+	return int(res.MatchedCount), nil
+}

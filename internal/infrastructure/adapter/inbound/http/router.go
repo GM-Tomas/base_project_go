@@ -101,7 +101,12 @@ func NewRouter(params RouterParams) http.Handler {
 			r.Delete("/movements/{id}", params.MovementHandler.RevertMovement)
 
 			r.Get("/platforms", params.PlatformHandler.GetAllPlatforms)
+			r.Patch("/platforms/{id}", params.PlatformHandler.UpdatePlatform)
+
 			r.Get("/asset-classes", params.AssetClassHandler.GetAvailableAssetClasses)
+			r.Post("/asset-classes", params.AssetClassHandler.CreateAssetClass)
+			r.Patch("/asset-classes/{id}", params.AssetClassHandler.UpdateAssetClass)
+			r.Delete("/asset-classes/{id}", params.AssetClassHandler.DeleteAssetClass)
 
 			// Wealth
 			r.Route("/wealth", func(r chi.Router) {

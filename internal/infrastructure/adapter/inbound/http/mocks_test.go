@@ -1,7 +1,9 @@
 package http_test
 
 import (
+	"cmp"
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -68,8 +70,51 @@ func (m *mockHoldingRepo) DeleteById(ctx context.Context, userId model.UserId, i
 	return true, nil
 }
 
+// AssetClassesInUse is assetClasses, if set; otherwise the classes of the user's holdings.
 func (m *mockHoldingRepo) AssetClassesInUse(ctx context.Context, userId model.UserId) ([]model.AssetClass, error) {
-	return m.assetClasses, nil
+	if m.assetClasses != nil {
+		return m.assetClasses, nil
+	}
+	var classes []model.AssetClass
+	for _, h := range m.sorted(userId) {
+		if !slices.Contains(classes, h.AssetClass) {
+			classes = append(classes, h.AssetClass)
+		}
+	}
+	return classes, nil
+}
+
+// sorted is the user's holdings, oldest first (as the real repository reads them).
+func (m *mockHoldingRepo) sorted(userId model.UserId) []model.Holding {
+	list, _ := m.FindAll(context.Background(), userId)
+	slices.SortFunc(list, func(a, b model.Holding) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.Id.String(), b.Id.String()))
+	})
+	return list
+}
+
+func (m *mockHoldingRepo) ReassignAssetClass(ctx context.Context, userId model.UserId, from, to model.AssetClass) (int, error) {
+	moved := 0
+	for id, h := range m.holdings {
+		if h.UserId == userId && h.AssetClass == from {
+			h.AssetClass = to
+			m.holdings[id] = h
+			moved++
+		}
+	}
+	return moved, nil
+}
+
+func (m *mockHoldingRepo) ReassignPlatform(ctx context.Context, userId model.UserId, key string, to model.PlatformName) (int, error) {
+	renamed := 0
+	for id, h := range m.holdings {
+		if h.UserId == userId && model.PlatformKey(h.Platform) == key {
+			h.Platform = to
+			m.holdings[id] = h
+			renamed++
+		}
+	}
+	return renamed, nil
 }
 
 func (m *mockHoldingRepo) ExistingIds(ctx context.Context, userId model.UserId, ids []model.HoldingId) (map[model.HoldingId]bool, error) {
@@ -186,26 +231,110 @@ func newMockPlatformRepo(holdings *mockHoldingRepo) *mockPlatformRepo {
 }
 
 func (m *mockPlatformRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
-	seen := map[string]bool{}
+	byKey := map[string]int{}
 	var list []model.Platform
-	for _, h := range m.holdings.holdings {
-		if h.UserId != userId || seen[strings.ToLower(h.Platform.Value())] {
-			continue
+	for _, h := range m.holdings.sorted(userId) {
+		key := model.PlatformKey(h.Platform)
+		i, ok := byKey[key]
+		if !ok {
+			p := model.NewPlatform(userId, h.Platform, model.PlatformTypeOther, h.CreatedAt)
+			p.Key, p.Value = key, model.ZeroMoney
+			i, byKey[key] = len(list), len(list)
+			list = append(list, p)
 		}
-		seen[strings.ToLower(h.Platform.Value())] = true
-		list = append(list, model.NewPlatform(userId, h.Platform, model.PlatformTypeOther, h.CreatedAt))
+		list[i].Count++
+		list[i].Value = list[i].Value.Plus(h.Value)
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Name.Value() < list[j].Name.Value() })
+	sort.Slice(list, func(i, j int) bool {
+		return model.SortName(list[i].Name.Value()) < model.SortName(list[j].Name.Value())
+	})
 	return list, nil
 }
 
 func (m *mockPlatformRepo) Canonical(ctx context.Context, userId model.UserId, name model.PlatformName) (model.PlatformName, error) {
-	for _, h := range m.holdings.holdings {
-		if h.UserId == userId && strings.EqualFold(h.Platform.Value(), name.Value()) {
+	for _, h := range m.holdings.sorted(userId) {
+		if model.PlatformKey(h.Platform) == model.PlatformKey(name) {
 			return h.Platform, nil
 		}
 	}
 	return name, nil
+}
+
+func (m *mockPlatformRepo) Names(ctx context.Context, userId model.UserId) (map[string]model.PlatformName, error) {
+	platforms, _ := m.FindAll(ctx, userId)
+	names := map[string]model.PlatformName{}
+	for _, p := range platforms {
+		names[p.Key] = p.Name
+	}
+	return names, nil
+}
+
+// mockClassSettingsRepo keeps class settings in memory, by user and class.
+type mockClassSettingsRepo struct {
+	settings map[string]model.AssetClassSettings
+}
+
+func newMockClassSettingsRepo() *mockClassSettingsRepo {
+	return &mockClassSettingsRepo{settings: map[string]model.AssetClassSettings{}}
+}
+
+func (m *mockClassSettingsRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.AssetClassSettings, error) {
+	var list []model.AssetClassSettings
+	for _, s := range m.settings {
+		if s.UserId == userId {
+			list = append(list, s)
+		}
+	}
+	return list, nil
+}
+
+func (m *mockClassSettingsRepo) Save(ctx context.Context, s model.AssetClassSettings) error {
+	m.settings[s.UserId.String()+"/"+s.Name.Value()] = s
+	return nil
+}
+
+func (m *mockClassSettingsRepo) Delete(ctx context.Context, userId model.UserId, class model.AssetClass) (bool, error) {
+	_, ok := m.settings[userId.String()+"/"+class.Value()]
+	delete(m.settings, userId.String()+"/"+class.Value())
+	return ok, nil
+}
+
+// mockPlatformSettingsRepo keeps platform settings in memory, by user and key.
+type mockPlatformSettingsRepo struct {
+	settings map[string]model.PlatformSettings
+}
+
+func newMockPlatformSettingsRepo() *mockPlatformSettingsRepo {
+	return &mockPlatformSettingsRepo{settings: map[string]model.PlatformSettings{}}
+}
+
+func (m *mockPlatformSettingsRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.PlatformSettings, error) {
+	var list []model.PlatformSettings
+	for _, s := range m.settings {
+		if s.UserId == userId {
+			list = append(list, s)
+		}
+	}
+	return list, nil
+}
+
+func (m *mockPlatformSettingsRepo) Find(ctx context.Context, userId model.UserId, key string) (*model.PlatformSettings, error) {
+	s, ok := m.settings[userId.String()+"/"+key]
+	if !ok {
+		return nil, nil
+	}
+	return &s, nil
+}
+
+func (m *mockPlatformSettingsRepo) Save(ctx context.Context, s model.PlatformSettings) error {
+	m.settings[s.UserId.String()+"/"+s.Key] = s
+	return nil
+}
+
+func (m *mockPlatformSettingsRepo) Delete(ctx context.Context, userId model.UserId, key string) (bool, error) {
+	_, ok := m.settings[userId.String()+"/"+key]
+	delete(m.settings, userId.String()+"/"+key)
+	return ok, nil
 }
 
 type mockSnapshotRepo struct {
@@ -270,6 +399,25 @@ type mockWealthAggregationPort struct {
 	byAssetClass []outbound.AssetClassAggregate
 	byPlatform   []outbound.PlatformAggregate
 	returns      []model.HoldingReturn
+	holdings     *mockHoldingRepo // ByAssetClass totals these, if set
+}
+
+func (m *mockWealthAggregationPort) ByAssetClass(ctx context.Context, userId model.UserId) ([]outbound.AssetClassAggregate, error) {
+	if m.holdings == nil {
+		return m.byAssetClass, nil
+	}
+	var list []outbound.AssetClassAggregate
+	index := map[model.AssetClass]int{}
+	for _, h := range m.holdings.sorted(userId) {
+		i, ok := index[h.AssetClass]
+		if !ok {
+			i, index[h.AssetClass] = len(list), len(list)
+			list = append(list, outbound.AssetClassAggregate{AssetClass: h.AssetClass, Value: model.ZeroMoney})
+		}
+		list[i].Value = list[i].Value.Plus(h.Value)
+		list[i].Count++
+	}
+	return list, nil
 }
 
 func (m *mockWealthAggregationPort) Totals(ctx context.Context, userId model.UserId) (outbound.WealthTotals, error) {

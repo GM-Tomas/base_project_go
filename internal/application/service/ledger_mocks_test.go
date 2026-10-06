@@ -248,6 +248,8 @@ type fakeTx struct {
 	debts     *mockDebtRepo
 	movements *mockMovementRepo
 	quotas    *mockQuotaRepo
+	classes   *mockClassSettingsRepo    // optional
+	looks     *mockPlatformSettingsRepo // optional
 	calls     int
 }
 
@@ -255,8 +257,22 @@ func (f *fakeTx) WithinTransaction(ctx context.Context, fn func(ctx context.Cont
 	f.calls++
 	holdings, debts := maps.Clone(f.holdings.holdings), maps.Clone(f.debts.debts)
 	movements, counts := slices.Clone(f.movements.movements), maps.Clone(f.quotas.counts)
+	var classes map[string]model.AssetClassSettings
+	if f.classes != nil {
+		classes = maps.Clone(f.classes.settings)
+	}
+	var looks map[string]model.PlatformSettings
+	if f.looks != nil {
+		looks = maps.Clone(f.looks.settings)
+	}
 	if err := fn(ctx); err != nil {
 		f.holdings.holdings, f.debts.debts, f.movements.movements, f.quotas.counts = holdings, debts, movements, counts
+		if f.classes != nil {
+			f.classes.settings = classes
+		}
+		if f.looks != nil {
+			f.looks.settings = looks
+		}
 		return err
 	}
 	return nil
@@ -264,6 +280,7 @@ func (f *fakeTx) WithinTransaction(ctx context.Context, fn func(ctx context.Cont
 
 // ledgerFixture is the services that write the activity log, over mocks that share one store.
 type ledgerFixture struct {
+	classes     *mockClassSettingsRepo
 	holdings    *mockHoldingRepo
 	debts       *mockDebtRepo
 	platforms   *mockPlatformRepo
@@ -276,10 +293,11 @@ type ledgerFixture struct {
 }
 
 func newLedgerFixture(clock service.Clock) *ledgerFixture {
-	f := &ledgerFixture{holdings: newMockHoldingRepo(), debts: newMockDebtRepo(), movements: &mockMovementRepo{}, quotas: newMockQuotaRepo()}
+	f := &ledgerFixture{holdings: newMockHoldingRepo(), debts: newMockDebtRepo(), movements: &mockMovementRepo{}, quotas: newMockQuotaRepo(),
+		classes: newMockClassSettingsRepo()}
 	f.platforms = newMockPlatformRepo(f.holdings)
-	f.tx = &fakeTx{holdings: f.holdings, debts: f.debts, movements: f.movements, quotas: f.quotas}
-	f.holdingSvc = service.NewHoldingService(f.tx, f.holdings, f.platforms, f.movements, f.quotas, clock)
+	f.tx = &fakeTx{holdings: f.holdings, debts: f.debts, movements: f.movements, quotas: f.quotas, classes: f.classes}
+	f.holdingSvc = service.NewHoldingService(f.tx, f.holdings, f.platforms, f.classes, f.movements, f.quotas, clock)
 	f.debtSvc = service.NewDebtService(f.tx, f.debts, f.movements, f.quotas, clock)
 	f.movementSvc = service.NewMovementService(f.tx, f.holdings, f.platforms, f.debts, f.movements, f.quotas, clock)
 	return f

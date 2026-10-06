@@ -18,12 +18,14 @@ import (
 type ProjectionService struct {
 	wealthAggregationPort outbound.WealthAggregationPort
 	debtRepo              outbound.DebtRepository
+	classSettings         outbound.AssetClassSettingsRepository
 	clock                 Clock
 }
 
 func NewProjectionService(
 	wealthAggregationPort outbound.WealthAggregationPort,
 	debtRepo outbound.DebtRepository,
+	classSettings outbound.AssetClassSettingsRepository,
 	clock Clock,
 ) *ProjectionService {
 	if clock == nil {
@@ -32,6 +34,7 @@ func NewProjectionService(
 	return &ProjectionService{
 		wealthAggregationPort: wealthAggregationPort,
 		debtRepo:              debtRepo,
+		classSettings:         classSettings,
 		clock:                 clock,
 	}
 }
@@ -88,10 +91,15 @@ func (s *ProjectionService) Project(
 	}
 
 	var (
-		totals outbound.WealthTotals
-		debts  []model.Debt
+		totals   outbound.WealthTotals
+		debts    []model.Debt
+		settings []model.AssetClassSettings
 	)
 	err = parallel.Run(ctx,
+		func(ctx context.Context) (err error) {
+			settings, err = s.classSettings.FindAll(ctx, request.UserId)
+			return err
+		},
 		func(ctx context.Context) (err error) {
 			totals, err = s.wealthAggregationPort.Totals(ctx, request.UserId)
 			return err
@@ -106,7 +114,9 @@ func (s *ProjectionService) Project(
 	}
 	params.Principal = totals.Assets
 	params.DebtBalances = domainService.TotalDebtBalances(debts, params.Years*12)
-	portfolio := domainService.CalculateExpectedReturn(totals.Returns).WeightedPct
+	// Holdings without a return of their own count with their class's (only the settings matter for that).
+	returns := model.NewClasses(model.ClassDefaults{}, settings).WithClassReturns(totals.Returns)
+	portfolio := domainService.CalculateExpectedReturn(returns).WeightedPct
 	if source == model.YieldFromPortfolio && portfolio != nil {
 		params.AnnualYieldPct = *portfolio
 	}

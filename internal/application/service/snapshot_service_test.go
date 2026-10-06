@@ -105,6 +105,10 @@ func (m *mockWealthAggregationPort) Totals(ctx context.Context, userId model.Use
 	return outbound.WealthTotals{Assets: m.assets, Debts: m.debts.Balance, Returns: m.returns}, m.totalsErr
 }
 
+func (m *mockWealthAggregationPort) ByAssetClass(ctx context.Context, userId model.UserId) ([]outbound.AssetClassAggregate, error) {
+	return m.byAssetClass, nil
+}
+
 func (m *mockWealthAggregationPort) Breakdown(ctx context.Context, userId model.UserId) (outbound.WealthBreakdown, error) {
 	return outbound.WealthBreakdown{Assets: m.assets, Debts: m.debts, ByAssetClass: m.byAssetClass, ByPlatform: m.byPlatform,
 		Returns: m.returns}, nil

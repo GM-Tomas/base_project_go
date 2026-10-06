@@ -2,10 +2,12 @@ package model
 
 import "github.com/shopspring/decimal"
 
-// HoldingReturn is a holding's value and the yearly return it counts with (see Holding.EffectiveReturnPct),
-// if any: what the portfolio's expected return is worked out from.
+// HoldingReturn is a holding's value, its class, and the yearly return it counts with, if any: what the
+// portfolio's expected return is worked out from. Read from storage, Pct is the holding's own; see
+// Classes.WithClassReturns for the one it counts with.
 type HoldingReturn struct {
 	Value Money
+	Class AssetClass
 	Pct   *decimal.Decimal
 }
 

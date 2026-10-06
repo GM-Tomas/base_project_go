@@ -133,10 +133,11 @@ versión llegó a crearlo, `db.holdings.dropIndex("user_id_1_created_at_1")`.
 
 El adaptador `internal/infrastructure/adapter/outbound/persistence/mongo/` implementa los puertos outbound
 (`HoldingRepository`, `DebtRepository`, `PlatformRepository`, `SnapshotRepository`, `MovementRepository`,
-`QuotaRepository`, `PreferencesRepository`, `WealthAggregationPort`, `TransactionManager`) sobre las colecciones
-`holdings`, `debts` (lo que se debe), `net_worth_snapshots`, `movements` (la actividad: cada cambio de valor de un
-holding o del saldo de una deuda), `quotas` (contadores por usuario) y `preferences` (un documento por usuario, con su
-id como `_id`: cómo dejó Estimate). Los montos y las tasas se guardan como decimales en texto (escala 2) para no perder
+`QuotaRepository`, `PreferencesRepository`, `AssetClassSettingsRepository`, `PlatformSettingsRepository`,
+`WealthAggregationPort`, `TransactionManager`) sobre las colecciones `holdings`, `debts` (lo que se debe),
+`net_worth_snapshots`, `movements` (la actividad: cada cambio de valor de un holding o del saldo de una deuda), `quotas`
+(contadores por usuario), `preferences` (un documento por usuario, con su id como `_id`: cómo dejó Estimate),
+`asset_class_settings` y `platform_settings` (cómo configuró sus clases y sus plataformas, ver abajo). Los montos y las tasas se guardan como decimales en texto (escala 2) para no perder
 precisión.
 
 **Retorno esperado.** Cada holding puede decir cuánto rinde por año (`expected_return_pct`, −100 a 100; ausente si no
@@ -161,6 +162,24 @@ Las plataformas no se guardan aparte: son los nombres que usan los holdings del 
 Aparecen con el primer holding y desaparecen con el último. La colección `platforms` de versiones anteriores solo se lee,
 para conservar el tipo (Broker, Wallet...) que se eligió entonces para cada nombre, también si esa plataforma se vuelve a
 usar más adelante; nada escribe en ella. Las demás son de tipo `Other`.
+
+**Clases y plataformas configurables.** Lo que el usuario cambia se guarda como una "excepción" sobre lo de por defecto,
+un documento por clase o por plataforma (`_id` = id del usuario + id de la clase o plataforma, así que hay uno solo por
+cada una): no hace falta sembrar nada por cuenta y cambiar la configuración del servidor sigue alcanzando a quien no la
+tocó.
+
+- `asset_class_settings`: `name`, `color`, `liquid`, `expected_return_pct`, `hidden`. Las clases visibles son las por
+  defecto (`DEFAULT_ASSET_CLASSES`) menos las ocultas, más las creadas, más las que usan los holdings. Una clase creada
+  existe por su documento (aparece sin holdings); una por defecto borrada queda `hidden` (no vuelve, salvo que se cree de
+  nuevo o un holding la use). `liquid` reemplaza a `WEALTH_LIQUID_ASSET_CLASSES` para esa clase y `expected_return_pct`
+  es el retorno con el que cuentan sus holdings sin retorno propio (`effectiveReturnPct`, el retorno del portfolio y la
+  proyección).
+- `platform_settings`: `key` (el nombre sin mayúsculas ni formas Unicode, lo que agrupa los holdings en una plataforma),
+  `type`, `avatar_text` (1 o 2 caracteres; un emoji cuenta como uno), `color`. Se conserva si la plataforma se queda sin
+  holdings y vuelve a usarse.
+- **Renombrar o fusionar** una clase o una plataforma actualiza sus holdings y mueve o fusiona su configuración en una
+  transacción (la de destino conserva la suya). Los movimientos conservan los nombres que tenían: son historia. Renombrar
+  no cambia el `updatedAt` de los holdings (no es una edición del asset).
 
 ---
 
@@ -190,7 +209,8 @@ Authorization: Bearer <session.access_token>
 
 La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Supabase y ve y modifica **solo sus datos**.
 
-- **Cómo se aísla:** cada documento de MongoDB (`holdings`, `debts`, `net_worth_snapshots`, `movements`) guarda el
+- **Cómo se aísla:** cada documento de MongoDB (`holdings`, `debts`, `net_worth_snapshots`, `movements`,
+  `asset_class_settings`, `platform_settings`) guarda el
   `user_id` (el `sub` del JWT; en `preferences` es el `_id`)
   y **toda** lectura, escritura y borrado filtra por él, incluidos las plataformas, los agregados del resumen y la proyección.
   Dos cuentas pueden tener una plataforma "Binance" o un snapshot en el mismo segundo sin chocar.
@@ -200,7 +220,7 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
   desactivados a propósito: solo entra quien vos des de alta. No hay que tocar nada en la API: la primera vez que un usuario
   nuevo inicia sesión ve su dashboard vacío.
 - **Cuotas por usuario** (todas las cuentas comparten la base): hasta **1000 holdings**, **200 deudas**, **5000
-  snapshots** y **20000 movimientos** por cuenta. Al superarlas la API responde `409` con `type` `.../limit-exceeded`.
+  snapshots**, **20000 movimientos**, **100 clases** creadas o configuradas y **1000 plataformas** personalizadas por cuenta. Al superarlas la API responde `409` con `type` `.../limit-exceeded`.
   Los movimientos se cuentan en `quotas`, dentro de la misma transacción: dos pedidos simultáneos del mismo usuario se
   serializan, así que las cuotas de holdings, deudas y movimientos son exactas (borrar un holding o una deuda siempre
   funciona: su `CLOSING` no cuenta).
@@ -209,13 +229,15 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
   // mongosh, con el id (UUID) del usuario de Supabase
   const uid = "<uuid>";
   // ("platforms" solo existe en bases de versiones anteriores)
-  ["holdings", "debts", "net_worth_snapshots", "movements", "platforms"].forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
+  ["holdings", "debts", "net_worth_snapshots", "movements", "platforms", "asset_class_settings", "platform_settings"]
+    .forEach(c => db.getCollection(c).deleteMany({ user_id: uid }));
   db.quotas.deleteOne({ _id: uid });
   db.preferences.deleteOne({ _id: uid });
   ```
 - **Tests:** `internal/infrastructure/app/multiuser_test.go` levanta la API completa (router, auth, servicios y MongoDB real)
   con un JWKS de prueba y verifica con dos usuarios que ninguno ve ni modifica holdings, deudas, movimientos,
-  plataformas, clases de activo, snapshots, resumen, proyección, retornos esperados o preferencias del otro, que un `userId` en el body o la query se ignora, y que en modo dev las cuentas
+  plataformas, clases de activo (ni su configuración ni sus renombres), snapshots, resumen, proyección, retornos
+  esperados o preferencias del otro, que un `userId` en el body o la query se ignora, y que en modo dev las cuentas
   reales siguen separadas.
 
 ---
@@ -239,8 +261,12 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `GET` | `/api/v1/movements` | Activity y detalle de un asset o una deuda (`holdingId`, `debtId`, `kind`, `from`, `to`, `limit`, `cursor`) | Sí |
 | `POST` | `/api/v1/movements` | Gain/loss, deposit/withdrawal, transfer; pago, cargo e interés de una deuda (`409` si un valor o saldo quedaría negativo) | Sí |
 | `DELETE` | `/api/v1/movements/{id}` | Undo (revierte como delta; `409` si no se puede) | Sí |
-| `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts" | Sí |
-| `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets | Sí |
+| `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts", Settings (con `id`, miniatura, color, holdings y valor) | Sí |
+| `PATCH` | `/api/v1/platforms/{id}` | Settings → Customize (miniatura, color, tipo; `name` renombra en todos sus holdings; `409 platform-exists` salvo `mergeIfExists`) | Sí |
+| `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets, Settings (`classes`: color, liquidez, retorno por defecto, holdings y valor) | Sí |
+| `POST` | `/api/v1/asset-classes` | Settings → New class (`409 class-exists`; hasta 100) | Sí |
+| `PATCH` | `/api/v1/asset-classes/{id}` | Settings → Edit class (`name` renombra en todos sus holdings; `409 class-exists` salvo `mergeIfExists`) | Sí |
+| `DELETE` | `/api/v1/asset-classes/{id}?moveTo=` | Settings → Remove class (con holdings hace falta `moveTo`: si no, `409 class-in-use`) | Sí |
 | `GET` | `/api/v1/wealth/estimate?contribution&years[&yieldPct&milestones&inflationPct&contributionGrowthPct]` | Estimate (parte de los assets, al retorno esperado del portfolio salvo `yieldPct`; deudas amortizadas aparte; hitos sobre el neto, 150k/250k por defecto) | Sí |
 | `GET`, `PUT` | `/api/v1/preferences` | Estimate (cómo lo dejó el usuario, en cualquier dispositivo; el PUT reemplaza el documento) | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | History | Sí |

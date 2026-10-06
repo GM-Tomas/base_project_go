@@ -38,6 +38,21 @@ func NewResourceInUseError(msg string) error {
 	return ResourceInUseError{Message: msg}
 }
 
+// ConflictError is a request that clashes with what the user already has, Slug saying how (class-exists,
+// platform-exists, class-in-use...): the problem's type, so a client can offer the way out (a merge, say).
+type ConflictError struct {
+	Slug    string
+	Message string
+}
+
+func (e ConflictError) Error() string {
+	return e.Message
+}
+
+func NewConflictError(slug, msg string) error {
+	return ConflictError{Slug: slug, Message: msg}
+}
+
 // LimitExceededError is a per-user quota hit: one account can't grow without bound and starve the others.
 type LimitExceededError struct {
 	Message string

@@ -80,12 +80,14 @@ func amountsOf(docs []holdingDoc) []amount {
 	return amounts
 }
 
-// returnsOf is each holding counted in the assets with its expected return, if it has one.
+// returnsOf is each holding counted in the assets with its class and its own expected return, if it has one
+// (a class the domain can't read is none: no class default applies to it).
 func returnsOf(docs []holdingDoc, amounts []amount) []model.HoldingReturn {
 	returns := make([]model.HoldingReturn, 0, len(docs))
 	for i, doc := range docs {
 		if amounts[i].readable {
-			returns = append(returns, model.HoldingReturn{Value: amounts[i].value, Pct: readReturn(doc.ExpectedReturnPCT)})
+			class, _ := model.NewAssetClass(doc.AssetClass)
+			returns = append(returns, model.HoldingReturn{Value: amounts[i].value, Class: class, Pct: readReturn(doc.ExpectedReturnPCT)})
 		}
 	}
 	return returns
@@ -99,7 +101,7 @@ func (a *MongoWealthAggregationAdapter) Totals(ctx context.Context, userId model
 	)
 	err := parallel.Run(ctx,
 		func(ctx context.Context) (err error) {
-			docs, err = readHoldings(ctx, a.holdingsColl, userId, "value_usd", "expected_return_pct")
+			docs, err = readHoldings(ctx, a.holdingsColl, userId, "asset_class", "value_usd", "expected_return_pct")
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -147,6 +149,15 @@ func (a *MongoWealthAggregationAdapter) Breakdown(
 		ByPlatform:   platformBreakdown(groupPlatforms(docs, amounts), types),
 		Returns:      returnsOf(docs, amounts),
 	}, nil
+}
+
+// ByAssetClass reads just what the class breakdown needs.
+func (a *MongoWealthAggregationAdapter) ByAssetClass(ctx context.Context, userId model.UserId) ([]outbound.AssetClassAggregate, error) {
+	docs, err := readHoldings(ctx, a.holdingsColl, userId, "asset_class", "value_usd")
+	if err != nil {
+		return nil, err
+	}
+	return classBreakdown(docs, amountsOf(docs)), nil
 }
 
 func assetsOf(amounts []amount) model.Money {
@@ -226,6 +237,7 @@ func platformBreakdown(groups map[string]*platformGroup, types map[string]model.
 			continue
 		}
 		list = append(list, outbound.PlatformAggregate{
+			Key:   g.key,
 			Name:  g.name,
 			Type:  typeOf(types, g.key),
 			Value: g.total,

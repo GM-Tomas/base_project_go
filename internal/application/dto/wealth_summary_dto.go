@@ -39,19 +39,26 @@ type LiquidityDTO struct {
 	LiquidAssetClasses []string `json:"liquidAssetClasses"`
 }
 
+// AssetClassBreakdown is a class's share: color is the user's for it (null: the default), liquid whether it
+// counts as ready to spend.
 type AssetClassBreakdown struct {
 	AssetClass string  `json:"assetClass"`
 	ValueUsd   float64 `json:"valueUsd"`
 	Pct        float64 `json:"pct"`
 	Count      int     `json:"count"`
+	Color      *string `json:"color"`
+	Liquid     bool    `json:"liquid"`
 }
 
+// PlatformBreakdown is a platform's share: avatarText and color are its thumbnail's (null: the default).
 type PlatformBreakdown struct {
-	Name     string  `json:"name"`
-	Type     string  `json:"type"`
-	ValueUsd float64 `json:"valueUsd"`
-	Pct      float64 `json:"pct"`
-	Count    int     `json:"count"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	ValueUsd   float64 `json:"valueUsd"`
+	Pct        float64 `json:"pct"`
+	Count      int     `json:"count"`
+	AvatarText *string `json:"avatarText"`
+	Color      *string `json:"color"`
 }
 
 type WealthSummaryResponse struct {

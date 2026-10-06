@@ -1,9 +1,11 @@
 package service_test
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -36,6 +38,7 @@ type mockHoldingRepo struct {
 	setReturnsErr error
 	beforeReturns func() // lands a "concurrent" request between the service's read and its writes
 	returnWrites  int
+	reassignErr   error
 }
 
 func newMockHoldingRepo() *mockHoldingRepo {
@@ -119,8 +122,57 @@ func (m *mockHoldingRepo) DeleteById(ctx context.Context, userId model.UserId, i
 	return true, nil
 }
 
+// AssetClassesInUse is assetClasses, if set; otherwise the classes of the user's holdings.
 func (m *mockHoldingRepo) AssetClassesInUse(ctx context.Context, userId model.UserId) ([]model.AssetClass, error) {
-	return m.assetClasses, nil
+	if m.assetClasses != nil {
+		return m.assetClasses, nil
+	}
+	var classes []model.AssetClass
+	for _, h := range m.sorted(userId) {
+		if !slices.Contains(classes, h.AssetClass) {
+			classes = append(classes, h.AssetClass)
+		}
+	}
+	return classes, nil
+}
+
+// sorted is the user's holdings, oldest first (as the real repository reads them).
+func (m *mockHoldingRepo) sorted(userId model.UserId) []model.Holding {
+	list, _ := m.FindAll(context.Background(), userId)
+	slices.SortFunc(list, func(a, b model.Holding) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.Id.String(), b.Id.String()))
+	})
+	return list
+}
+
+func (m *mockHoldingRepo) ReassignAssetClass(ctx context.Context, userId model.UserId, from, to model.AssetClass) (int, error) {
+	if m.reassignErr != nil {
+		return 0, m.reassignErr
+	}
+	moved := 0
+	for id, h := range m.holdings {
+		if h.UserId == userId && h.AssetClass == from {
+			h.AssetClass = to
+			m.holdings[id] = h
+			moved++
+		}
+	}
+	return moved, nil
+}
+
+func (m *mockHoldingRepo) ReassignPlatform(ctx context.Context, userId model.UserId, key string, to model.PlatformName) (int, error) {
+	if m.reassignErr != nil {
+		return 0, m.reassignErr
+	}
+	renamed := 0
+	for id, h := range m.holdings {
+		if h.UserId == userId && model.PlatformKey(h.Platform) == key {
+			h.Platform = to
+			m.holdings[id] = h
+			renamed++
+		}
+	}
+	return renamed, nil
 }
 
 func (m *mockHoldingRepo) ExistingIds(ctx context.Context, userId model.UserId, ids []model.HoldingId) (map[model.HoldingId]bool, error) {
@@ -169,17 +221,36 @@ func newMockPlatformRepo(holdings *mockHoldingRepo) *mockPlatformRepo {
 }
 
 func (m *mockPlatformRepo) FindAll(ctx context.Context, userId model.UserId) ([]model.Platform, error) {
-	seen := map[string]bool{}
-	var list []model.Platform
-	for _, h := range m.holdings.holdings {
-		if h.UserId != userId || seen[strings.ToLower(h.Platform.Value())] {
-			continue
+	byKey := map[string]*model.Platform{}
+	var list []*model.Platform
+	for _, h := range m.holdings.sorted(userId) {
+		key := model.PlatformKey(h.Platform)
+		p, ok := byKey[key]
+		if !ok {
+			created := model.NewPlatform(userId, h.Platform, model.PlatformTypeOther, h.CreatedAt)
+			created.Key, created.Value = key, model.ZeroMoney
+			p = &created
+			byKey[key] = p
+			list = append(list, p)
 		}
-		seen[strings.ToLower(h.Platform.Value())] = true
-		list = append(list, model.NewPlatform(userId, h.Platform, model.PlatformTypeOther, h.CreatedAt))
+		p.Count++
+		p.Value = p.Value.Plus(h.Value)
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].Name.Value() < list[j].Name.Value() })
-	return list, nil
+	platforms := make([]model.Platform, len(list))
+	for i, p := range list {
+		platforms[i] = *p
+	}
+	sort.Slice(platforms, func(i, j int) bool { return platforms[i].Name.Value() < platforms[j].Name.Value() })
+	return platforms, nil
+}
+
+func (m *mockPlatformRepo) Names(ctx context.Context, userId model.UserId) (map[string]model.PlatformName, error) {
+	platforms, _ := m.FindAll(ctx, userId)
+	names := map[string]model.PlatformName{}
+	for _, p := range platforms {
+		names[p.Key] = p.Name
+	}
+	return names, nil
 }
 
 func (m *mockPlatformRepo) Canonical(ctx context.Context, userId model.UserId, name model.PlatformName) (model.PlatformName, error) {

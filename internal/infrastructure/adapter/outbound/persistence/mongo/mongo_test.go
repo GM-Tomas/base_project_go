@@ -459,8 +459,8 @@ func TestPlatformRepository(t *testing.T) {
 	platforms, err := repo.FindAll(ctx, user)
 	require.NoError(t, err)
 	assert.Equal(t, []model.Platform{
-		{UserId: user, Name: model.MustPlatformName("Abank"), Type: model.PlatformTypeOther, CreatedAt: at(3)},
-		{UserId: user, Name: model.MustPlatformName("Binance"), Type: model.PlatformTypeOther, CreatedAt: at(2)},
+		{UserId: user, Name: model.MustPlatformName("Abank"), Type: model.PlatformTypeOther, CreatedAt: at(3), Key: "abank", Count: 1, Value: model.MustMoneyFromFloat(1)},
+		{UserId: user, Name: model.MustPlatformName("Binance"), Type: model.PlatformTypeOther, CreatedAt: at(2), Key: "binance", Count: 1, Value: model.MustMoneyFromFloat(1)},
 	}, platforms, "sorted by name, created with their first holding, scoped to the user")
 
 	// Gone with its last holding; re-adding it later may then pick a new spelling.
@@ -493,7 +493,7 @@ func TestPlatformRepository_CaseVariantsAreOnePlatform(t *testing.T) {
 	platforms, err := repo.FindAll(ctx, user)
 	require.NoError(t, err)
 	assert.Equal(t, []model.Platform{
-		{UserId: user, Name: model.MustPlatformName("Kraken"), Type: model.PlatformTypeOther, CreatedAt: at(1)},
+		{UserId: user, Name: model.MustPlatformName("Kraken"), Type: model.PlatformTypeOther, CreatedAt: at(1), Key: "kraken", Count: 3, Value: model.MustMoneyFromFloat(16)},
 	}, platforms, "one platform, spelled as its earliest holding")
 
 	name, err := repo.Canonical(ctx, user, model.MustPlatformName("kRaKeN"))
@@ -544,10 +544,14 @@ func TestPlatformRepository_MatchesNamesUnderFullCaseFolding(t *testing.T) {
 
 	platforms, err := repo.FindAll(ctx, user)
 	require.NoError(t, err)
+	keyOf := func(name string) string { return model.PlatformKey(model.MustPlatformName(name)) }
 	assert.Equal(t, []model.Platform{
-		{UserId: user, Name: model.MustPlatformName(cafeComposed), Type: model.PlatformTypeOther, CreatedAt: at(5)},
-		{UserId: user, Name: model.MustPlatformName("Straße"), Type: model.MustPlatformType("Bank"), CreatedAt: at(1)},
-		{UserId: user, Name: model.MustPlatformName("ΟΔΟΣ"), Type: model.PlatformTypeOther, CreatedAt: at(3)},
+		{UserId: user, Name: model.MustPlatformName(cafeComposed), Type: model.PlatformTypeOther, CreatedAt: at(5),
+			Key: keyOf(cafeComposed), Count: 2, Value: model.MustMoneyFromFloat(11)},
+		{UserId: user, Name: model.MustPlatformName("Straße"), Type: model.MustPlatformType("Bank"), CreatedAt: at(1),
+			Key: "strasse", Count: 2, Value: model.MustMoneyFromFloat(3)},
+		{UserId: user, Name: model.MustPlatformName("ΟΔΟΣ"), Type: model.PlatformTypeOther, CreatedAt: at(3),
+			Key: keyOf("οδος"), Count: 2, Value: model.MustMoneyFromFloat(7)},
 	}, platforms)
 
 	for asked, want := range map[string]string{"strasse": "Straße", "ὁδός": "ὁδός", "οδος": "ΟΔΟΣ", "CAFE\u0301": cafeComposed} {

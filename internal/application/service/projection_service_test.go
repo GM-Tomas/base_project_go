@@ -21,7 +21,7 @@ func TestProjectionService_Project(t *testing.T) {
 		assets: model.MustMoneyFromFloat(84250.0),
 	}
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	svc := service.NewProjectionService(wealthAgg, newMockDebtRepo(), fixedClock(now))
+	svc := service.NewProjectionService(wealthAgg, newMockDebtRepo(), newMockClassSettingsRepo(), fixedClock(now))
 
 	userId := model.NewUserId(uuid.New())
 	ctx := context.Background()
@@ -44,7 +44,7 @@ func TestProjectionService_Project(t *testing.T) {
 }
 
 func TestProjectionService_RejectsNonFiniteInputsInsteadOfPanicking(t *testing.T) {
-	svc := service.NewProjectionService(&mockWealthAggregationPort{assets: model.ZeroMoney}, newMockDebtRepo(), fixedClock(time.Now()))
+	svc := service.NewProjectionService(&mockWealthAggregationPort{assets: model.ZeroMoney}, newMockDebtRepo(), newMockClassSettingsRepo(), fixedClock(time.Now()))
 	base := inbound.ProjectionRequest{UserId: model.NewUserId(uuid.New()), MonthlyContribution: 100, AnnualYieldPct: ptr(5.0), Years: 1}
 
 	nan := base
@@ -78,7 +78,7 @@ func TestProjectionService_ProjectsThePortfolioAndPaysOffDebts(t *testing.T) {
 	payment := model.MustMoneyFromFloat(1000)
 	debts.debts["visa"] = model.Debt{Id: model.NewDebtId(), UserId: user, Name: "Visa", Balance: model.MustMoneyFromFloat(6000), MonthlyPayment: &payment}
 	debts.debts["theirs"] = model.Debt{Id: model.NewDebtId(), UserId: model.NewUserId(uuid.New()), Balance: model.MustMoneyFromFloat(1e6)}
-	svc := service.NewProjectionService(&mockWealthAggregationPort{assets: model.MustMoneyFromFloat(10000)}, debts, fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)))
+	svc := service.NewProjectionService(&mockWealthAggregationPort{assets: model.MustMoneyFromFloat(10000)}, debts, newMockClassSettingsRepo(), fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)))
 
 	result, err := svc.Project(context.Background(), inbound.ProjectionRequest{UserId: user, Years: 1, Milestones: []float64{9000}})
 	require.NoError(t, err)
@@ -105,7 +105,7 @@ func TestProjectionService_GrowsAtThePortfoliosExpectedReturnUnlessToldOtherwise
 		// 75,000 at 8% and 25,000 without a return: 6% for the portfolio.
 		returns: []model.HoldingReturn{{Value: model.MustMoneyFromFloat(75000), Pct: &eight}, {Value: model.MustMoneyFromFloat(25000)}},
 	}
-	svc := service.NewProjectionService(agg, newMockDebtRepo(), fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)))
+	svc := service.NewProjectionService(agg, newMockDebtRepo(), newMockClassSettingsRepo(), fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)))
 	user := model.NewUserId(uuid.New())
 
 	portfolio, err := svc.Project(context.Background(), inbound.ProjectionRequest{UserId: user, Years: 1})
@@ -126,7 +126,7 @@ func TestProjectionService_GrowsAtThePortfoliosExpectedReturnUnlessToldOtherwise
 	assert.Less(t, custom.Series[1].RealFutureValue.Float64(), custom.Series[1].FutureValue.Float64())
 
 	// Nothing to weigh: the portfolio grows at 0%.
-	empty := service.NewProjectionService(&mockWealthAggregationPort{assets: model.ZeroMoney}, newMockDebtRepo(), fixedClock(time.Now()))
+	empty := service.NewProjectionService(&mockWealthAggregationPort{assets: model.ZeroMoney}, newMockDebtRepo(), newMockClassSettingsRepo(), fixedClock(time.Now()))
 	none, err := empty.Project(context.Background(), inbound.ProjectionRequest{UserId: user, Years: 1, MonthlyContribution: 100})
 	require.NoError(t, err)
 	assert.Nil(t, none.PortfolioYieldPct)

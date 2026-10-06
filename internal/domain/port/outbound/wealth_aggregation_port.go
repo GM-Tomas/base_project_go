@@ -13,6 +13,7 @@ type AssetClassAggregate struct {
 }
 
 type PlatformAggregate struct {
+	Key   string // see model.PlatformKey
 	Name  model.PlatformName
 	Type  model.PlatformType
 	Value model.Money
@@ -45,4 +46,6 @@ type WealthBreakdown struct {
 type WealthAggregationPort interface {
 	Totals(ctx context.Context, userId model.UserId) (WealthTotals, error)
 	Breakdown(ctx context.Context, userId model.UserId) (WealthBreakdown, error)
+	// ByAssetClass is just the class breakdown: what each class the user has holdings of is worth.
+	ByAssetClass(ctx context.Context, userId model.UserId) ([]AssetClassAggregate, error)
 }

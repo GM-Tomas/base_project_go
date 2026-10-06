@@ -34,6 +34,8 @@ func (v *dummyJWTValidator) ValidateToken(ctx context.Context, tokenStr string) 
 // testRouter is the API over in-memory repositories, with the clock at testNow.
 type testRouter struct {
 	http.Handler
+	classes     *mockClassSettingsRepo
+	looks       *mockPlatformSettingsRepo
 	holdings    *mockHoldingRepo
 	platforms   *mockPlatformRepo
 	snapshots   *mockSnapshotRepo
@@ -58,19 +60,22 @@ func newTestRouter(userId model.UserId) *testRouter {
 	quotaRepo := &mockQuotaRepo{counts: map[string]int{}}
 	debtRepo := newMockDebtRepo()
 	wealthAgg := &mockWealthAggregationPort{
-		assets: model.MustMoneyFromFloat(100000.0),
+		assets:   model.MustMoneyFromFloat(100000.0),
+		holdings: holdingRepo,
 	}
+	classes, looks := newMockClassSettingsRepo(), newMockPlatformSettingsRepo()
+	defaults := service.NewClassDefaults(nil, nil)
 
 	clock := func() time.Time { return testNow }
 
-	holdingSvc := service.NewHoldingService(passthroughTx{}, holdingRepo, platformRepo, movementRepo, quotaRepo, clock)
+	holdingSvc := service.NewHoldingService(passthroughTx{}, holdingRepo, platformRepo, classes, movementRepo, quotaRepo, clock)
 	debtSvc := service.NewDebtService(passthroughTx{}, debtRepo, movementRepo, quotaRepo, clock)
 	movementSvc := service.NewMovementService(passthroughTx{}, holdingRepo, platformRepo, debtRepo, movementRepo, quotaRepo, clock)
-	platformSvc := service.NewPlatformService(platformRepo)
-	assetClassSvc := service.NewAssetClassService(holdingRepo, nil)
+	platformSvc := service.NewPlatformService(passthroughTx{}, platformRepo, holdingRepo, looks, quotaRepo, clock)
+	assetClassSvc := service.NewAssetClassService(passthroughTx{}, holdingRepo, classes, quotaRepo, wealthAgg, defaults, clock)
 	snapshotSvc := service.NewSnapshotService(snapshotRepo, wealthAgg, clock)
-	projSvc := service.NewProjectionService(wealthAgg, debtRepo, clock)
-	wealthSvc := service.NewWealthQueryService(wealthAgg, snapshotRepo, clock, nil)
+	projSvc := service.NewProjectionService(wealthAgg, debtRepo, classes, clock)
+	wealthSvc := service.NewWealthQueryService(wealthAgg, snapshotRepo, classes, looks, clock, defaults)
 	preferencesRepo := &mockPreferencesRepo{saved: map[model.UserId]model.Preferences{}}
 
 	router := appHttp.NewRouter(appHttp.RouterParams{
@@ -86,7 +91,7 @@ func newTestRouter(userId model.UserId) *testRouter {
 		PreferencesHandler: appHttp.NewPreferencesHandler(service.NewPreferencesService(preferencesRepo)),
 	})
 
-	return &testRouter{Handler: router, holdings: holdingRepo, platforms: platformRepo, snapshots: snapshotRepo, wealthAgg: wealthAgg,
+	return &testRouter{Handler: router, classes: classes, looks: looks, holdings: holdingRepo, platforms: platformRepo, snapshots: snapshotRepo, wealthAgg: wealthAgg,
 		movements: movementRepo, debts: debtRepo, preferences: preferencesRepo}
 }
 
@@ -200,8 +205,9 @@ func TestRouter_OnlyExposesWhatTheFrontendUses(t *testing.T) {
 		{"GET", "/api/v1/holdings/" + id},
 		{"PUT", "/api/v1/holdings/" + id},
 		{"POST", "/api/v1/platforms"},
-		{"PATCH", "/api/v1/platforms/Binance"},
-		{"DELETE", "/api/v1/platforms/Binance"},
+		{"DELETE", "/api/v1/platforms/QmluYW5jZQ"},
+		{"GET", "/api/v1/asset-classes/Q2FzaA"},
+		{"PUT", "/api/v1/asset-classes/Q2FzaA"},
 	} {
 		rec := do(t, router, tc.method, tc.path, nil)
 		assert.Contains(t, []int{http.StatusNotFound, http.StatusMethodNotAllowed}, rec.Code, tc.method+" "+tc.path)

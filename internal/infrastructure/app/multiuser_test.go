@@ -648,3 +648,72 @@ func TestMultiUser_ExpectedReturnsAndPreferencesStayWithTheirOwner(t *testing.T)
 	assert.Equal(t, 12, prefs.Estimate.Years)
 	assert.Equal(t, "PORTFOLIO", prefs.Estimate.YieldMode)
 }
+
+func TestMultiUser_ClassesAndPlatformsAreSetUpPerAccount(t *testing.T) {
+	e := newE2E(t, "")
+	asAlice, asBob := e.token(uuid.New(), nil), e.token(uuid.New(), nil)
+	alices := e.create(asAlice, "AAPL", "Stocks", "Binance", 1000)
+	bobs := e.create(asBob, "MSFT", "Stocks", "Binance", 10)
+	stocks := "U3RvY2tz"    // base64url("Stocks")
+	binance := "YmluYW5jZQ" // base64url("binance"), its key
+	type class struct {
+		Name              string
+		Color             *string
+		ExpectedReturnPct *float64
+		HoldingsCount     int
+	}
+
+	// Alice sets up her classes and platforms, and renames them.
+	var c class
+	require.Equal(t, http.StatusOK, e.do(asAlice, "PATCH", "/api/v1/asset-classes/"+stocks, map[string]any{
+		"name": "Shares", "color": "#123456", "expectedReturnPct": 9}, &c))
+	assert.Equal(t, "Shares", c.Name)
+	assert.Equal(t, 1, c.HoldingsCount)
+	require.Equal(t, http.StatusCreated, e.do(asAlice, "POST", "/api/v1/asset-classes", map[string]any{"name": "Art"}, nil))
+	require.Equal(t, http.StatusNoContent, e.do(asAlice, "DELETE", "/api/v1/asset-classes/Q3J5cHRv", nil, nil)) // Crypto
+	var p struct {
+		Name       string
+		AvatarText *string
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "PATCH", "/api/v1/platforms/"+binance, map[string]any{"name": "BNB", "avatarText": "🟡"}, &p))
+	assert.Equal(t, "🟡", *p.AvatarText)
+
+	// Her holding counts with its class's return.
+	var holdings []struct {
+		Id                 string
+		AssetClass         string
+		Platform           string
+		EffectiveReturnPct *float64
+	}
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/holdings", nil, &holdings))
+	assert.Equal(t, alices.Id, holdings[0].Id)
+	assert.Equal(t, "Shares", holdings[0].AssetClass)
+	assert.Equal(t, "BNB", holdings[0].Platform)
+	assert.Equal(t, 9.0, *holdings[0].EffectiveReturnPct)
+
+	// Bob's are as they were: his holding, his classes, his platform.
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/holdings", nil, &holdings))
+	assert.Equal(t, bobs.Id, holdings[0].Id)
+	assert.Equal(t, "Stocks", holdings[0].AssetClass)
+	assert.Equal(t, "Binance", holdings[0].Platform)
+	assert.Nil(t, holdings[0].EffectiveReturnPct)
+	var classes struct{ All []string }
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/asset-classes", nil, &classes))
+	assert.Equal(t, []string{"Cash", "Fixed Income", "Index Fund", "Equity", "Crypto", "Stocks"}, classes.All)
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/asset-classes", nil, &classes))
+	assert.Equal(t, []string{"Cash", "Fixed Income", "Index Fund", "Equity", "Art", "Shares"}, classes.All)
+	var platforms []struct {
+		Name       string
+		AvatarText *string
+	}
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/platforms", nil, &platforms))
+	assert.Equal(t, "Binance", platforms[0].Name)
+	assert.Nil(t, platforms[0].AvatarText)
+
+	// And Bob can't reach hers: not found, nothing changes.
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "PATCH", "/api/v1/asset-classes/U2hhcmVz", map[string]any{"color": "#000000"}, nil))
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "DELETE", "/api/v1/asset-classes/QXJ0", nil, nil))
+	assert.Equal(t, http.StatusNotFound, e.do(asBob, "PATCH", "/api/v1/platforms/Ym5i", map[string]any{"avatarText": "X"}, nil))
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/platforms", nil, &platforms))
+	assert.Equal(t, "🟡", *platforms[0].AvatarText)
+}

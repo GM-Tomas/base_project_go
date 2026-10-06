@@ -64,6 +64,8 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 		WriteProblem(w, r, http.StatusConflict, "conflict", "Conflict", e.Message, nil)
 	case appErrors.ResourceInUseError:
 		WriteProblem(w, r, http.StatusConflict, "conflict", "Conflict", e.Message, nil)
+	case appErrors.ConflictError:
+		WriteProblem(w, r, http.StatusConflict, e.Slug, "Conflict", e.Message, nil)
 	case appErrors.LimitExceededError:
 		WriteProblem(w, r, http.StatusConflict, "limit-exceeded", "Conflict", e.Message, nil)
 	case appErrors.InsufficientBalanceError:
@@ -121,6 +123,8 @@ func isDomainValidationError(err error) bool {
 		model.ErrContributionOutOfRange,
 		model.ErrCustomYieldOutOfRange,
 		model.ErrMilestoneOutOfRange,
+		model.ErrInvalidColor,
+		model.ErrInvalidAvatarText,
 	} {
 		if errors.Is(err, target) {
 			return true

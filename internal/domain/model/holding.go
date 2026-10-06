@@ -48,13 +48,19 @@ type Holding struct {
 	Value      Money
 	// ExpectedReturnPct is roughly how much it grows in a year (-100 to 100), if the user said.
 	ExpectedReturnPct *decimal.Decimal
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// ClassReturnPct is its class's default return, as the user set it: not stored with the holding, but
+	// filled in when it's read for an answer (see EffectiveReturnPct).
+	ClassReturnPct *decimal.Decimal
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
-// EffectiveReturnPct is the yearly return the holding counts with: its own, if it has one.
+// EffectiveReturnPct is the yearly return the holding counts with: its own, or else its class's.
 func (h Holding) EffectiveReturnPct() *decimal.Decimal {
-	return h.ExpectedReturnPct
+	if h.ExpectedReturnPct != nil {
+		return h.ExpectedReturnPct
+	}
+	return h.ClassReturnPct
 }
 
 // SameReturn is whether two expected returns are the same (none being the same as none).

@@ -1124,7 +1124,7 @@
           "Platforms"
         ],
         "summary": "Lista todas las plataformas del usuario",
-        "description": "Retorna las plataformas que usan los holdings del usuario. Se comparan sin distinguir mayúsculas (\"Binance\" y \"binance\" son una, escrita como en su holding más antiguo); una plataforma existe mientras al menos un holding la use (aparece con el primero y desaparece con el último). Tipo: `\"Other\"`, salvo el que versiones anteriores (que permitían elegirlo) le hayan dado a ese nombre. Orden alfabético sin distinguir mayúsculas ni acentos.",
+        "description": "Retorna las plataformas que usan los holdings del usuario. Se comparan sin distinguir mayúsculas (\"Binance\" y \"binance\" son una, escrita como en su holding más antiguo); una plataforma existe mientras al menos un holding la use (aparece con el primero y desaparece con el último). Tipo: `\"Other\"`, salvo el que versiones anteriores (que permitían elegirlo) le hayan dado a ese nombre. Orden alfabético sin distinguir mayúsculas ni acentos. Cada una trae su `id`, su miniatura (`avatarText`, `color`) y tipo como los configuró el usuario, y cuántos holdings tiene y cuánto valen. La configuración se conserva si la plataforma se queda sin holdings y vuelve a usarse.",
         "operationId": "getAllPlatforms",
         "security": [
           {
@@ -1162,8 +1162,8 @@
         "tags": [
           "Asset Classes"
         ],
-        "summary": "Obtiene el catálogo de clases de activo disponibles",
-        "description": "Retorna las clases de activo estándar configuradas por el sistema (`defaults`), las clases actualmente en uso por las posiciones del usuario (`inUse`), y la unión sin duplicados de ambas (`all`).\nPermite al frontend alimentar desplegables o autocompletables permitiendo al usuario inventar nuevas categorías si lo desea.\n",
+        "summary": "Lista las clases de activo del usuario",
+        "description": "Clases visibles = (por defecto − las que el usuario borró) ∪ las que creó ∪ las que usan sus holdings. `classes` trae cada una con su color, liquidez, retorno por defecto, cantidad de holdings y valor.",
         "operationId": "getAvailableAssetClasses",
         "security": [
           {
@@ -1187,7 +1187,6 @@
                     "Crypto"
                   ],
                   "inUse": [
-                    "Cash",
                     "Crypto",
                     "Real Estate"
                   ],
@@ -1198,6 +1197,18 @@
                     "Equity",
                     "Crypto",
                     "Real Estate"
+                  ],
+                  "classes": [
+                    {
+                      "id": "Q3J5cHRv",
+                      "name": "Crypto",
+                      "color": "#c86bd6",
+                      "liquid": true,
+                      "expectedReturnPct": 15,
+                      "isDefault": true,
+                      "holdingsCount": 2,
+                      "valueUsd": 24570
+                    }
                   ]
                 }
               }
@@ -1211,6 +1222,62 @@
           },
           "503": {
             "$ref": "#/components/responses/AuthUnavailableError"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Asset Classes"
+        ],
+        "summary": "Crea una clase de activo",
+        "description": "Aparece enseguida en `all` aunque no tenga holdings. Crear una clase por defecto que el usuario había borrado la recupera. Hasta 100 clases creadas o configuradas por usuario (`409 limit-exceeded`).",
+        "operationId": "createAssetClass",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAssetClassRequest"
+              },
+              "example": {
+                "name": "Real Estate",
+                "color": "#5b8def",
+                "liquid": false,
+                "expectedReturnPct": 6
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "La clase creada (header `Location`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetClassResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ConflictError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
           }
         }
       }
@@ -1378,6 +1445,205 @@
           }
         }
       }
+    },
+    "/api/v1/asset-classes/{id}": {
+      "patch": {
+        "tags": [
+          "Asset Classes"
+        ],
+        "summary": "Edita, renombra o fusiona una clase",
+        "description": "Cambia lo enviado. `name` renombra la clase en todos sus holdings en una transacción (los movimientos conservan el nombre que tenían). Si `name` es otra clase del usuario responde `409 class-exists`, salvo con `mergeIfExists: true`. Renombrar una clase por defecto la deja borrada (no vuelve a aparecer). Devuelve la clase como quedó (la de destino, si se renombró).",
+        "operationId": "updateAssetClass",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "El `id` de la clase (base64url de su nombre)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAssetClassRequest"
+              },
+              "example": {
+                "name": "Equity",
+                "mergeIfExists": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "La clase como quedó",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetClassResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ConflictError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Asset Classes"
+        ],
+        "summary": "Borra una clase (moviendo sus holdings)",
+        "description": "Sin holdings, la borra. Con holdings hace falta `moveTo` (otra clase): se mueven y se borra todo en una transacción; sin `moveTo`, `409 class-in-use`. Una clase por defecto borrada no vuelve a aparecer (salvo que algún holding la use o se cree de nuevo).",
+        "operationId": "deleteAssetClass",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "El `id` de la clase (base64url de su nombre)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "moveTo",
+            "in": "query",
+            "required": false,
+            "description": "La clase a la que pasan sus holdings",
+            "schema": {
+              "type": "string",
+              "maxLength": 60
+            },
+            "example": "Equity"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Borrada"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ConflictError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
+          }
+        }
+      }
+    },
+    "/api/v1/platforms/{id}": {
+      "patch": {
+        "tags": [
+          "Platforms"
+        ],
+        "summary": "Personaliza, renombra o fusiona una plataforma",
+        "description": "Cambia miniatura, color y tipo, y `name` en todos sus holdings en una transacción (los movimientos conservan el nombre que tenían). Un nombre de otra plataforma del usuario (sin distinguir mayúsculas) responde `409 platform-exists`, salvo con `mergeIfExists: true`. Hasta 1000 plataformas personalizadas (`409 limit-exceeded`). Devuelve la plataforma como quedó.",
+        "operationId": "updatePlatform",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "El `id` de la plataforma",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePlatformRequest"
+              },
+              "example": {
+                "avatarText": "🟡",
+                "color": "#f0b90b",
+                "type": "Exchange"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "La plataforma como quedó",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFoundError"
+          },
+          "409": {
+            "$ref": "#/components/responses/ConflictError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/TransactionsUnavailableError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1498,12 +1764,12 @@
             "items": {
               "type": "string"
             },
-            "description": "Clases de activo configuradas como líquidas por el servidor",
+            "description": "Las clases del usuario que cuentan como líquidas (las que eligió, o las configuradas por el servidor)",
             "example": [
               "Cash",
+              "Index Fund",
               "Equity",
-              "Crypto",
-              "Index Fund"
+              "Crypto"
             ]
           }
         }
@@ -1514,7 +1780,9 @@
           "assetClass",
           "valueUsd",
           "pct",
-          "count"
+          "count",
+          "color",
+          "liquid"
         ],
         "properties": {
           "assetClass": {
@@ -1535,6 +1803,20 @@
             "type": "integer",
             "description": "Cantidad de posiciones en esta clase",
             "example": 3
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
+            "example": "#c86bd6"
+          },
+          "liquid": {
+            "type": "boolean",
+            "description": "Si cuenta como disponible, como la configuró el usuario.",
+            "example": true
           }
         }
       },
@@ -1545,7 +1827,9 @@
           "type",
           "valueUsd",
           "pct",
-          "count"
+          "count",
+          "avatarText",
+          "color"
         ],
         "properties": {
           "name": {
@@ -1554,7 +1838,8 @@
           },
           "type": {
             "type": "string",
-            "example": "Broker"
+            "example": "Broker",
+            "description": "Como en `GET /platforms`"
           },
           "valueUsd": {
             "type": "number",
@@ -1570,6 +1855,23 @@
             "type": "integer",
             "description": "Cantidad de posiciones en esta plataforma (0 si no tiene)",
             "example": 5
+          },
+          "avatarText": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Su miniatura; `null` = su inicial.",
+            "example": "BZ"
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
+            "example": "#c86bd6"
           }
         }
       },
@@ -1951,7 +2253,7 @@
               "number",
               "null"
             ],
-            "description": "El retorno con el que cuenta en el del portfolio: hoy, el propio.",
+            "description": "El retorno con el que cuenta en el del portfolio: el propio o, si no tiene, el de su clase (`null` si ninguno).",
             "example": 7.5
           },
           "createdAt": {
@@ -1969,18 +2271,55 @@
       "PlatformResponse": {
         "type": "object",
         "required": [
+          "id",
           "name",
           "type",
+          "avatarText",
+          "color",
+          "holdingsCount",
+          "valueUsd",
           "createdAt"
         ],
         "properties": {
+          "id": {
+            "type": "string",
+            "description": "base64url de la clave de la plataforma (su nombre sin mayúsculas ni formas Unicode): lo que va en `/platforms/{id}`.",
+            "example": "YmluYW5jZQ"
+          },
           "name": {
             "type": "string",
             "example": "Binance"
           },
           "type": {
             "type": "string",
+            "description": "El que eligió el usuario; si no, el que le dieron versiones anteriores; si no, `Other`.",
             "example": "Exchange"
+          },
+          "avatarText": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Lo que muestra su miniatura (1 o 2 caracteres, un emoji cuenta como uno); `null` = su inicial.",
+            "example": "🟡"
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
+            "example": "#c86bd6"
+          },
+          "holdingsCount": {
+            "type": "integer",
+            "example": 2
+          },
+          "valueUsd": {
+            "type": "number",
+            "format": "double",
+            "example": 24570
           },
           "createdAt": {
             "type": "string",
@@ -1994,7 +2333,8 @@
         "required": [
           "defaults",
           "inUse",
-          "all"
+          "all",
+          "classes"
         ],
         "properties": {
           "defaults": {
@@ -2002,7 +2342,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Clases estándar sugeridas por el sistema",
+            "description": "Las clases con las que empieza toda cuenta (configuración del servidor)",
             "example": [
               "Cash",
               "Fixed Income",
@@ -2016,7 +2356,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Clases que tienen al menos un holding activo para este usuario",
+            "description": "Clases que tiene al menos un holding del usuario",
             "example": [
               "Cash",
               "Crypto",
@@ -2028,7 +2368,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Unión ordenada y sin duplicados de defaults e inUse",
+            "description": "Las clases del usuario, en el orden en que se ofrecen: las por defecto que no borró, en su orden, y después las que creó y las que usan sus holdings, por nombre (sin distinguir mayúsculas ni acentos).",
             "example": [
               "Cash",
               "Fixed Income",
@@ -2037,6 +2377,13 @@
               "Crypto",
               "Real Estate"
             ]
+          },
+          "classes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssetClassResponse"
+            },
+            "description": "Las mismas que `all`, con su configuración y lo que valen."
           }
         }
       },
@@ -2912,6 +3259,192 @@
             "$ref": "#/components/schemas/EstimatePreferences"
           }
         }
+      },
+      "AssetClassResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "color",
+          "liquid",
+          "expectedReturnPct",
+          "isDefault",
+          "holdingsCount",
+          "valueUsd"
+        ],
+        "description": "Una clase del usuario, como la configuró.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "base64url (sin relleno) del nombre: lo que va en las rutas `/asset-classes/{id}`.",
+            "example": "Q3J5cHRv"
+          },
+          "name": {
+            "type": "string",
+            "example": "Crypto"
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
+            "example": "#c86bd6"
+          },
+          "liquid": {
+            "type": "boolean",
+            "description": "Si cuenta como disponible (\"Ready to spend\"): lo que el usuario eligió, o la configuración del servidor.",
+            "example": true
+          },
+          "expectedReturnPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Retorno anual por defecto de la clase: lo usan sus holdings sin retorno propio.",
+            "example": 15
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "Es una de las clases con las que empieza toda cuenta.",
+            "example": true
+          },
+          "holdingsCount": {
+            "type": "integer",
+            "example": 2
+          },
+          "valueUsd": {
+            "type": "number",
+            "format": "double",
+            "example": 24570
+          }
+        }
+      },
+      "CreateAssetClassRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Distinto de las clases del usuario (las clases distinguen mayúsculas).",
+            "example": "Real Estate"
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
+            "example": "#c86bd6"
+          },
+          "liquid": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`null` o ausente: como por defecto (ilíquida, salvo las configuradas como líquidas).",
+            "example": false
+          },
+          "expectedReturnPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": -100,
+            "maximum": 100,
+            "description": "Retorno anual por defecto (−100 a 100, 2 decimales).",
+            "example": 6
+          }
+        }
+      },
+      "UpdateAssetClassRequest": {
+        "type": "object",
+        "description": "*Merge patch*: cambia solo lo enviado; `null` borra `color` y `expectedReturnPct` y vuelve `liquid` a su valor por defecto.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 60,
+            "description": "Renombra la clase en todos sus holdings (una transacción). Si es otra clase del usuario, es un *merge*: solo con `mergeIfExists`.",
+            "example": "Equity"
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
+            "example": "#c86bd6"
+          },
+          "liquid": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "expectedReturnPct": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": -100,
+            "maximum": 100,
+            "description": "Retorno anual por defecto (−100 a 100, 2 decimales).",
+            "example": 6
+          },
+          "mergeIfExists": {
+            "type": "boolean",
+            "default": false,
+            "description": "Con `true`, renombrar sobre una clase existente mueve los holdings ahí; la clase de destino conserva su configuración (y se ignora el resto del pedido)."
+          }
+        }
+      },
+      "UpdatePlatformRequest": {
+        "type": "object",
+        "description": "*Merge patch*: cambia solo lo enviado; `null` vuelve `type`, `avatarText` y `color` a los de por defecto.",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "Renombra la plataforma en todos sus holdings (una transacción). La misma plataforma con otras mayúsculas la reescribe; otra plataforma del usuario es un *merge*: solo con `mergeIfExists`.",
+            "example": "Binance"
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40,
+            "example": "Exchange"
+          },
+          "avatarText": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "1 o 2 caracteres (grafemas: un emoji, una bandera o una familia cuentan como uno), sin espacios en los extremos.",
+            "example": "BN"
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
+            "example": "#c86bd6"
+          },
+          "mergeIfExists": {
+            "type": "boolean",
+            "default": false,
+            "description": "Con `true`, renombrar sobre otra plataforma mueve sus holdings ahí; la de destino conserva su miniatura (y se ignora el resto del pedido)."
+          }
+        }
       }
     },
     "responses": {
@@ -3045,6 +3578,30 @@
                   "title": "Conflict",
                   "status": 409,
                   "detail": "You've reached the limit of 20000 recorded changes. Undo some to record new ones."
+                }
+              },
+              "class-exists": {
+                "value": {
+                  "type": "https://base.wealth/errors/class-exists",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "There's already a class named \"Equity\""
+                }
+              },
+              "class-in-use": {
+                "value": {
+                  "type": "https://base.wealth/errors/class-in-use",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "Stocks still has assets: say which class they move to (moveTo)"
+                }
+              },
+              "platform-exists": {
+                "value": {
+                  "type": "https://base.wealth/errors/platform-exists",
+                  "title": "Conflict",
+                  "status": 409,
+                  "detail": "There's already a platform named \"Binance\""
                 }
               }
             }

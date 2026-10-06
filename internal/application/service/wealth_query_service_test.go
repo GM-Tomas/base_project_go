@@ -32,7 +32,7 @@ func TestWealthQueryService_GetSummary(t *testing.T) {
 	}
 
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
-	svc := service.NewWealthQueryService(wealthAgg, snapshotRepo, fixedClock(now), nil)
+	svc := service.NewWealthQueryService(wealthAgg, snapshotRepo, newMockClassSettingsRepo(), newMockPlatformSettingsRepo(), fixedClock(now), service.NewClassDefaults(nil, nil))
 
 	userId := model.NewUserId(uuid.New())
 	ctx := context.Background()
@@ -52,7 +52,7 @@ func TestWealthQueryService_GetSummary_ExpectedReturn(t *testing.T) {
 	seven, minus := decimal.RequireFromString("7.5"), decimal.NewFromInt(-20)
 	svc := func(returns []model.HoldingReturn) *service.WealthQueryService {
 		agg := &mockWealthAggregationPort{assets: model.MustMoneyFromFloat(100000), returns: returns}
-		return service.NewWealthQueryService(agg, newMockSnapshotRepo(), fixedClock(time.Now()), nil)
+		return service.NewWealthQueryService(agg, newMockSnapshotRepo(), newMockClassSettingsRepo(), newMockPlatformSettingsRepo(), fixedClock(time.Now()), service.NewClassDefaults(nil, nil))
 	}
 
 	summary, err := svc([]model.HoldingReturn{
@@ -118,7 +118,7 @@ func TestWealthQueryService_GetSummary_ReadsEverythingAtOnce(t *testing.T) {
 	}
 	agg := &slowAggregation{mockWealthAggregationPort: mockWealthAggregationPort{assets: model.MustMoneyFromFloat(10)}, onRead: onRead}
 	snapshots := &slowSnapshots{mockSnapshotRepo: newMockSnapshotRepo(), onRead: onRead}
-	svc := service.NewWealthQueryService(agg, snapshots, fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)), nil)
+	svc := service.NewWealthQueryService(agg, snapshots, newMockClassSettingsRepo(), newMockPlatformSettingsRepo(), fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)), service.NewClassDefaults(nil, nil))
 
 	done := make(chan error, 1)
 	go func() {
@@ -139,7 +139,7 @@ func TestWealthQueryService_GetSummary_ReadsEverythingAtOnce(t *testing.T) {
 func TestWealthQueryService_GetSummary_AFailingReadFailsItWithItsError(t *testing.T) {
 	broken := errors.New("snapshots unreachable")
 	snapshots := &slowSnapshots{mockSnapshotRepo: newMockSnapshotRepo(), onRead: func() {}, firstOfYearErr: broken}
-	svc := service.NewWealthQueryService(&mockWealthAggregationPort{}, snapshots, fixedClock(time.Now()), nil)
+	svc := service.NewWealthQueryService(&mockWealthAggregationPort{}, snapshots, newMockClassSettingsRepo(), newMockPlatformSettingsRepo(), fixedClock(time.Now()), service.NewClassDefaults(nil, nil))
 
 	_, err := svc.GetSummary(context.Background(), model.NewUserId(uuid.New()))
 
@@ -159,7 +159,7 @@ func TestWealthQueryService_GetSummary_NetsOutDebts(t *testing.T) {
 			{AssetClass: model.MustAssetClass("Cash"), Value: model.MustMoneyFromFloat(3000), Count: 1},
 		},
 	}
-	svc := service.NewWealthQueryService(agg, snapshots, fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)), nil)
+	svc := service.NewWealthQueryService(agg, snapshots, newMockClassSettingsRepo(), newMockPlatformSettingsRepo(), fixedClock(time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)), service.NewClassDefaults(nil, nil))
 
 	summary, err := svc.GetSummary(context.Background(), user)
 	require.NoError(t, err)
