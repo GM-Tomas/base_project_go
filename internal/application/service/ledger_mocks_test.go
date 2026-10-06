@@ -7,10 +7,12 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/application/service"
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
+	"github.com/shopspring/decimal"
 )
 
 type mockMovementRepo struct {
@@ -301,4 +303,38 @@ func newLedgerFixture(clock service.Clock) *ledgerFixture {
 	f.debtSvc = service.NewDebtService(f.tx, f.debts, f.movements, f.quotas, clock)
 	f.movementSvc = service.NewMovementService(f.tx, f.holdings, f.platforms, f.debts, f.movements, f.quotas, clock)
 	return f
+}
+
+// Groups sums the user's movements of [from, to] by shape, as the Mongo aggregation does.
+func (m *mockMovementRepo) Groups(ctx context.Context, userId model.UserId, from, to time.Time) ([]model.MovementGroup, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return groupMovements(m.movements, userId, from, to), nil
+}
+
+func groupMovements(movements []model.Movement, userId model.UserId, from, to time.Time) []model.MovementGroup {
+	index := map[model.MovementGroup]int{}
+	var groups []model.MovementGroup
+	for _, mv := range movements {
+		if mv.UserId != userId || mv.OccurredAt.Before(from) || mv.OccurredAt.After(to) {
+			continue
+		}
+		key := model.MovementGroup{Kind: mv.Kind, OfDebt: mv.Debt != nil, WithHolding: mv.Holding != nil || mv.ToHolding != nil}
+		i, ok := index[key]
+		if !ok {
+			i = len(groups)
+			index[key] = i
+			key.Amount, key.Fee, key.Change = decimal.Zero, decimal.Zero, decimal.Zero
+			groups = append(groups, key)
+		}
+		g := &groups[i]
+		g.Count++
+		g.Amount = g.Amount.Add(mv.Amount.Amount())
+		g.Fee = g.Fee.Add(mv.Fee.Amount())
+		if mv.NewValue != nil && mv.PreviousValue != nil {
+			g.Change = g.Change.Add(mv.NewValue.Amount().Sub(mv.PreviousValue.Amount()))
+		}
+	}
+	return groups
 }

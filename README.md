@@ -146,6 +146,13 @@ del valor con retorno cargado) y lo que rendiría en dólares: `expectedReturn` 
 retorno salvo que se le pase `yieldPct`, y simula mes a mes (aporte que sube cada año, inflación para ver los valores en
 dólares de hoy).
 
+**Historial por períodos.** `GET /movements/summary` suma los movimientos de un período por categoría con un
+`$group` de MongoDB (no lee los movimientos uno por uno) y el dominio (`service.MovementsEffect`) dice qué le hicieron
+al patrimonio: rendimiento (ganancias − pérdidas − comisiones − intereses de deudas), ahorro (depósitos − retiros ±
+pagos y cargos de deudas con plata de afuera), altas y bajas, y correcciones. Las transferencias y los pagos de deuda
+desde un asset no lo cambian (salvo la comisión): solo se cuentan. Los snapshots pueden cargarse a mano con fecha
+pasada (`source: MANUAL`, con nota) para que la historia empiece antes de usar BASE.
+
 **Patrimonio neto = assets − deudas.** El resumen, los snapshots y los hitos de la proyección usan el neto, que puede ser
 negativo. Cada snapshot guarda también lo que se tenía (`assets_usd`) y lo que se debía (`debts_usd`); los anteriores a
 las deudas no los tienen y se leen como assets = total y deudas = 0. La proyección parte del portafolio (los assets) y
@@ -261,6 +268,7 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `GET` | `/api/v1/movements` | Activity y detalle de un asset o una deuda (`holdingId`, `debtId`, `kind`, `from`, `to`, `limit`, `cursor`) | Sí |
 | `POST` | `/api/v1/movements` | Gain/loss, deposit/withdrawal, transfer; pago, cargo e interés de una deuda (`409` si un valor o saldo quedaría negativo) | Sí |
 | `DELETE` | `/api/v1/movements/{id}` | Undo (revierte como delta; `409` si no se puede) | Sí |
+| `GET` | `/api/v1/movements/summary?from&to` | History → "Why it changed" (lo que suman los movimientos del período por categoría y su efecto en el patrimonio) | Sí |
 | `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts", Settings (con `id`, miniatura, color, holdings y valor) | Sí |
 | `PATCH` | `/api/v1/platforms/{id}` | Settings → Customize (miniatura, color, tipo; `name` renombra en todos sus holdings; `409 platform-exists` salvo `mergeIfExists`) | Sí |
 | `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets, Settings (`classes`: color, liquidez, retorno por defecto, holdings y valor) | Sí |
@@ -270,5 +278,5 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `GET` | `/api/v1/wealth/estimate?contribution&years[&yieldPct&milestones&inflationPct&contributionGrowthPct]` | Estimate (parte de los assets, al retorno esperado del portfolio salvo `yieldPct`; deudas amortizadas aparte; hitos sobre el neto, 150k/250k por defecto) | Sí |
 | `GET`, `PUT` | `/api/v1/preferences` | Estimate (cómo lo dejó el usuario, en cualquier dispositivo; el PUT reemplaza el documento) | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | History | Sí |
-| `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (`409` si ya hay uno en ese segundo o al superar 5000) | Sí |
+| `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (sin cuerpo) y "Add a past checkpoint" (con `capturedAt` y `totalValueUsd`: `source: MANUAL`); `409` si ya hay uno en ese segundo o al superar 5000 | Sí |
 | `DELETE` | `/api/v1/wealth/snapshots/{id}` | History → "Delete checkpoint" (`404` si no existe o es ajeno) | Sí |

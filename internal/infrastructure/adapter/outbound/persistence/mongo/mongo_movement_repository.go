@@ -289,3 +289,67 @@ func mapDocToMovement(doc movementDoc) (model.Movement, error) {
 		CreatedAt:     doc.CreatedAt,
 	}, nil
 }
+
+// Groups has Mongo sum the movements by shape, amounts read as decimals (an amount that isn't one, only
+// writable outside the API, isn't counted). One round trip and a few rows, however many movements.
+func (r *MongoMovementRepository) Groups(ctx context.Context, userId model.UserId, from, to time.Time) ([]model.MovementGroup, error) {
+	decimalOf := func(field string) bson.M {
+		return bson.M{"$convert": bson.M{"input": field, "to": "decimal", "onError": nil, "onNull": nil}}
+	}
+	present := func(field string) bson.M {
+		return bson.M{"$ne": bson.A{bson.M{"$ifNull": bson.A{field, nil}}, nil}}
+	}
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"user_id":     userId.UUID().String(),
+			"occurred_at": bson.M{"$gte": from, "$lte": to},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": bson.M{
+				"kind":        "$kind",
+				"ofDebt":      present("$debt.id"),
+				"withHolding": bson.M{"$or": bson.A{present("$holding.id"), present("$to_holding.id")}},
+			},
+			"count":  bson.M{"$sum": 1},
+			"amount": bson.M{"$sum": decimalOf("$amount_usd")},
+			"fee":    bson.M{"$sum": decimalOf("$fee_usd")},
+			"change": bson.M{"$sum": bson.M{"$subtract": bson.A{decimalOf("$new_value_usd"), decimalOf("$previous_value_usd")}}},
+		}}},
+	}
+	cursor, err := r.coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		ID struct {
+			Kind        string `bson:"kind"`
+			OfDebt      bool   `bson:"ofDebt"`
+			WithHolding bool   `bson:"withHolding"`
+		} `bson:"_id"`
+		Count  int           `bson:"count"`
+		Amount bson.RawValue `bson:"amount"`
+		Fee    bson.RawValue `bson:"fee"`
+		Change bson.RawValue `bson:"change"`
+	}
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	groups := make([]model.MovementGroup, len(rows))
+	for i, row := range rows {
+		groups[i] = model.MovementGroup{
+			Kind: model.MovementKind(row.ID.Kind), OfDebt: row.ID.OfDebt, WithHolding: row.ID.WithHolding, Count: row.Count,
+			Amount: sumOf(row.Amount), Fee: sumOf(row.Fee), Change: sumOf(row.Change),
+		}
+	}
+	return groups, nil
+}
+
+// sumOf reads a $sum: a decimal, or the 0 it is when there was nothing to add.
+func sumOf(v bson.RawValue) decimal.Decimal {
+	if d, ok := v.Decimal128OK(); ok {
+		if parsed, err := decimal.NewFromString(d.String()); err == nil {
+			return parsed
+		}
+	}
+	return decimal.Zero
+}

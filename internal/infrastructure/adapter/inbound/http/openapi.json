@@ -346,8 +346,8 @@
         "tags": [
           "Wealth"
         ],
-        "summary": "Captura un snapshot instantáneo del patrimonio neto actual",
-        "description": "Calcula el patrimonio neto actual en el servidor y lo guarda como un nuevo punto histórico inmutable.\n\n**Protección contra doble clic:**\nExiste una restricción de unicidad de un snapshot por segundo por usuario. Si se envían dos solicitudes en el mismo segundo calendario, la segunda responde `409 Conflict`.\n",
+        "summary": "Guarda un snapshot del patrimonio: el de ahora, o uno del pasado",
+        "description": "Sin cuerpo (o con `{}`): calcula el patrimonio neto actual en el servidor y lo guarda (`source: AUTO`). Con cuerpo: guarda un checkpoint del pasado que carga el usuario (`source: MANUAL`); sin `assetsUsd`/`debtsUsd`, lo que tenía es el total (o lo que debía, si es negativo).\n\n**Protección contra doble clic:** un snapshot por segundo por usuario: el segundo responde `409 Conflict`. Hasta 5000 por usuario.\n",
         "operationId": "createSnapshot",
         "security": [
           {
@@ -400,6 +400,26 @@
           },
           "503": {
             "$ref": "#/components/responses/AuthUnavailableError"
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSnapshotRequest"
+              },
+              "example": {
+                "capturedAt": "2025-12-31",
+                "totalValueUsd": 81000,
+                "assetsUsd": 95000,
+                "debtsUsd": 14000,
+                "note": "From my spreadsheet"
+              }
+            }
           }
         }
       }
@@ -1644,6 +1664,63 @@
           }
         }
       }
+    },
+    "/api/v1/movements/summary": {
+      "get": {
+        "tags": [
+          "Movements"
+        ],
+        "summary": "Resume los movimientos de un período",
+        "description": "Suma los movimientos con `occurredAt` en [`from`, `to`] por categoría y dice cuánto cambió el patrimonio por cada motivo (las reglas viven en el dominio: `service.MovementsEffect`). La suma la hace MongoDB: una consulta, cualquiera sea la cantidad de movimientos. Sin `from`, desde 1970; sin `to`, hasta ahora.",
+        "operationId": "summarizeMovements",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "`occurredAt` desde: fecha (su primer instante UTC) o RFC 3339."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "`occurredAt` hasta: fecha (su último instante UTC) o RFC 3339."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "El resumen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovementsSummaryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationError"
+          },
+          "401": {
+            "$ref": "#/components/responses/UnauthorizedError"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          },
+          "503": {
+            "$ref": "#/components/responses/AuthUnavailableError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2116,7 +2193,9 @@
           "totalValueUsd",
           "assetsUsd",
           "debtsUsd",
-          "changePctFromPrevious"
+          "changePctFromPrevious",
+          "source",
+          "note"
         ],
         "properties": {
           "id": {
@@ -2152,6 +2231,23 @@
             "nullable": true,
             "description": "Variación porcentual del patrimonio neto contra el snapshot anterior (null para el primero, o si el anterior no era mayor que 0)",
             "example": 3.4
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "AUTO",
+              "MANUAL"
+            ],
+            "description": "`AUTO`: el patrimonio cuando se tomó; `MANUAL`: uno del pasado que cargó el usuario.",
+            "example": "AUTO"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "La nota de un checkpoint manual.",
+            "example": null
           }
         }
       },
@@ -3443,6 +3539,196 @@
             "type": "boolean",
             "default": false,
             "description": "Con `true`, renombrar sobre otra plataforma mueve sus holdings ahí; la de destino conserva su miniatura (y se ignora el resto del pedido)."
+          }
+        }
+      },
+      "MovementsSummaryResponse": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "count",
+          "transfers",
+          "totalsUsd",
+          "netWorthEffectUsd"
+        ],
+        "description": "Lo que suman los movimientos de un período.",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2025-10-05T00:00:00Z"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-05T18:00:00Z"
+          },
+          "count": {
+            "type": "integer",
+            "description": "Movimientos en el período.",
+            "example": 42
+          },
+          "transfers": {
+            "type": "integer",
+            "description": "Los que solo movieron plata entre lo que se tiene y lo que se debe (transferencias, pagos de deuda desde un asset, cargos que fueron a un asset): no cambian el patrimonio, salvo la comisión.",
+            "example": 6
+          },
+          "totalsUsd": {
+            "type": "object",
+            "description": "Total de cada categoría (`ADJUSTMENT` con signo: lo que las correcciones cambiaron el patrimonio).",
+            "properties": {
+              "GAIN": {
+                "type": "number"
+              },
+              "LOSS": {
+                "type": "number"
+              },
+              "DEPOSIT": {
+                "type": "number"
+              },
+              "WITHDRAWAL": {
+                "type": "number"
+              },
+              "TRANSFER": {
+                "type": "number"
+              },
+              "TRANSFER_FEES": {
+                "type": "number"
+              },
+              "OPENING": {
+                "type": "number"
+              },
+              "CLOSING": {
+                "type": "number"
+              },
+              "ADJUSTMENT": {
+                "type": "number"
+              },
+              "DEBT_OPENING": {
+                "type": "number"
+              },
+              "DEBT_CLOSING": {
+                "type": "number"
+              },
+              "DEBT_PAYMENT_EXTERNAL": {
+                "type": "number"
+              },
+              "DEBT_PAYMENT_FROM_ASSET": {
+                "type": "number"
+              },
+              "DEBT_CHARGE_EXTERNAL": {
+                "type": "number"
+              },
+              "DEBT_CHARGE_TO_ASSET": {
+                "type": "number"
+              },
+              "DEBT_INTEREST": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "GAIN",
+              "LOSS",
+              "DEPOSIT",
+              "WITHDRAWAL",
+              "TRANSFER",
+              "TRANSFER_FEES",
+              "OPENING",
+              "CLOSING",
+              "ADJUSTMENT",
+              "DEBT_OPENING",
+              "DEBT_CLOSING",
+              "DEBT_PAYMENT_EXTERNAL",
+              "DEBT_PAYMENT_FROM_ASSET",
+              "DEBT_CHARGE_EXTERNAL",
+              "DEBT_CHARGE_TO_ASSET",
+              "DEBT_INTEREST"
+            ],
+            "example": {
+              "GAIN": 6000,
+              "LOSS": 900,
+              "DEPOSIT": 9000,
+              "WITHDRAWAL": 1000,
+              "TRANSFER": 2400,
+              "TRANSFER_FEES": 12,
+              "OPENING": 3000,
+              "CLOSING": 700,
+              "ADJUSTMENT": 45,
+              "DEBT_OPENING": 0,
+              "DEBT_CLOSING": 0,
+              "DEBT_PAYMENT_EXTERNAL": 300,
+              "DEBT_PAYMENT_FROM_ASSET": 900,
+              "DEBT_CHARGE_EXTERNAL": 150,
+              "DEBT_CHARGE_TO_ASSET": 0,
+              "DEBT_INTEREST": 40
+            }
+          },
+          "netWorthEffectUsd": {
+            "type": "object",
+            "required": [
+              "investments",
+              "saving",
+              "addedRemoved",
+              "corrections"
+            ],
+            "description": "El cambio de patrimonio que explican, por qué.",
+            "properties": {
+              "investments": {
+                "type": "number",
+                "description": "Ganancias − pérdidas − comisiones de transferencias − intereses de deudas.",
+                "example": 5048
+              },
+              "saving": {
+                "type": "number",
+                "description": "Depósitos − retiros + pagos de deudas con plata de afuera − cargos de deudas gastados afuera.",
+                "example": 8150
+              },
+              "addedRemoved": {
+                "type": "number",
+                "description": "Assets agregados − quitados + deudas cerradas − abiertas.",
+                "example": 2300
+              },
+              "corrections": {
+                "type": "number",
+                "description": "Correcciones de valores y saldos.",
+                "example": 45
+              }
+            }
+          }
+        }
+      },
+      "CreateSnapshotRequest": {
+        "type": "object",
+        "description": "Un checkpoint del pasado. `capturedAt` y `totalValueUsd` van juntos; `assetsUsd` y `debtsUsd` también (y entonces `totalValueUsd = assetsUsd − debtsUsd`).",
+        "properties": {
+          "capturedAt": {
+            "type": "string",
+            "description": "Fecha (mediodía UTC) o RFC 3339; no futura, desde 1970. Se guarda al segundo.",
+            "example": "2025-12-31"
+          },
+          "totalValueUsd": {
+            "type": "number",
+            "minimum": -1000000000000000.0,
+            "maximum": 1000000000000000.0,
+            "example": 81000
+          },
+          "assetsUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000000000000.0,
+            "example": 95000
+          },
+          "debtsUsd": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000000000000.0,
+            "example": 14000
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200,
+            "example": "From my spreadsheet"
           }
         }
       }

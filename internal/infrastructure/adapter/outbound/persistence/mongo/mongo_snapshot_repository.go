@@ -24,6 +24,9 @@ type snapshotDoc struct {
 	TotalValueUSD string    `bson:"total_value_usd"`
 	AssetsUSD     string    `bson:"assets_usd,omitempty"`
 	DebtsUSD      string    `bson:"debts_usd,omitempty"`
+	// Source is MANUAL for a past one the user entered; absent (from before there were any) is AUTO.
+	Source string `bson:"source,omitempty"`
+	Note   string `bson:"note,omitempty"`
 }
 
 type MongoSnapshotRepository struct {
@@ -79,6 +82,10 @@ func (r *MongoSnapshotRepository) Save(
 		TotalValueUSD: snapshot.TotalValue.String(),
 		AssetsUSD:     snapshot.Assets.String(),
 		DebtsUSD:      snapshot.Debts.String(),
+		Note:          snapshot.Note,
+	}
+	if snapshot.Source == model.SnapshotManual {
+		doc.Source = string(model.SnapshotManual)
 	}
 
 	_, err := r.coll.InsertOne(ctx, doc)
@@ -204,6 +211,10 @@ func mapDocToSnapshot(doc snapshotDoc) (model.NetWorthSnapshot, error) {
 		}
 	}
 
+	source := model.SnapshotAuto
+	if doc.Source == string(model.SnapshotManual) {
+		source = model.SnapshotManual
+	}
 	return model.NetWorthSnapshot{
 		Id:         model.SnapshotIdFromUUID(id),
 		UserId:     model.NewUserId(userId),
@@ -211,5 +222,7 @@ func mapDocToSnapshot(doc snapshotDoc) (model.NetWorthSnapshot, error) {
 		Assets:     assets,
 		Debts:      debts,
 		TotalValue: total,
+		Source:     source,
+		Note:       doc.Note,
 	}, nil
 }

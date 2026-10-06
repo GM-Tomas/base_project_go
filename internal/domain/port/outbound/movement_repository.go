@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 )
@@ -17,4 +18,7 @@ type MovementRepository interface {
 	FindById(ctx context.Context, userId model.UserId, id model.MovementId) (*model.Movement, error)
 	List(ctx context.Context, userId model.UserId, filter model.MovementFilter, after *model.MovementCursor, limit int) (MovementPage, error)
 	DeleteById(ctx context.Context, userId model.UserId, id model.MovementId) (bool, error)
+	// Groups sums the user's movements that happened within [from, to] by shape (see model.MovementGroup),
+	// without reading them one by one.
+	Groups(ctx context.Context, userId model.UserId, from, to time.Time) ([]model.MovementGroup, error)
 }

@@ -52,8 +52,17 @@ type MovementList struct {
 	Next  *model.MovementCursor
 }
 
+// MovementsSummaryResult is what the movements of [From, To] add up to.
+type MovementsSummaryResult struct {
+	From, To time.Time
+	Summary  model.MovementsSummary
+}
+
 type MovementUseCase interface {
 	RecordMovement(ctx context.Context, command RecordMovementCommand) (MovementView, error)
+	// SummarizeMovements adds up the movements that happened within [from, to] (nil: since 1970, until now)
+	// by bucket, and what they did to the net worth.
+	SummarizeMovements(ctx context.Context, userId model.UserId, from, to *time.Time) (MovementsSummaryResult, error)
 	ListMovements(ctx context.Context, userId model.UserId, query MovementQuery) (MovementList, error)
 	// RevertMovement undoes a movement's effect on the holdings and the debt it touched, as deltas, and
 	// deletes it.

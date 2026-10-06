@@ -64,3 +64,21 @@ type MovementListResponse struct {
 	Items      []MovementResponse `json:"items"`
 	NextCursor *string            `json:"nextCursor"`
 }
+
+// MovementsSummaryResponse is what a period's movements add up to: totalsUsd by bucket (ADJUSTMENT signed,
+// as it changed the net worth), and netWorthEffectUsd, the change of net worth they explain, by why.
+type MovementsSummaryResponse struct {
+	From              time.Time          `json:"from"`
+	To                time.Time          `json:"to"`
+	Count             int                `json:"count"`
+	Transfers         int                `json:"transfers"`
+	TotalsUsd         map[string]float64 `json:"totalsUsd"`
+	NetWorthEffectUsd NetWorthEffectDTO  `json:"netWorthEffectUsd"`
+}
+
+type NetWorthEffectDTO struct {
+	Investments  float64 `json:"investments"`
+	Saving       float64 `json:"saving"`
+	AddedRemoved float64 `json:"addedRemoved"`
+	Corrections  float64 `json:"corrections"`
+}

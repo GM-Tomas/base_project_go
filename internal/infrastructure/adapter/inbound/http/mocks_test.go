@@ -512,3 +512,30 @@ func (m *mockDebtRepo) ExistingIds(ctx context.Context, userId model.UserId, ids
 	}
 	return existing, nil
 }
+
+// Groups sums the user's movements of [from, to] by shape, as the Mongo aggregation does.
+func (m *mockMovementRepo) Groups(ctx context.Context, userId model.UserId, from, to time.Time) ([]model.MovementGroup, error) {
+	index := map[model.MovementGroup]int{}
+	var groups []model.MovementGroup
+	for _, mv := range m.movements {
+		if mv.UserId != userId || mv.OccurredAt.Before(from) || mv.OccurredAt.After(to) {
+			continue
+		}
+		key := model.MovementGroup{Kind: mv.Kind, OfDebt: mv.Debt != nil, WithHolding: mv.Holding != nil || mv.ToHolding != nil}
+		i, ok := index[key]
+		if !ok {
+			i = len(groups)
+			index[key] = i
+			key.Amount, key.Fee, key.Change = decimal.Zero, decimal.Zero, decimal.Zero
+			groups = append(groups, key)
+		}
+		g := &groups[i]
+		g.Count++
+		g.Amount = g.Amount.Add(mv.Amount.Amount())
+		g.Fee = g.Fee.Add(mv.Fee.Amount())
+		if mv.NewValue != nil && mv.PreviousValue != nil {
+			g.Change = g.Change.Add(mv.NewValue.Amount().Sub(mv.PreviousValue.Amount()))
+		}
+	}
+	return groups, nil
+}

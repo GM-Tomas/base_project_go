@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
+	domainService "github.com/GM-Tomas/base_project_go/internal/domain/service"
 	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/GM-Tomas/base_project_go/internal/parallel"
 )
@@ -404,4 +406,30 @@ func nameOf(m model.Movement, id model.HoldingId) string {
 		return m.ToHolding.Name
 	}
 	return m.Holding.Name
+}
+
+// ErrPeriodBackwards is a period that ends before it starts.
+var ErrPeriodBackwards = errors.New("from must not be after to")
+
+// SummarizeMovements has the repository sum the period's movements by shape, and the domain say what they
+// add up to (domainService.MovementsEffect).
+func (s *MovementService) SummarizeMovements(ctx context.Context, userId model.UserId, from, to *time.Time) (inbound.MovementsSummaryResult, error) {
+	result := inbound.MovementsSummaryResult{From: time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC), To: s.clock()}
+	if from != nil {
+		result.From = from.UTC()
+	}
+	if to != nil {
+		result.To = to.UTC()
+	}
+	if result.From.After(result.To) {
+		return inbound.MovementsSummaryResult{}, appErrors.NewValidationErrors([]appErrors.ValidationError{
+			{Field: "from", Message: ErrPeriodBackwards.Error()},
+		})
+	}
+	groups, err := s.movements.Groups(ctx, userId, result.From, result.To)
+	if err != nil {
+		return inbound.MovementsSummaryResult{}, err
+	}
+	result.Summary = domainService.MovementsEffect(groups)
+	return result, nil
 }

@@ -3,11 +3,14 @@ package service_test
 import (
 	"context"
 	"errors"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/GM-Tomas/base_project_go/internal/application/service"
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
+	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/outbound"
 	appErrors "github.com/GM-Tomas/base_project_go/internal/errors"
 	"github.com/google/uuid"
@@ -290,4 +293,63 @@ func TestSnapshotService_RecordsWhatWasOwnedAndOwed(t *testing.T) {
 	svc = service.NewSnapshotService(snapshotRepo, agg, fixedClock(now.Add(3*time.Hour)))
 	_, err = svc.CreateSnapshot(context.Background(), user)
 	assert.EqualError(t, err, "boom")
+}
+
+func TestSnapshotService_KeepsAPastNetWorth(t *testing.T) {
+	snapshots := newMockSnapshotRepo()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	svc := service.NewSnapshotService(snapshots, &mockWealthAggregationPort{assets: model.MustMoneyFromFloat(1)}, fixedClock(now))
+	user := model.NewUserId(uuid.New())
+	ctx := context.Background()
+	newYearsEve := time.Date(2025, 12, 31, 12, 0, 0, 500, time.UTC)
+
+	// With what was owned and owed: the net worth must be their difference.
+	snap, err := svc.CreateManualSnapshot(ctx, inbound.ManualSnapshotCommand{
+		UserId: user, CapturedAt: newYearsEve, TotalValueUsd: 81000, AssetsUsd: ptr(95000.0), DebtsUsd: ptr(14000.0), Note: "  From my spreadsheet ",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, model.SnapshotManual, snap.Source)
+	assert.Equal(t, "From my spreadsheet", snap.Note)
+	assert.Equal(t, newYearsEve.Truncate(time.Second), snap.CapturedAt)
+	assert.Equal(t, "95000.00", snap.Assets.String())
+	assert.Equal(t, "14000.00", snap.Debts.String())
+	assert.Equal(t, "81000.00", snap.TotalValue.String())
+
+	// Without them: what was owned, or owed if below zero.
+	owing, err := svc.CreateManualSnapshot(ctx, inbound.ManualSnapshotCommand{UserId: user, CapturedAt: newYearsEve.AddDate(-1, 0, 0), TotalValueUsd: -250.5})
+	require.NoError(t, err)
+	assert.Equal(t, "0.00", owing.Assets.String())
+	assert.Equal(t, "250.50", owing.Debts.String())
+	assert.Equal(t, "-250.50", owing.TotalValue.String())
+
+	for _, tc := range []struct {
+		cmd  inbound.ManualSnapshotCommand
+		want error
+	}{
+		{inbound.ManualSnapshotCommand{CapturedAt: now.Add(time.Hour), TotalValueUsd: 1}, model.ErrCapturedAtOutOfRange},
+		{inbound.ManualSnapshotCommand{CapturedAt: time.Date(1969, 12, 31, 0, 0, 0, 0, time.UTC), TotalValueUsd: 1}, model.ErrCapturedAtOutOfRange},
+		{inbound.ManualSnapshotCommand{CapturedAt: newYearsEve, TotalValueUsd: 1, AssetsUsd: ptr(1.0)}, model.ErrSnapshotPartsIncomplete},
+		{inbound.ManualSnapshotCommand{CapturedAt: newYearsEve, TotalValueUsd: 1, AssetsUsd: ptr(5.0), DebtsUsd: ptr(1.0)}, model.ErrSnapshotPartsMismatch},
+		{inbound.ManualSnapshotCommand{CapturedAt: newYearsEve, TotalValueUsd: 1, AssetsUsd: ptr(-1.0), DebtsUsd: ptr(0.0)}, model.ErrNegativeMoney},
+		{inbound.ManualSnapshotCommand{CapturedAt: newYearsEve, TotalValueUsd: math.NaN()}, model.ErrNonFiniteMoney},
+		{inbound.ManualSnapshotCommand{CapturedAt: newYearsEve, TotalValueUsd: 1, Note: strings.Repeat("n", 201)}, model.ErrLabelTooLong},
+	} {
+		tc.cmd.UserId = user
+		_, err := svc.CreateManualSnapshot(ctx, tc.cmd)
+		assert.ErrorIs(t, err, tc.want)
+	}
+
+	// One a second, as today's.
+	_, err = svc.CreateManualSnapshot(ctx, inbound.ManualSnapshotCommand{UserId: user, CapturedAt: newYearsEve, TotalValueUsd: 5})
+	var dup appErrors.DuplicateResourceError
+	require.ErrorAs(t, err, &dup)
+	assert.Equal(t, "A snapshot already exists for 2025-12-31T12:00:00Z", dup.Message)
+
+	// They come back in order, today's taken now marked as such.
+	_, err = svc.CreateSnapshot(ctx, user)
+	require.NoError(t, err)
+	list, err := svc.GetSnapshots(ctx, user)
+	require.NoError(t, err)
+	require.Len(t, list, 3)
+	assert.Equal(t, model.SnapshotAuto, list[2].Snapshot.Source)
 }

@@ -115,7 +115,8 @@ func TestNewNetWorthSnapshot(t *testing.T) {
 
 	s := model.NewNetWorthSnapshot(id, user, at, assets, debts)
 
-	assert.Equal(t, model.NetWorthSnapshot{Id: id, UserId: user, CapturedAt: at, Assets: assets, Debts: debts, TotalValue: model.NetOf(assets, debts)}, s)
+	assert.Equal(t, model.NetWorthSnapshot{Id: id, UserId: user, CapturedAt: at, Assets: assets, Debts: debts, TotalValue: model.NetOf(assets, debts),
+		Source: model.SnapshotAuto}, s)
 	assert.Equal(t, "-2.50", s.TotalValue.String(), "the net worth: below zero when more is owed")
 }
 
@@ -235,4 +236,46 @@ func TestParseYieldModeAndMilestones(t *testing.T) {
 		_, err := model.NewMilestone(v)
 		assert.ErrorIs(t, err, model.ErrMilestoneOutOfRange, v)
 	}
+}
+
+func TestNewManualSnapshot(t *testing.T) {
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	user := model.NewUserId(uuid.New())
+	at := time.Date(2025, 12, 31, 15, 4, 5, 999, time.FixedZone("ART", -3*3600))
+	assets, debts := model.MustMoneyFromFloat(95000), model.MustMoneyFromFloat(14000)
+
+	s, err := model.NewManualSnapshot(model.NewSnapshotId(), user, at, decimal.NewFromInt(81000), &assets, &debts, "  note ", now)
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2025, 12, 31, 18, 4, 5, 0, time.UTC), s.CapturedAt, "UTC, to the second")
+	assert.Equal(t, model.SnapshotManual, s.Source)
+	assert.Equal(t, "note", s.Note)
+
+	positive, err := model.NewManualSnapshot(model.NewSnapshotId(), user, at, decimal.RequireFromString("10.005"), nil, nil, "", now)
+	require.NoError(t, err)
+	assert.Equal(t, "10.01", positive.Assets.String())
+	assert.Equal(t, "0.00", positive.Debts.String())
+	negative, err := model.NewManualSnapshot(model.NewSnapshotId(), user, at, decimal.NewFromInt(-5), nil, nil, "", now)
+	require.NoError(t, err)
+	assert.Equal(t, "5.00", negative.Debts.String())
+
+	for _, tc := range []struct {
+		at            time.Time
+		assets, debts *model.Money
+		total         int64
+		note          string
+		want          error
+	}{
+		{at: now.Add(time.Second), want: model.ErrCapturedAtOutOfRange},
+		{at: time.Date(1969, 12, 31, 23, 59, 59, 0, time.UTC), want: model.ErrCapturedAtOutOfRange},
+		{at: at, assets: &assets, want: model.ErrSnapshotPartsIncomplete},
+		{at: at, debts: &debts, want: model.ErrSnapshotPartsIncomplete},
+		{at: at, assets: &assets, debts: &debts, total: 1, want: model.ErrSnapshotPartsMismatch},
+		{at: at, note: strings.Repeat("x", 201), want: model.ErrLabelTooLong},
+	} {
+		_, err := model.NewManualSnapshot(model.NewSnapshotId(), user, tc.at, decimal.NewFromInt(tc.total), tc.assets, tc.debts, tc.note, now)
+		assert.ErrorIs(t, err, tc.want)
+	}
+	// Exactly now is fine.
+	_, err = model.NewManualSnapshot(model.NewSnapshotId(), user, now, decimal.Zero, nil, nil, "", now)
+	assert.NoError(t, err)
 }

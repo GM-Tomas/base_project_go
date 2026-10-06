@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -187,21 +188,7 @@ func parseMovementQuery(r *http.Request) (inbound.MovementQuery, []errors.Valida
 			query.Filter.Kinds = append(query.Filter.Kinds, kind)
 		}
 	}
-	// A date covers the whole UTC day: from its first instant, to its last.
-	for _, bound := range []struct {
-		name    string
-		dayTime time.Duration
-		dst     **time.Time
-	}{{"from", 0, &query.Filter.From}, {"to", 24*time.Hour - time.Nanosecond, &query.Filter.To}} {
-		if raw := q.Get(bound.name); raw != "" {
-			at, ok := parseWhen(raw, bound.dayTime)
-			if !ok {
-				fail(bound.name, bound.name+" must be a date (YYYY-MM-DD) or a date and time (RFC 3339)")
-				continue
-			}
-			*bound.dst = &at
-		}
-	}
+	query.Filter.From, query.Filter.To = parsePeriod(q, fail)
 	if raw := q.Get("limit"); raw != "" {
 		limit, err := strconv.Atoi(raw)
 		if err != nil || limit < 1 || limit > maxMovementsLimit {
@@ -219,6 +206,63 @@ func parseMovementQuery(r *http.Request) (inbound.MovementQuery, []errors.Valida
 		}
 	}
 	return query, problems
+}
+
+// SummarizeMovements is GET /movements/summary?from&to: what the movements of a period add up to, by bucket,
+// and what they did to the net worth. from and to as in ListMovements (a date covers its whole UTC day);
+// without them, since 1970 and until now.
+func (h *MovementHandler) SummarizeMovements(w http.ResponseWriter, r *http.Request) {
+	userId, err := middleware.GetUserFromContext(r.Context())
+	if err != nil {
+		middleware.WriteUnauthorized(w, r, "")
+		return
+	}
+	var problems []errors.ValidationError
+	from, to := parsePeriod(r.URL.Query(), func(field, message string) {
+		problems = append(problems, errors.ValidationError{Field: field, Message: message})
+	})
+	if len(problems) > 0 {
+		middleware.HandleError(w, r, errors.NewValidationErrors(problems))
+		return
+	}
+	result, err := h.movementUseCase.SummarizeMovements(r.Context(), userId, from, to)
+	if err != nil {
+		middleware.HandleError(w, r, err)
+		return
+	}
+	s := result.Summary
+	totals := make(map[string]float64, len(s.Totals))
+	for bucket, total := range s.Totals {
+		totals[string(bucket)] = total.Round(2).InexactFloat64()
+	}
+	writeJSON(w, http.StatusOK, dto.MovementsSummaryResponse{
+		From: result.From, To: result.To, Count: s.Count, Transfers: s.Transfers, TotalsUsd: totals,
+		NetWorthEffectUsd: dto.NetWorthEffectDTO{
+			Investments:  s.Effect.Investments.Round(2).InexactFloat64(),
+			Saving:       s.Effect.Saving.Round(2).InexactFloat64(),
+			AddedRemoved: s.Effect.AddedRemoved.Round(2).InexactFloat64(),
+			Corrections:  s.Effect.Corrections.Round(2).InexactFloat64(),
+		},
+	})
+}
+
+// parsePeriod reads ?from and ?to: a date covers the whole UTC day, from its first instant to its last.
+func parsePeriod(q url.Values, fail func(field, message string)) (from, to *time.Time) {
+	for _, bound := range []struct {
+		name    string
+		dayTime time.Duration
+		dst     **time.Time
+	}{{"from", 0, &from}, {"to", 24*time.Hour - time.Nanosecond, &to}} {
+		if raw := q.Get(bound.name); raw != "" {
+			at, ok := parseWhen(raw, bound.dayTime)
+			if !ok {
+				fail(bound.name, bound.name+" must be a date (YYYY-MM-DD) or a date and time (RFC 3339)")
+				continue
+			}
+			*bound.dst = &at
+		}
+	}
+	return from, to
 }
 
 func (h *MovementHandler) RevertMovement(w http.ResponseWriter, r *http.Request) {

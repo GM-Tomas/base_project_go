@@ -97,6 +97,7 @@ func NewRouter(params RouterParams) http.Handler {
 			r.Put("/preferences", params.PreferencesHandler.ReplacePreferences)
 
 			r.Get("/movements", params.MovementHandler.ListMovements)
+			r.Get("/movements/summary", params.MovementHandler.SummarizeMovements)
 			r.Post("/movements", params.MovementHandler.RecordMovement)
 			r.Delete("/movements/{id}", params.MovementHandler.RevertMovement)
 

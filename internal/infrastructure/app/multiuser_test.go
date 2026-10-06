@@ -717,3 +717,41 @@ func TestMultiUser_ClassesAndPlatformsAreSetUpPerAccount(t *testing.T) {
 	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/platforms", nil, &platforms))
 	assert.Equal(t, "🟡", *platforms[0].AvatarText)
 }
+
+func TestMultiUser_HistoryStaysWithItsOwner(t *testing.T) {
+	e := newE2E(t, "")
+	asAlice, asBob := e.token(uuid.New(), nil), e.token(uuid.New(), nil)
+	savings := e.create(asAlice, "Savings", "Cash", "Bank", 1000)
+	require.Equal(t, http.StatusCreated, e.do(asAlice, "POST", "/api/v1/movements", map[string]any{
+		"kind": "DEPOSIT", "holdingId": savings.Id, "amountUsd": 250}, nil))
+	e.create(asBob, "Wallet", "Cash", "Mercado Pago", 50)
+
+	type effect struct {
+		Count             int
+		NetWorthEffectUsd struct{ Saving, AddedRemoved float64 }
+	}
+	var alice, bob effect
+	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/movements/summary", nil, &alice))
+	assert.Equal(t, 2, alice.Count)
+	assert.Equal(t, 250.0, alice.NetWorthEffectUsd.Saving)
+	assert.Equal(t, 1000.0, alice.NetWorthEffectUsd.AddedRemoved)
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/movements/summary", nil, &bob))
+	assert.Equal(t, 1, bob.Count)
+	assert.Equal(t, 0.0, bob.NetWorthEffectUsd.Saving)
+
+	// A checkpoint from the past is the user's own, and can be at the same second as someone else's.
+	type snap struct {
+		Id     string
+		Source string
+	}
+	for _, token := range []string{asAlice, asBob} {
+		var s snap
+		require.Equal(t, http.StatusCreated, e.do(token, "POST", "/api/v1/wealth/snapshots",
+			map[string]any{"capturedAt": "2025-12-31", "totalValueUsd": 900}, &s))
+		assert.Equal(t, "MANUAL", s.Source)
+	}
+	var list []snap
+	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/wealth/snapshots", nil, &list))
+	require.Len(t, list, 1)
+	assert.Equal(t, http.StatusNotFound, e.do(asAlice, "DELETE", "/api/v1/wealth/snapshots/"+list[0].Id, nil, nil))
+}

@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -245,7 +246,23 @@ func (h *WealthHandler) CreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snapshot, err := h.snapshotUseCase.CreateSnapshot(r.Context(), userId)
+	// No body (or {}): today's net worth. A body: a past one.
+	var req dto.CreateSnapshotRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		middleware.WriteProblem(w, r, http.StatusBadRequest, "bad-request", "Bad Request", "Malformed JSON body", nil)
+		return
+	}
+	var snapshot model.NetWorthSnapshot
+	if req.Empty() {
+		snapshot, err = h.snapshotUseCase.CreateSnapshot(r.Context(), userId)
+	} else {
+		cmd, problems := manualSnapshotCommand(userId, req)
+		if len(problems) > 0 {
+			middleware.HandleError(w, r, errors.NewValidationErrors(problems))
+			return
+		}
+		snapshot, err = h.snapshotUseCase.CreateManualSnapshot(r.Context(), cmd)
+	}
 	if err != nil {
 		middleware.HandleError(w, r, err)
 		return
@@ -281,12 +298,53 @@ func (h *WealthHandler) DeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// manualSnapshotCommand checks a past snapshot's body, field by field, with the messages the API answers.
+func manualSnapshotCommand(userId model.UserId, req dto.CreateSnapshotRequest) (inbound.ManualSnapshotCommand, []errors.ValidationError) {
+	var problems []errors.ValidationError
+	fail := func(field, message string) {
+		problems = append(problems, errors.ValidationError{Field: field, Message: message})
+	}
+	cmd := inbound.ManualSnapshotCommand{UserId: userId, AssetsUsd: req.AssetsUsd, DebtsUsd: req.DebtsUsd, Note: req.Note}
+	if req.CapturedAt == "" {
+		fail("capturedAt", "capturedAt is required with a past snapshot")
+	} else if at, ok := parseWhen(req.CapturedAt, noon); !ok {
+		fail("capturedAt", "capturedAt must be a date (YYYY-MM-DD) or a date and time (RFC 3339)")
+	} else {
+		cmd.CapturedAt = at
+	}
+	if req.TotalValueUsd == nil {
+		fail("totalValueUsd", "totalValueUsd is required with a past snapshot")
+	} else if !inRange(*req.TotalValueUsd, -maxHoldingValueUsd, maxHoldingValueUsd) {
+		fail("totalValueUsd", "totalValueUsd must be between -1000000000000000 and 1000000000000000")
+	} else {
+		cmd.TotalValueUsd = *req.TotalValueUsd
+	}
+	for _, part := range []struct {
+		name string
+		v    *float64
+	}{{"assetsUsd", req.AssetsUsd}, {"debtsUsd", req.DebtsUsd}} {
+		if part.v != nil && !inRange(*part.v, 0, maxHoldingValueUsd) {
+			fail(part.name, part.name+" must be between 0 and 1000000000000000")
+		}
+	}
+	return cmd, problems
+}
+
 func toSnapshotResponse(s model.NetWorthSnapshot) dto.SnapshotResponse {
-	return dto.SnapshotResponse{
+	res := dto.SnapshotResponse{
 		Id:            s.Id.String(),
 		CapturedAt:    s.CapturedAt,
 		TotalValueUsd: s.TotalValue.Float64(),
 		AssetsUsd:     s.Assets.Float64(),
 		DebtsUsd:      s.Debts.Float64(),
+		Source:        string(s.Source),
 	}
+	if res.Source == "" {
+		res.Source = string(model.SnapshotAuto)
+	}
+	if s.Note != "" {
+		note := s.Note
+		res.Note = &note
+	}
+	return res
 }

@@ -125,6 +125,9 @@ func isDomainValidationError(err error) bool {
 		model.ErrMilestoneOutOfRange,
 		model.ErrInvalidColor,
 		model.ErrInvalidAvatarText,
+		model.ErrCapturedAtOutOfRange,
+		model.ErrSnapshotPartsMismatch,
+		model.ErrSnapshotPartsIncomplete,
 	} {
 		if errors.Is(err, target) {
 			return true
