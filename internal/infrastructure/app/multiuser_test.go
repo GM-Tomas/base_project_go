@@ -632,21 +632,29 @@ func TestMultiUser_ExpectedReturnsAndPreferencesStayWithTheirOwner(t *testing.T)
 	assert.Equal(t, 0.0, estimate.AnnualYieldPct, "his portfolio has no returns set")
 
 	// Each one's preferences are their own.
-	var prefs struct {
+	type preferences struct {
 		Estimate struct {
 			Years     int
 			YieldMode string
 		}
+		AutoSnapshot  string
+		DefaultView   string
+		HistoryPeriod string
 	}
+	var prefs preferences
 	require.Equal(t, http.StatusOK, e.do(asAlice, "PUT", "/api/v1/preferences", map[string]any{
-		"estimate": map[string]any{"years": 30, "yieldMode": "CUSTOM", "customYieldPct": 5},
+		"estimate":     map[string]any{"years": 30, "yieldMode": "CUSTOM", "customYieldPct": 5},
+		"autoSnapshot": "MONTHLY", "defaultView": "history", "historyPeriod": "ALL",
 	}, &prefs))
 	assert.Equal(t, 30, prefs.Estimate.Years)
 	require.Equal(t, http.StatusOK, e.do(asAlice, "GET", "/api/v1/preferences", nil, &prefs))
 	assert.Equal(t, "CUSTOM", prefs.Estimate.YieldMode)
+	assert.Equal(t, []string{"MONTHLY", "history", "ALL"}, []string{prefs.AutoSnapshot, prefs.DefaultView, prefs.HistoryPeriod})
+	prefs = preferences{}
 	require.Equal(t, http.StatusOK, e.do(asBob, "GET", "/api/v1/preferences", nil, &prefs))
 	assert.Equal(t, 12, prefs.Estimate.Years)
 	assert.Equal(t, "PORTFOLIO", prefs.Estimate.YieldMode)
+	assert.Equal(t, []string{"OFF", "dashboard", "1Y"}, []string{prefs.AutoSnapshot, prefs.DefaultView, prefs.HistoryPeriod})
 }
 
 func TestMultiUser_ClassesAndPlatformsAreSetUpPerAccount(t *testing.T) {

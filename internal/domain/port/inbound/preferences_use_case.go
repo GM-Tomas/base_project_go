@@ -17,9 +17,17 @@ type EstimatePreferencesCommand struct {
 	ContributionGrowthPct float64
 }
 
+// PreferencesCommand is everything the user set up, as sent: checked by the service.
+type PreferencesCommand struct {
+	Estimate      EstimatePreferencesCommand
+	AutoSnapshot  string
+	DefaultView   string
+	HistoryPeriod string
+}
+
 type PreferencesUseCase interface {
 	// GetPreferences is what the user saved, or the defaults.
 	GetPreferences(ctx context.Context, userId model.UserId) (model.Preferences, error)
 	// ReplacePreferences saves them whole, once checked.
-	ReplacePreferences(ctx context.Context, userId model.UserId, estimate EstimatePreferencesCommand) (model.Preferences, error)
+	ReplacePreferences(ctx context.Context, userId model.UserId, cmd PreferencesCommand) (model.Preferences, error)
 }

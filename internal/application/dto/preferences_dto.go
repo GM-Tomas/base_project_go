@@ -4,6 +4,12 @@ package dto
 // what it leaves out takes its default, and what's unknown is ignored.
 type PreferencesDocument struct {
 	Estimate EstimatePreferencesDocument `json:"estimate"`
+	// OFF or MONTHLY: whether the app saves a checkpoint each calendar month on its own.
+	AutoSnapshot string `json:"autoSnapshot"`
+	// The view the app opens on.
+	DefaultView string `json:"defaultView"`
+	// The period History opens with (a preset).
+	HistoryPeriod string `json:"historyPeriod"`
 }
 
 // EstimatePreferencesDocument is Estimate as the user left it.

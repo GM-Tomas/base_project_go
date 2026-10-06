@@ -39,10 +39,13 @@ func (m *mockPreferencesRepo) Save(ctx context.Context, userId model.UserId, pre
 	return nil
 }
 
-func estimateCommand() inbound.EstimatePreferencesCommand {
-	return inbound.EstimatePreferencesCommand{
-		ContributionUsd: 1500.555, Years: 20, YieldMode: "CUSTOM", CustomYieldPct: 6.256,
-		MilestonesUsd: []float64{500000, 100000}, InflationPct: 3, ContributionGrowthPct: 5,
+func preferencesCommand() inbound.PreferencesCommand {
+	return inbound.PreferencesCommand{
+		Estimate: inbound.EstimatePreferencesCommand{
+			ContributionUsd: 1500.555, Years: 20, YieldMode: "CUSTOM", CustomYieldPct: 6.256,
+			MilestonesUsd: []float64{500000, 100000}, InflationPct: 3, ContributionGrowthPct: 5,
+		},
+		AutoSnapshot: "MONTHLY", DefaultView: "history", HistoryPeriod: "YTD",
 	}
 }
 
@@ -56,8 +59,11 @@ func TestPreferencesService_DefaultsThenWhatWasSaved(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, model.DefaultPreferences(), got)
 
-	saved, err := svc.ReplacePreferences(ctx, user, estimateCommand())
+	saved, err := svc.ReplacePreferences(ctx, user, preferencesCommand())
 	require.NoError(t, err)
+	assert.Equal(t, model.AutoSnapshotMonthly, saved.AutoSnapshot)
+	assert.Equal(t, model.StartView("history"), saved.DefaultView)
+	assert.Equal(t, model.HistoryPeriod("YTD"), saved.HistoryPeriod)
 	e := saved.Estimate
 	assert.Equal(t, "1500.56", e.Contribution.String())
 	assert.Equal(t, 20, e.Years)
@@ -75,8 +81,8 @@ func TestPreferencesService_DefaultsThenWhatWasSaved(t *testing.T) {
 	assert.Equal(t, model.DefaultPreferences(), got, "each user has their own")
 
 	// No milestones at all is fine.
-	cmd := estimateCommand()
-	cmd.MilestonesUsd = nil
+	cmd := preferencesCommand()
+	cmd.Estimate.MilestonesUsd = nil
 	saved, err = svc.ReplacePreferences(ctx, user, cmd)
 	require.NoError(t, err)
 	assert.Empty(t, saved.Estimate.Milestones)
@@ -87,17 +93,20 @@ func TestPreferencesService_ChecksEverythingBeforeSaving(t *testing.T) {
 	svc := service.NewPreferencesService(repo)
 	user := model.NewUserId(uuid.New())
 
-	for want, change := range map[error]func(*inbound.EstimatePreferencesCommand){
-		model.ErrContributionOutOfRange:       func(c *inbound.EstimatePreferencesCommand) { c.ContributionUsd = -1 },
-		model.ErrYearsOutOfRange:              func(c *inbound.EstimatePreferencesCommand) { c.Years = 0 },
-		model.ErrUnknownYieldMode:             func(c *inbound.EstimatePreferencesCommand) { c.YieldMode = "" },
-		model.ErrCustomYieldOutOfRange:        func(c *inbound.EstimatePreferencesCommand) { c.CustomYieldPct = math.NaN() },
-		model.ErrMilestoneOutOfRange:          func(c *inbound.EstimatePreferencesCommand) { c.MilestonesUsd = []float64{-5} },
-		model.ErrTooManyMilestones:            func(c *inbound.EstimatePreferencesCommand) { c.MilestonesUsd = []float64{1, 2, 3, 4, 5, 6} },
-		model.ErrInflationOutOfRange:          func(c *inbound.EstimatePreferencesCommand) { c.InflationPct = 60 },
-		model.ErrContributionGrowthOutOfRange: func(c *inbound.EstimatePreferencesCommand) { c.ContributionGrowthPct = math.Inf(1) },
+	for want, change := range map[error]func(*inbound.PreferencesCommand){
+		model.ErrContributionOutOfRange:       func(c *inbound.PreferencesCommand) { c.Estimate.ContributionUsd = -1 },
+		model.ErrYearsOutOfRange:              func(c *inbound.PreferencesCommand) { c.Estimate.Years = 0 },
+		model.ErrUnknownYieldMode:             func(c *inbound.PreferencesCommand) { c.Estimate.YieldMode = "" },
+		model.ErrCustomYieldOutOfRange:        func(c *inbound.PreferencesCommand) { c.Estimate.CustomYieldPct = math.NaN() },
+		model.ErrMilestoneOutOfRange:          func(c *inbound.PreferencesCommand) { c.Estimate.MilestonesUsd = []float64{-5} },
+		model.ErrTooManyMilestones:            func(c *inbound.PreferencesCommand) { c.Estimate.MilestonesUsd = []float64{1, 2, 3, 4, 5, 6} },
+		model.ErrInflationOutOfRange:          func(c *inbound.PreferencesCommand) { c.Estimate.InflationPct = 60 },
+		model.ErrContributionGrowthOutOfRange: func(c *inbound.PreferencesCommand) { c.Estimate.ContributionGrowthPct = math.Inf(1) },
+		model.ErrUnknownAutoSnapshot:          func(c *inbound.PreferencesCommand) { c.AutoSnapshot = "WEEKLY" },
+		model.ErrUnknownStartView:             func(c *inbound.PreferencesCommand) { c.DefaultView = "Dashboard" },
+		model.ErrUnknownHistoryPeriod:         func(c *inbound.PreferencesCommand) { c.HistoryPeriod = "CUSTOM" },
 	} {
-		cmd := estimateCommand()
+		cmd := preferencesCommand()
 		change(&cmd)
 		_, err := svc.ReplacePreferences(context.Background(), user, cmd)
 		assert.ErrorIs(t, err, want)
@@ -105,7 +114,7 @@ func TestPreferencesService_ChecksEverythingBeforeSaving(t *testing.T) {
 	assert.Empty(t, repo.saved)
 
 	repo.saveErr = errors.New("write failed")
-	_, err := svc.ReplacePreferences(context.Background(), user, estimateCommand())
+	_, err := svc.ReplacePreferences(context.Background(), user, preferencesCommand())
 	assert.EqualError(t, err, "write failed")
 	repo.findErr = errors.New("read failed")
 	_, err = svc.GetPreferences(context.Background(), user)

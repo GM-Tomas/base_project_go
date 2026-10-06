@@ -136,7 +136,7 @@ El adaptador `internal/infrastructure/adapter/outbound/persistence/mongo/` imple
 `QuotaRepository`, `PreferencesRepository`, `AssetClassSettingsRepository`, `PlatformSettingsRepository`,
 `WealthAggregationPort`, `TransactionManager`) sobre las colecciones `holdings`, `debts` (lo que se debe),
 `net_worth_snapshots`, `movements` (la actividad: cada cambio de valor de un holding o del saldo de una deuda), `quotas`
-(contadores por usuario), `preferences` (un documento por usuario, con su id como `_id`: cómo dejó Estimate),
+(contadores por usuario), `preferences` (un documento por usuario, con su id como `_id`: cómo dejó Estimate, el checkpoint mensual automático, la vista inicial y el período de History),
 `asset_class_settings` y `platform_settings` (cómo configuró sus clases y sus plataformas, ver abajo). Los montos y las tasas se guardan como decimales en texto (escala 2) para no perder
 precisión.
 
@@ -276,7 +276,7 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `PATCH` | `/api/v1/asset-classes/{id}` | Settings → Edit class (`name` renombra en todos sus holdings; `409 class-exists` salvo `mergeIfExists`) | Sí |
 | `DELETE` | `/api/v1/asset-classes/{id}?moveTo=` | Settings → Remove class (con holdings hace falta `moveTo`: si no, `409 class-in-use`) | Sí |
 | `GET` | `/api/v1/wealth/estimate?contribution&years[&yieldPct&milestones&inflationPct&contributionGrowthPct]` | Estimate (parte de los assets, al retorno esperado del portfolio salvo `yieldPct`; deudas amortizadas aparte; hitos sobre el neto, 150k/250k por defecto) | Sí |
-| `GET`, `PUT` | `/api/v1/preferences` | Estimate (cómo lo dejó el usuario, en cualquier dispositivo; el PUT reemplaza el documento) | Sí |
+| `GET`, `PUT` | `/api/v1/preferences` | Estimate (cómo lo dejó el usuario), checkpoint mensual automático (`autoSnapshot`), vista inicial (`defaultView`) y período de History (`historyPeriod`), en cualquier dispositivo; el PUT reemplaza el documento | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | History | Sí |
 | `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (sin cuerpo) y "Add a past checkpoint" (con `capturedAt` y `totalValueUsd`: `source: MANUAL`); `409` si ya hay uno en ese segundo o al superar 5000 | Sí |
 | `DELETE` | `/api/v1/wealth/snapshots/{id}` | History → "Delete checkpoint" (`404` si no existe o es ajeno) | Sí |

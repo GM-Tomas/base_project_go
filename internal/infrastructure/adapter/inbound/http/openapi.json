@@ -1409,7 +1409,7 @@
           "Preferences"
         ],
         "summary": "Reemplaza las preferencias del usuario",
-        "description": "Reemplaza el documento entero: lo que no se manda toma su valor por defecto y lo desconocido se ignora. Mismos rangos que la estimación; todos los problemas se informan juntos (campos `estimate.*`).",
+        "description": "Reemplaza el documento entero: lo que no se manda toma su valor por defecto y lo desconocido se ignora. Mismos rangos que la estimación; todos los problemas se informan juntos (campos `estimate.*`, `autoSnapshot`, `defaultView`, `historyPeriod`).",
         "operationId": "replacePreferences",
         "security": [
           {
@@ -1435,7 +1435,10 @@
                   ],
                   "inflationPct": 3,
                   "contributionGrowthPct": 5
-                }
+                },
+                "autoSnapshot": "MONTHLY",
+                "defaultView": "dashboard",
+                "historyPeriod": "1Y"
               }
             }
           }
@@ -3348,11 +3351,51 @@
       "Preferences": {
         "type": "object",
         "required": [
-          "estimate"
+          "estimate",
+          "autoSnapshot",
+          "defaultView",
+          "historyPeriod"
         ],
         "properties": {
           "estimate": {
             "$ref": "#/components/schemas/EstimatePreferences"
+          },
+          "autoSnapshot": {
+            "type": "string",
+            "enum": [
+              "OFF",
+              "MONTHLY"
+            ],
+            "default": "OFF",
+            "description": "`MONTHLY`: al abrirse, la app guarda un checkpoint si el mes calendario todavía no tiene uno."
+          },
+          "defaultView": {
+            "type": "string",
+            "enum": [
+              "dashboard",
+              "platforms",
+              "assets",
+              "debts",
+              "estimate",
+              "history",
+              "settings"
+            ],
+            "default": "dashboard",
+            "description": "La vista con la que abre la app."
+          },
+          "historyPeriod": {
+            "type": "string",
+            "enum": [
+              "1M",
+              "3M",
+              "6M",
+              "YTD",
+              "1Y",
+              "3Y",
+              "ALL"
+            ],
+            "default": "1Y",
+            "description": "El período con el que abre History (un preset: un rango propio no se guarda)."
           }
         }
       },

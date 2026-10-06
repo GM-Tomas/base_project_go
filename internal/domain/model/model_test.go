@@ -222,6 +222,37 @@ func TestPreferences_DefaultsAndChecks(t *testing.T) {
 		model.ErrContributionGrowthOutOfRange)
 }
 
+func TestPreferences_HowTheAppOpens(t *testing.T) {
+	defaults := model.DefaultPreferences()
+	assert.Equal(t, model.AutoSnapshotOff, defaults.AutoSnapshot)
+	assert.Equal(t, model.StartView("dashboard"), defaults.DefaultView)
+	assert.Equal(t, model.HistoryPeriod("1Y"), defaults.HistoryPeriod)
+
+	mode, err := model.ParseAutoSnapshot("MONTHLY")
+	require.NoError(t, err)
+	assert.Equal(t, model.AutoSnapshotMonthly, mode)
+	_, err = model.ParseAutoSnapshot("monthly")
+	assert.EqualError(t, err, `autoSnapshot must be one of OFF, MONTHLY (got "monthly")`)
+	assert.ErrorIs(t, err, model.ErrUnknownAutoSnapshot)
+
+	for _, view := range model.StartViews {
+		got, err := model.ParseStartView(string(view))
+		require.NoError(t, err)
+		assert.Equal(t, view, got)
+	}
+	_, err = model.ParseStartView("")
+	assert.EqualError(t, err, `defaultView must be one of dashboard, platforms, assets, debts, estimate, history, settings (got "")`)
+
+	for _, period := range model.HistoryPeriods {
+		got, err := model.ParseHistoryPeriod(string(period))
+		require.NoError(t, err)
+		assert.Equal(t, period, got)
+	}
+	// A period of the user's own dates isn't one to open with.
+	_, err = model.ParseHistoryPeriod("CUSTOM")
+	assert.EqualError(t, err, `historyPeriod must be one of 1M, 3M, 6M, YTD, 1Y, 3Y, ALL (got "CUSTOM")`)
+}
+
 func TestParseYieldModeAndMilestones(t *testing.T) {
 	mode, err := model.ParseYieldMode("CUSTOM")
 	require.NoError(t, err)

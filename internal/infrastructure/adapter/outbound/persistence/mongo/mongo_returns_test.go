@@ -171,10 +171,16 @@ func TestPreferencesRepository(t *testing.T) {
 	preferences.Estimate.Milestones = []model.Money{model.MustMoneyFromFloat(1e6)}
 	preferences.Estimate.InflationPct = decimal.RequireFromString("3.5")
 	preferences.Estimate.ContributionGrowthPct = decimal.NewFromInt(5)
+	preferences.AutoSnapshot = model.AutoSnapshotMonthly
+	preferences.DefaultView = "debts"
+	preferences.HistoryPeriod = "ALL"
 	require.NoError(t, repo.Save(ctx, user, preferences))
 
 	got, err = repo.Find(ctx, user)
 	require.NoError(t, err)
+	assert.Equal(t, model.AutoSnapshotMonthly, got.AutoSnapshot)
+	assert.Equal(t, model.StartView("debts"), got.DefaultView)
+	assert.Equal(t, model.HistoryPeriod("ALL"), got.HistoryPeriod)
 	assert.Equal(t, "1234.50", got.Estimate.Contribution.String())
 	assert.Equal(t, 30, got.Estimate.Years)
 	assert.Equal(t, model.YieldModeCustom, got.Estimate.YieldMode)
@@ -210,9 +216,12 @@ func TestPreferencesRepository_ReadsEachValueOnItsOwn(t *testing.T) {
 	insertRaw(t, db, "preferences", bson.M{"_id": user.String(), "estimate": bson.M{
 		"contribution_usd": "lots", "years": 99, "yield_mode": "CUSTOM", "custom_yield_pct": "12",
 		"milestones_usd": []string{"500000.00", "x", "100000.00"}, "inflation_pct": "80", "contribution_growth_pct": "2",
-	}})
+	}, "auto_snapshot": "DAILY", "default_view": "estimate", "history_period": "10Y"})
 	got, err := repo.Find(ctx, user)
 	require.NoError(t, err)
+	assert.Equal(t, model.AutoSnapshotOff, got.AutoSnapshot)
+	assert.Equal(t, model.StartView("estimate"), got.DefaultView)
+	assert.Equal(t, model.HistoryPeriod("1Y"), got.HistoryPeriod)
 	defaults := model.DefaultPreferences().Estimate
 	assert.Equal(t, defaults.Contribution, got.Estimate.Contribution)
 	assert.Equal(t, defaults.Years, got.Estimate.Years)
@@ -222,7 +231,7 @@ func TestPreferencesRepository_ReadsEachValueOnItsOwn(t *testing.T) {
 	assert.True(t, got.Estimate.InflationPct.IsZero())
 	assert.Equal(t, "2", got.Estimate.ContributionGrowthPct.String())
 
-	// Without an estimate at all: the defaults.
+	// Without an estimate at all (nor what came after it): the defaults.
 	other := newUser()
 	insertRaw(t, db, "preferences", bson.M{"_id": other.String()})
 	got, err = repo.Find(ctx, other)

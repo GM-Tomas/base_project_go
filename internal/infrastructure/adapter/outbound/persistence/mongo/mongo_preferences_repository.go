@@ -16,9 +16,12 @@ import (
 // preferencesDoc is a user's preferences: one document per user, its _id the user's id. Amounts and
 // percentages are decimal text, as everywhere else.
 type preferencesDoc struct {
-	UserID    string                 `bson:"_id"`
-	Estimate  estimatePreferencesDoc `bson:"estimate"`
-	UpdatedAt time.Time              `bson:"updated_at"`
+	UserID        string                 `bson:"_id"`
+	Estimate      estimatePreferencesDoc `bson:"estimate"`
+	AutoSnapshot  string                 `bson:"auto_snapshot,omitempty"`
+	DefaultView   string                 `bson:"default_view,omitempty"`
+	HistoryPeriod string                 `bson:"history_period,omitempty"`
+	UpdatedAt     time.Time              `bson:"updated_at"`
 }
 
 type estimatePreferencesDoc struct {
@@ -72,17 +75,36 @@ func (r *MongoPreferencesRepository) Save(ctx context.Context, userId model.User
 			InflationPCT:          e.InflationPct.String(),
 			ContributionGrowthPCT: e.ContributionGrowthPct.String(),
 		},
-		UpdatedAt: r.clock(),
+		AutoSnapshot:  string(preferences.AutoSnapshot),
+		DefaultView:   string(preferences.DefaultView),
+		HistoryPeriod: string(preferences.HistoryPeriod),
+		UpdatedAt:     r.clock(),
 	}
 	_, err := r.coll.ReplaceOne(ctx, bson.M{"_id": doc.UserID}, doc, options.Replace().SetUpsert(true))
 	return err
 }
 
 // readPreferences reads them as stored, each value checked as a PUT checks it: one that isn't fine (only
-// writable outside the API) is its default, on its own, rather than failing the whole read.
+// writable outside the API), or missing (saved before it existed), is its default, on its own, rather than
+// failing the whole read.
 func readPreferences(doc preferencesDoc) model.Preferences {
+	preferences := model.DefaultPreferences()
+	preferences.Estimate = readEstimate(doc.Estimate)
+	if mode, err := model.ParseAutoSnapshot(doc.AutoSnapshot); err == nil {
+		preferences.AutoSnapshot = mode
+	}
+	if view, err := model.ParseStartView(doc.DefaultView); err == nil {
+		preferences.DefaultView = view
+	}
+	if period, err := model.ParseHistoryPeriod(doc.HistoryPeriod); err == nil {
+		preferences.HistoryPeriod = period
+	}
+	return preferences
+}
+
+func readEstimate(stored estimatePreferencesDoc) model.EstimatePreferences {
 	defaults := model.DefaultPreferences().Estimate
-	stored, result := doc.Estimate, defaults
+	result := defaults
 	keep := func(apply func(*model.EstimatePreferences)) {
 		candidate := defaults
 		apply(&candidate)
@@ -123,7 +145,7 @@ func readPreferences(doc preferencesDoc) model.Preferences {
 
 	checked, err := result.Check() // each value passed on its own: together too, in order
 	if err != nil {
-		return model.DefaultPreferences()
+		return defaults
 	}
-	return model.Preferences{Estimate: checked}
+	return checked
 }

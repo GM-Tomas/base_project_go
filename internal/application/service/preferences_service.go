@@ -10,8 +10,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// PreferencesService keeps what each user set up the way they like it (how they left Estimate), so every
-// device opens the same way.
+// PreferencesService keeps what each user set up the way they like it (how they left Estimate, the monthly
+// checkpoint, the view to open on, History's period), so every device opens the same way.
 type PreferencesService struct {
 	repo outbound.PreferencesRepository
 }
@@ -33,24 +33,51 @@ func (s *PreferencesService) GetPreferences(ctx context.Context, userId model.Us
 	return *saved, nil
 }
 
-// ReplacePreferences checks everything (the ranges an estimate takes) before saving it whole.
+// ReplacePreferences checks everything (the ranges an estimate takes, the choices offered) before saving it
+// whole.
 func (s *PreferencesService) ReplacePreferences(
 	ctx context.Context,
 	userId model.UserId,
-	cmd inbound.EstimatePreferencesCommand,
+	cmd inbound.PreferencesCommand,
 ) (model.Preferences, error) {
+	estimate, err := checkEstimate(cmd.Estimate)
+	if err != nil {
+		return model.Preferences{}, err
+	}
+	autoSnapshot, err := model.ParseAutoSnapshot(cmd.AutoSnapshot)
+	if err != nil {
+		return model.Preferences{}, err
+	}
+	view, err := model.ParseStartView(cmd.DefaultView)
+	if err != nil {
+		return model.Preferences{}, err
+	}
+	period, err := model.ParseHistoryPeriod(cmd.HistoryPeriod)
+	if err != nil {
+		return model.Preferences{}, err
+	}
+
+	preferences := model.Preferences{Estimate: estimate, AutoSnapshot: autoSnapshot, DefaultView: view, HistoryPeriod: period}
+	if err := s.repo.Save(ctx, userId, preferences); err != nil {
+		return model.Preferences{}, err
+	}
+	return preferences, nil
+}
+
+// checkEstimate reads Estimate as sent: amounts in cents, percentages to two decimals, within their ranges.
+func checkEstimate(cmd inbound.EstimatePreferencesCommand) (model.EstimatePreferences, error) {
 	contribution, err := model.NewMoneyFromFloat(cmd.ContributionUsd)
 	if err != nil {
-		return model.Preferences{}, model.ErrContributionOutOfRange
+		return model.EstimatePreferences{}, model.ErrContributionOutOfRange
 	}
 	mode, err := model.ParseYieldMode(cmd.YieldMode)
 	if err != nil {
-		return model.Preferences{}, err
+		return model.EstimatePreferences{}, err
 	}
 	milestones := make([]model.Money, len(cmd.MilestonesUsd))
 	for i, v := range cmd.MilestonesUsd {
 		if milestones[i], err = model.NewMilestone(v); err != nil {
-			return model.Preferences{}, err
+			return model.EstimatePreferences{}, err
 		}
 	}
 	pcts := make([]decimal.Decimal, 3)
@@ -63,11 +90,11 @@ func (s *PreferencesService) ReplacePreferences(
 		{cmd.ContributionGrowthPct, model.ErrContributionGrowthOutOfRange},
 	} {
 		if math.IsNaN(sent.v) || math.IsInf(sent.v, 0) {
-			return model.Preferences{}, sent.outOfRange
+			return model.EstimatePreferences{}, sent.outOfRange
 		}
 		pcts[i] = decimal.NewFromFloat(sent.v).Round(2)
 	}
-	estimate, err := model.EstimatePreferences{
+	return model.EstimatePreferences{
 		Contribution:          contribution,
 		Years:                 cmd.Years,
 		YieldMode:             mode,
@@ -76,13 +103,4 @@ func (s *PreferencesService) ReplacePreferences(
 		InflationPct:          pcts[1],
 		ContributionGrowthPct: pcts[2],
 	}.Check()
-	if err != nil {
-		return model.Preferences{}, err
-	}
-
-	preferences := model.Preferences{Estimate: estimate}
-	if err := s.repo.Save(ctx, userId, preferences); err != nil {
-		return model.Preferences{}, err
-	}
-	return preferences, nil
 }
