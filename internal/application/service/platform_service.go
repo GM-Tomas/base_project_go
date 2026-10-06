@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 	"github.com/GM-Tomas/base_project_go/internal/domain/port/inbound"
@@ -101,8 +102,9 @@ func (s *PlatformService) UpdatePlatform(ctx context.Context, command inbound.Up
 		}
 		name = &n
 	}
+	// A blank type is no type: the default.
 	var pType *model.PlatformType
-	if v := command.Type.Value; v != nil && *v != "" {
+	if v := command.Type.Value; v != nil && strings.TrimSpace(*v) != "" {
 		pt, err := model.NewPlatformType(*v)
 		if err != nil {
 			return model.Platform{}, err

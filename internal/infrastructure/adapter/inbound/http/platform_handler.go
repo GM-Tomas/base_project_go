@@ -73,7 +73,7 @@ func (h *PlatformHandler) UpdatePlatform(w http.ResponseWriter, r *http.Request)
 		cmd.Name = &sent.Value
 	}
 	cmd.Type = change(req.Type, func(v string) {
-		if _, err := model.NewPlatformType(v); err != nil {
+		if _, err := model.NewPlatformType(v); err != nil && strings.TrimSpace(v) != "" { // blank: the default
 			fail("type", fmt.Sprintf("type must be at most %d characters", model.MaxPlatformTypeLength))
 		}
 	})

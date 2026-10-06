@@ -104,6 +104,14 @@ func TestPlatformService_CustomizeAndReset(t *testing.T) {
 	assert.Nil(t, p.Color)
 	assert.Empty(t, f.looks.settings)
 	assert.Equal(t, 0, f.quota())
+
+	// A blank type is no type, as null.
+	_, err = f.svc.UpdatePlatform(ctx, inbound.UpdatePlatformCommand{UserId: f.user, Id: platformId("Binance"), Type: set("Bank")})
+	require.NoError(t, err)
+	p, err = f.svc.UpdatePlatform(ctx, inbound.UpdatePlatformCommand{UserId: f.user, Id: platformId("Binance"), Type: set("   ")})
+	require.NoError(t, err)
+	assert.Equal(t, "Other", p.Type.Value())
+	assert.Empty(t, f.looks.settings)
 }
 
 func TestPlatformService_ChecksWhatsSent(t *testing.T) {
