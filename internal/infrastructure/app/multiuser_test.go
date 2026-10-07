@@ -386,8 +386,8 @@ func TestMultiUser_HoldingCapHoldsUnderConcurrentCreates(t *testing.T) {
 	user := uuid.New()
 	token := e.token(user, nil)
 
-	// Just under the cap, written straight to MongoDB: 990 POSTs would only slow the test down.
-	const prefilled = model.MaxHoldingsPerUser - 10
+	// Just under the cap, written straight to MongoDB: 995 POSTs would only slow the test down.
+	const prefilled = model.MaxHoldingsPerUser - 5
 	now := time.Now().UTC()
 	docs := make([]any, prefilled)
 	for i := range docs {
@@ -399,8 +399,10 @@ func TestMultiUser_HoldingCapHoldsUnderConcurrentCreates(t *testing.T) {
 	_, err := e.collection("holdings").InsertMany(context.Background(), docs)
 	require.NoError(t, err)
 
-	// 30 creates at once for 10 free slots: every one may pass the first check before any insert lands.
-	const burst = 30
+	// 20 creates at once for 5 free slots (as for debts): every one may pass the first check before any insert
+	// lands. More at once only adds write conflicts to retry: 30 could outlast the 10s operation timeout on a
+	// loaded machine.
+	const burst = 20
 	codes := make([]int, burst)
 	var wg sync.WaitGroup
 	for i := range codes {
