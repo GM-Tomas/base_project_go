@@ -123,6 +123,10 @@ func (s *PlatformService) UpdatePlatform(ctx context.Context, command inbound.Up
 	if err != nil {
 		return model.Platform{}, err
 	}
+	textColor, err := optionalColor(command.TextColor.Value)
+	if err != nil {
+		return model.Platform{}, err
+	}
 	now := s.clock()
 
 	finalKey := key
@@ -151,6 +155,9 @@ func (s *PlatformService) UpdatePlatform(ctx context.Context, command inbound.Up
 		}
 		if command.Color.Set {
 			updated.Color = color
+		}
+		if command.TextColor.Set {
+			updated.TextColor = textColor
 		}
 		updated.UpdatedAt = now
 
@@ -260,5 +267,5 @@ func (s *PlatformService) write(ctx context.Context, userId model.UserId, change
 func samePlatformSettings(a, b model.PlatformSettings) bool {
 	sameType := a.Type == nil && b.Type == nil || a.Type != nil && b.Type != nil && *a.Type == *b.Type
 	sameText := a.AvatarText == nil && b.AvatarText == nil || a.AvatarText != nil && b.AvatarText != nil && *a.AvatarText == *b.AvatarText
-	return a.Key == b.Key && sameType && sameText && sameColor(a.Color, b.Color)
+	return a.Key == b.Key && sameType && sameText && sameColor(a.Color, b.Color) && sameColor(a.TextColor, b.TextColor)
 }

@@ -79,13 +79,20 @@ func TestPlatformService_CustomizeAndReset(t *testing.T) {
 	ctx := context.Background()
 
 	p, err := f.svc.UpdatePlatform(ctx, inbound.UpdatePlatformCommand{
-		UserId: f.user, Id: platformId("Binance"), Type: set(" Exchange "), AvatarText: set(" 🟡 "), Color: set("#F0B90B"),
+		UserId: f.user, Id: platformId("Binance"), Type: set(" Exchange "), AvatarText: set(" 🟡 "), Color: set("#F0B90B"), TextColor: set("#1A1A1A"),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "Exchange", p.Type.Value())
 	assert.Equal(t, "🟡", *p.AvatarText)
 	assert.Equal(t, "#f0b90b", p.Color.Value())
+	assert.Equal(t, "#1a1a1a", p.TextColor.Value())
 	assert.Equal(t, 1, f.quota())
+
+	// Changing only the letters' color writes it.
+	p, err = f.svc.UpdatePlatform(ctx, inbound.UpdatePlatformCommand{UserId: f.user, Id: platformId("Binance"), TextColor: set("#ffffff")})
+	require.NoError(t, err)
+	assert.Equal(t, "#ffffff", p.TextColor.Value())
+	assert.Equal(t, "#f0b90b", p.Color.Value())
 
 	// Sending what's there writes nothing.
 	saves := f.looks.saves
@@ -96,12 +103,13 @@ func TestPlatformService_CustomizeAndReset(t *testing.T) {
 	// Reset to default: null for each; nothing left to keep.
 	p, err = f.svc.UpdatePlatform(ctx, inbound.UpdatePlatformCommand{
 		UserId: f.user, Id: platformId("Binance"), Type: inbound.Change[string]{Set: true},
-		AvatarText: inbound.Change[string]{Set: true}, Color: inbound.Change[string]{Set: true},
+		AvatarText: inbound.Change[string]{Set: true}, Color: inbound.Change[string]{Set: true}, TextColor: inbound.Change[string]{Set: true},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "Other", p.Type.Value())
 	assert.Nil(t, p.AvatarText)
 	assert.Nil(t, p.Color)
+	assert.Nil(t, p.TextColor)
 	assert.Empty(t, f.looks.settings)
 	assert.Equal(t, 0, f.quota())
 
@@ -125,6 +133,7 @@ func TestPlatformService_ChecksWhatsSent(t *testing.T) {
 		{inbound.UpdatePlatformCommand{AvatarText: set("ABC")}, model.ErrInvalidAvatarText},
 		{inbound.UpdatePlatformCommand{AvatarText: set("  ")}, model.ErrInvalidAvatarText},
 		{inbound.UpdatePlatformCommand{Color: set("#12345")}, model.ErrInvalidColor},
+		{inbound.UpdatePlatformCommand{TextColor: set("white")}, model.ErrInvalidColor},
 		{inbound.UpdatePlatformCommand{Name: ptr(" ")}, model.ErrBlankLabel},
 		{inbound.UpdatePlatformCommand{Type: set(string(make([]byte, 41)) + "x")}, model.ErrLabelTooLong},
 	}
@@ -164,7 +173,7 @@ func TestPlatformService_RenameTakesItsLookAlong(t *testing.T) {
 	f := newPlatformsFixture()
 	a := f.hold("Binance US", 10)
 	ctx := context.Background()
-	_, err := f.svc.UpdatePlatform(ctx, inbound.UpdatePlatformCommand{UserId: f.user, Id: platformId("Binance US"), AvatarText: set("BU")})
+	_, err := f.svc.UpdatePlatform(ctx, inbound.UpdatePlatformCommand{UserId: f.user, Id: platformId("Binance US"), AvatarText: set("BU"), TextColor: set("#ffffff")})
 	require.NoError(t, err)
 	// A look kept from an older platform with the new name gives way.
 	f.looks.settings[f.user.String()+"/binance global"] = model.PlatformSettings{UserId: f.user, Key: "binance global", AvatarText: ptr("X")}
@@ -175,6 +184,7 @@ func TestPlatformService_RenameTakesItsLookAlong(t *testing.T) {
 	assert.Equal(t, "Binance Global", p.Name.Value())
 	assert.Equal(t, "BU", *p.AvatarText)
 	assert.Equal(t, "#000000", p.Color.Value())
+	assert.Equal(t, "#ffffff", p.TextColor.Value())
 	assert.Equal(t, "Binance Global", f.holdings.holdings[a.Id.String()].Platform.Value())
 	_, old := f.looks.get(f.user, "Binance US")
 	assert.False(t, old)

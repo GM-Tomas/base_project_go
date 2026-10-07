@@ -6,7 +6,7 @@ import (
 	"github.com/GM-Tomas/base_project_go/internal/domain/model"
 )
 
-// UpdatePlatformCommand changes how a platform looks (Type, AvatarText, Color: null is the default) and
+// UpdatePlatformCommand changes how a platform looks (Type, AvatarText, Color, TextColor: null is the default) and
 // its Name, on all its holdings. A name another platform has (case aside) is a merge into it, only done
 // with MergeIfExists (the platform merged into keeps its look).
 type UpdatePlatformCommand struct {
@@ -16,6 +16,7 @@ type UpdatePlatformCommand struct {
 	Type          Change[string]
 	AvatarText    Change[string]
 	Color         Change[string]
+	TextColor     Change[string]
 	MergeIfExists bool
 }
 

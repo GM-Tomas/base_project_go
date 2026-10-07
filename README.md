@@ -138,7 +138,7 @@ El adaptador `internal/infrastructure/adapter/outbound/persistence/mongo/` imple
 `QuotaRepository`, `PreferencesRepository`, `AssetClassSettingsRepository`, `PlatformSettingsRepository`,
 `WealthAggregationPort`, `TransactionManager`) sobre las colecciones `holdings`, `debts` (lo que se debe),
 `net_worth_snapshots`, `movements` (la actividad: cada cambio de valor de un holding o del saldo de una deuda), `quotas`
-(contadores por usuario), `preferences` (un documento por usuario, con su id como `_id`: cómo dejó Estimate, el checkpoint mensual automático, la vista inicial y el período de History),
+(contadores por usuario), `preferences` (un documento por usuario, con su id como `_id`: cómo dejó Estimate, el checkpoint mensual automático, la vista inicial, el período de History y el idioma),
 `asset_class_settings` y `platform_settings` (cómo configuró sus clases y sus plataformas, ver abajo). Los montos y las tasas se guardan como decimales en texto (escala 2) para no perder
 precisión.
 
@@ -184,7 +184,8 @@ tocó.
   es el retorno con el que cuentan sus holdings sin retorno propio (`effectiveReturnPct`, el retorno del portfolio y la
   proyección).
 - `platform_settings`: `key` (el nombre sin mayúsculas ni formas Unicode, lo que agrupa los holdings en una plataforma),
-  `type`, `avatar_text` (1 o 2 caracteres; un emoji cuenta como uno), `color`. Se conserva si la plataforma se queda sin
+  `type`, `avatar_text` (1 o 2 caracteres; un emoji cuenta como uno), `color` y `text_color` (el de las letras de la
+  miniatura). Se conserva si la plataforma se queda sin
   holdings y vuelve a usarse.
 - **Renombrar o fusionar** una clase o una plataforma actualiza sus holdings y mueve o fusiona su configuración en una
   transacción (la de destino conserva la suya). Los movimientos conservan los nombres que tenían: son historia. Renombrar
@@ -272,13 +273,13 @@ La app es multi-usuario: cada persona inicia sesión con su propia cuenta de Sup
 | `DELETE` | `/api/v1/movements/{id}` | Undo (revierte como delta; `409` si no se puede) | Sí |
 | `GET` | `/api/v1/movements/summary?from&to` | History → "Why it changed" (lo que suman los movimientos del período por categoría y su efecto en el patrimonio) | Sí |
 | `GET` | `/api/v1/platforms` | Selector de plataforma del modal, contador "Accounts", Settings (con `id`, miniatura, color, holdings y valor) | Sí |
-| `PATCH` | `/api/v1/platforms/{id}` | Settings → Customize (miniatura, color, tipo; `name` renombra en todos sus holdings; `409 platform-exists` salvo `mergeIfExists`) | Sí |
+| `PATCH` | `/api/v1/platforms/{id}` | Settings → Customize (miniatura, color de fondo y de letra, tipo; `name` renombra en todos sus holdings; `409 platform-exists` salvo `mergeIfExists`) | Sí |
 | `GET` | `/api/v1/asset-classes` | Selector de clase y filtros de Assets, Settings (`classes`: color, liquidez, retorno por defecto, holdings y valor) | Sí |
 | `POST` | `/api/v1/asset-classes` | Settings → New class (`409 class-exists`; hasta 100) | Sí |
 | `PATCH` | `/api/v1/asset-classes/{id}` | Settings → Edit class (`name` renombra en todos sus holdings; `409 class-exists` salvo `mergeIfExists`) | Sí |
 | `DELETE` | `/api/v1/asset-classes/{id}?moveTo=` | Settings → Remove class (con holdings hace falta `moveTo`: si no, `409 class-in-use`) | Sí |
 | `GET` | `/api/v1/wealth/estimate?contribution&years[&yieldPct&milestones&inflationPct&contributionGrowthPct]` | Estimate (parte de los assets, al retorno esperado del portfolio salvo `yieldPct`; deudas amortizadas aparte; hitos sobre el neto, 150k/250k por defecto) | Sí |
-| `GET`, `PUT` | `/api/v1/preferences` | Estimate (cómo lo dejó el usuario), checkpoint mensual automático (`autoSnapshot`), vista inicial (`defaultView`) y período de History (`historyPeriod`), en cualquier dispositivo; el PUT reemplaza el documento | Sí |
+| `GET`, `PUT` | `/api/v1/preferences` | Estimate (cómo lo dejó el usuario), checkpoint mensual automático (`autoSnapshot`), vista inicial (`defaultView`), período de History (`historyPeriod`) e idioma (`language`: `auto`, `en`, `es`), en cualquier dispositivo; el PUT reemplaza el documento | Sí |
 | `GET` | `/api/v1/wealth/snapshots` | History | Sí |
 | `POST` | `/api/v1/wealth/snapshots` | History → "Save a snapshot" (sin cuerpo) y "Add a past checkpoint" (con `capturedAt` y `totalValueUsd`: `source: MANUAL`); `409` si ya hay uno en ese segundo o al superar 5000 | Sí |
 | `DELETE` | `/api/v1/wealth/snapshots/{id}` | History → "Delete checkpoint" (`404` si no existe o es ajeno) | Sí |

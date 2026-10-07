@@ -38,6 +38,7 @@ func toPreferencesDocument(p model.Preferences) dto.PreferencesDocument {
 		AutoSnapshot:  string(p.AutoSnapshot),
 		DefaultView:   string(p.DefaultView),
 		HistoryPeriod: string(p.HistoryPeriod),
+		Language:      string(p.Language),
 	}
 }
 
@@ -103,6 +104,8 @@ func (h *PreferencesHandler) ReplacePreferences(w http.ResponseWriter, r *http.R
 	check("defaultView", viewErr == nil, model.ErrUnknownStartView)
 	_, periodErr := model.ParseHistoryPeriod(req.HistoryPeriod)
 	check("historyPeriod", periodErr == nil, model.ErrUnknownHistoryPeriod)
+	_, languageErr := model.ParseLanguage(req.Language)
+	check("language", languageErr == nil, model.ErrUnknownLanguage)
 	if len(valErrors) > 0 {
 		middleware.HandleError(w, r, errors.NewValidationErrors(valErrors))
 		return
@@ -121,6 +124,7 @@ func (h *PreferencesHandler) ReplacePreferences(w http.ResponseWriter, r *http.R
 		AutoSnapshot:  req.AutoSnapshot,
 		DefaultView:   req.DefaultView,
 		HistoryPeriod: req.HistoryPeriod,
+		Language:      req.Language,
 	})
 	if err != nil {
 		middleware.HandleError(w, r, err)

@@ -227,6 +227,7 @@ func TestPreferences_HowTheAppOpens(t *testing.T) {
 	assert.Equal(t, model.AutoSnapshotOff, defaults.AutoSnapshot)
 	assert.Equal(t, model.StartView("dashboard"), defaults.DefaultView)
 	assert.Equal(t, model.HistoryPeriod("1Y"), defaults.HistoryPeriod)
+	assert.Equal(t, model.Language("auto"), defaults.Language)
 
 	mode, err := model.ParseAutoSnapshot("MONTHLY")
 	require.NoError(t, err)
@@ -251,6 +252,14 @@ func TestPreferences_HowTheAppOpens(t *testing.T) {
 	// A period of the user's own dates isn't one to open with.
 	_, err = model.ParseHistoryPeriod("CUSTOM")
 	assert.EqualError(t, err, `historyPeriod must be one of 1M, 3M, 6M, YTD, 1Y, 3Y, ALL (got "CUSTOM")`)
+
+	for _, language := range model.Languages {
+		got, err := model.ParseLanguage(string(language))
+		require.NoError(t, err)
+		assert.Equal(t, language, got)
+	}
+	_, err = model.ParseLanguage("ES")
+	assert.EqualError(t, err, `language must be one of auto, en, es (got "ES")`)
 }
 
 func TestParseYieldModeAndMilestones(t *testing.T) {

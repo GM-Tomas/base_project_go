@@ -130,11 +130,14 @@ func TestPlatformWithSettings(t *testing.T) {
 	assert.Equal(t, p, p.WithSettings(model.PlatformSettings{}))
 	exchange, red := model.MustPlatformType("Exchange"), model.MustColor("#ff0000")
 	text := "NX"
-	set := p.WithSettings(model.PlatformSettings{Type: &exchange, AvatarText: &text, Color: &red})
+	white := model.MustColor("#ffffff")
+	set := p.WithSettings(model.PlatformSettings{Type: &exchange, AvatarText: &text, Color: &red, TextColor: &white})
 	assert.Equal(t, "Exchange", set.Type.Value())
 	assert.Equal(t, "NX", *set.AvatarText)
 	assert.Equal(t, "#ff0000", set.Color.Value())
+	assert.Equal(t, "#ffffff", set.TextColor.Value())
 	assert.True(t, model.PlatformSettings{Color: &red}.Customized())
+	assert.True(t, model.PlatformSettings{TextColor: &white}.Customized())
 	assert.False(t, model.PlatformSettings{Key: "x"}.Customized())
 }
 

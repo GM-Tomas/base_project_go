@@ -50,7 +50,8 @@ type AssetClassBreakdown struct {
 	Liquid     bool    `json:"liquid"`
 }
 
-// PlatformBreakdown is a platform's share: avatarText and color are its thumbnail's (null: the default).
+// PlatformBreakdown is a platform's share: avatarText, color and textColor are its thumbnail's (null: the
+// default).
 type PlatformBreakdown struct {
 	Name       string  `json:"name"`
 	Type       string  `json:"type"`
@@ -59,6 +60,7 @@ type PlatformBreakdown struct {
 	Count      int     `json:"count"`
 	AvatarText *string `json:"avatarText"`
 	Color      *string `json:"color"`
+	TextColor  *string `json:"textColor"`
 }
 
 type WealthSummaryResponse struct {

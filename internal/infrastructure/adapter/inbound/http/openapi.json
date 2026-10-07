@@ -1144,7 +1144,7 @@
           "Platforms"
         ],
         "summary": "Lista todas las plataformas del usuario",
-        "description": "Retorna las plataformas que usan los holdings del usuario. Se comparan sin distinguir mayúsculas (\"Binance\" y \"binance\" son una, escrita como en su holding más antiguo); una plataforma existe mientras al menos un holding la use (aparece con el primero y desaparece con el último). Tipo: `\"Other\"`, salvo el que versiones anteriores (que permitían elegirlo) le hayan dado a ese nombre. Orden alfabético sin distinguir mayúsculas ni acentos. Cada una trae su `id`, su miniatura (`avatarText`, `color`) y tipo como los configuró el usuario, y cuántos holdings tiene y cuánto valen. La configuración se conserva si la plataforma se queda sin holdings y vuelve a usarse.",
+        "description": "Retorna las plataformas que usan los holdings del usuario. Se comparan sin distinguir mayúsculas (\"Binance\" y \"binance\" son una, escrita como en su holding más antiguo); una plataforma existe mientras al menos un holding la use (aparece con el primero y desaparece con el último). Tipo: `\"Other\"`, salvo el que versiones anteriores (que permitían elegirlo) le hayan dado a ese nombre. Orden alfabético sin distinguir mayúsculas ni acentos. Cada una trae su `id`, su miniatura (`avatarText`, `color`, `textColor`) y tipo como los configuró el usuario, y cuántos holdings tiene y cuánto valen. La configuración se conserva si la plataforma se queda sin holdings y vuelve a usarse.",
         "operationId": "getAllPlatforms",
         "security": [
           {
@@ -1438,7 +1438,8 @@
                 },
                 "autoSnapshot": "MONTHLY",
                 "defaultView": "dashboard",
-                "historyPeriod": "1Y"
+                "historyPeriod": "1Y",
+                "language": "es"
               }
             }
           }
@@ -1631,6 +1632,7 @@
               "example": {
                 "avatarText": "🟡",
                 "color": "#f0b90b",
+                "textColor": "#1a1a1a",
                 "type": "Exchange"
               }
             }
@@ -1909,7 +1911,8 @@
           "pct",
           "count",
           "avatarText",
-          "color"
+          "color",
+          "textColor"
         ],
         "properties": {
           "name": {
@@ -1952,6 +1955,15 @@
             "pattern": "^#[0-9a-fA-F]{6}$",
             "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
             "example": "#c86bd6"
+          },
+          "textColor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color de las letras de su miniatura, `#rrggbb` (se guarda en minúsculas). Con uno, la miniatura va sobre `color` sólido; `null` = las letras en `color`, sobre un fondo tenue.",
+            "example": "#ffffff"
           }
         }
       },
@@ -2375,6 +2387,7 @@
           "type",
           "avatarText",
           "color",
+          "textColor",
           "holdingsCount",
           "valueUsd",
           "createdAt"
@@ -2410,6 +2423,15 @@
             "pattern": "^#[0-9a-fA-F]{6}$",
             "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
             "example": "#c86bd6"
+          },
+          "textColor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color de las letras de su miniatura, `#rrggbb` (se guarda en minúsculas). Con uno, la miniatura va sobre `color` sólido; `null` = las letras en `color`, sobre un fondo tenue.",
+            "example": "#ffffff"
           },
           "holdingsCount": {
             "type": "integer",
@@ -3354,7 +3376,8 @@
           "estimate",
           "autoSnapshot",
           "defaultView",
-          "historyPeriod"
+          "historyPeriod",
+          "language"
         ],
         "properties": {
           "estimate": {
@@ -3381,7 +3404,7 @@
               "settings"
             ],
             "default": "dashboard",
-            "description": "La vista con la que abre la app."
+            "description": "La vista con la que abre la app. `platforms` es de antes de que Platforms pasara a ser Assets filtrado: el frontend abre Assets."
           },
           "historyPeriod": {
             "type": "string",
@@ -3396,6 +3419,16 @@
             ],
             "default": "1Y",
             "description": "El período con el que abre History (un preset: un rango propio no se guarda)."
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "en",
+              "es"
+            ],
+            "default": "auto",
+            "description": "El idioma de la app: `auto` es el del navegador."
           }
         }
       },
@@ -3545,7 +3578,7 @@
       },
       "UpdatePlatformRequest": {
         "type": "object",
-        "description": "*Merge patch*: cambia solo lo enviado; `null` vuelve `type`, `avatarText` y `color` a los de por defecto.",
+        "description": "*Merge patch*: cambia solo lo enviado; `null` vuelve `type`, `avatarText`, `color` y `textColor` a los de por defecto.",
         "properties": {
           "name": {
             "type": "string",
@@ -3577,6 +3610,15 @@
             "pattern": "^#[0-9a-fA-F]{6}$",
             "description": "Color hexadecimal `#rrggbb` (se guarda en minúsculas); `null` = el de por defecto.",
             "example": "#c86bd6"
+          },
+          "textColor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "Color de las letras de su miniatura, `#rrggbb` (se guarda en minúsculas). Con uno, la miniatura va sobre `color` sólido; `null` = las letras en `color`, sobre un fondo tenue.",
+            "example": "#ffffff"
           },
           "mergeIfExists": {
             "type": "boolean",

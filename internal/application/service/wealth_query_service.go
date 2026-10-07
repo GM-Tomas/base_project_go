@@ -171,6 +171,7 @@ func (s *WealthQueryService) GetSummary(
 			Count:      agg.Count,
 			AvatarText: look.AvatarText,
 			Color:      dto.ColorOf(look.Color),
+			TextColor:  dto.ColorOf(look.TextColor),
 		}
 	}
 

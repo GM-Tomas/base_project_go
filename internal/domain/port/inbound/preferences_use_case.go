@@ -23,6 +23,7 @@ type PreferencesCommand struct {
 	AutoSnapshot  string
 	DefaultView   string
 	HistoryPeriod string
+	Language      string
 }
 
 type PreferencesUseCase interface {

@@ -44,8 +44,8 @@ func (h *PlatformHandler) GetAllPlatforms(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, res)
 }
 
-// UpdatePlatform is PATCH /platforms/{id}: the fields sent change (null sets type, avatarText and color back
-// to their defaults). A new name renames the platform on all its holdings, or, with mergeIfExists, merges it
+// UpdatePlatform is PATCH /platforms/{id}: the fields sent change (null sets type, avatarText, color and
+// textColor back to their defaults). A new name renames the platform on all its holdings, or, with mergeIfExists, merges it
 // into another the user has.
 func (h *PlatformHandler) UpdatePlatform(w http.ResponseWriter, r *http.Request) {
 	userId, err := middleware.GetUserFromContext(r.Context())
@@ -87,6 +87,11 @@ func (h *PlatformHandler) UpdatePlatform(w http.ResponseWriter, r *http.Request)
 			fail("color", err.Error())
 		}
 	})
+	cmd.TextColor = change(req.TextColor, func(v string) {
+		if _, err := model.NewColor(v); err != nil {
+			fail("textColor", "textColor must be a hex color like #1a2b3c")
+		}
+	})
 	if len(problems) > 0 {
 		middleware.HandleError(w, r, errors.NewValidationErrors(problems))
 		return
@@ -107,6 +112,7 @@ func toPlatformResponse(p model.Platform) dto.PlatformResponse {
 		Type:          p.Type.Value(),
 		AvatarText:    p.AvatarText,
 		Color:         dto.ColorOf(p.Color),
+		TextColor:     dto.ColorOf(p.TextColor),
 		HoldingsCount: p.Count,
 		ValueUsd:      p.Value.Float64(),
 		CreatedAt:     p.CreatedAt,

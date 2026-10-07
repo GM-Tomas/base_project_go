@@ -10,6 +10,8 @@ type PreferencesDocument struct {
 	DefaultView string `json:"defaultView"`
 	// The period History opens with (a preset).
 	HistoryPeriod string `json:"historyPeriod"`
+	// The app's language: auto (the browser's), en or es.
+	Language string `json:"language"`
 }
 
 // EstimatePreferencesDocument is Estimate as the user left it.

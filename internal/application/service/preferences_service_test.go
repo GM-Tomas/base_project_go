@@ -45,7 +45,7 @@ func preferencesCommand() inbound.PreferencesCommand {
 			ContributionUsd: 1500.555, Years: 20, YieldMode: "CUSTOM", CustomYieldPct: 6.256,
 			MilestonesUsd: []float64{500000, 100000}, InflationPct: 3, ContributionGrowthPct: 5,
 		},
-		AutoSnapshot: "MONTHLY", DefaultView: "history", HistoryPeriod: "YTD",
+		AutoSnapshot: "MONTHLY", DefaultView: "history", HistoryPeriod: "YTD", Language: "es",
 	}
 }
 
@@ -64,6 +64,7 @@ func TestPreferencesService_DefaultsThenWhatWasSaved(t *testing.T) {
 	assert.Equal(t, model.AutoSnapshotMonthly, saved.AutoSnapshot)
 	assert.Equal(t, model.StartView("history"), saved.DefaultView)
 	assert.Equal(t, model.HistoryPeriod("YTD"), saved.HistoryPeriod)
+	assert.Equal(t, model.Language("es"), saved.Language)
 	e := saved.Estimate
 	assert.Equal(t, "1500.56", e.Contribution.String())
 	assert.Equal(t, 20, e.Years)
@@ -105,6 +106,7 @@ func TestPreferencesService_ChecksEverythingBeforeSaving(t *testing.T) {
 		model.ErrUnknownAutoSnapshot:          func(c *inbound.PreferencesCommand) { c.AutoSnapshot = "WEEKLY" },
 		model.ErrUnknownStartView:             func(c *inbound.PreferencesCommand) { c.DefaultView = "Dashboard" },
 		model.ErrUnknownHistoryPeriod:         func(c *inbound.PreferencesCommand) { c.HistoryPeriod = "CUSTOM" },
+		model.ErrUnknownLanguage:              func(c *inbound.PreferencesCommand) { c.Language = "pt" },
 	} {
 		cmd := preferencesCommand()
 		change(&cmd)

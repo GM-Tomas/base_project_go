@@ -81,15 +81,19 @@ const (
 type (
 	StartView     string
 	HistoryPeriod string
+	// Language is the app's: auto (the browser's), en or es.
+	Language string
 )
 
 var (
 	StartViews     = []StartView{"dashboard", "platforms", "assets", "debts", "estimate", "history", "settings"}
 	HistoryPeriods = []HistoryPeriod{"1M", "3M", "6M", "YTD", "1Y", "3Y", "ALL"}
+	Languages      = []Language{"auto", "en", "es"}
 
 	ErrUnknownAutoSnapshot  = errors.New("autoSnapshot must be one of OFF, MONTHLY")
 	ErrUnknownStartView     = fmt.Errorf("defaultView must be one of %s", joined(StartViews))
 	ErrUnknownHistoryPeriod = fmt.Errorf("historyPeriod must be one of %s", joined(HistoryPeriods))
+	ErrUnknownLanguage      = fmt.Errorf("language must be one of %s", joined(Languages))
 )
 
 func joined[T ~string](values []T) string {
@@ -125,12 +129,21 @@ func ParseHistoryPeriod(raw string) (HistoryPeriod, error) {
 	return "", fmt.Errorf("%w (got %q)", ErrUnknownHistoryPeriod, raw)
 }
 
+// ParseLanguage reads the app's language, as the API spells it.
+func ParseLanguage(raw string) (Language, error) {
+	if language := Language(raw); slices.Contains(Languages, language) {
+		return language, nil
+	}
+	return "", fmt.Errorf("%w (got %q)", ErrUnknownLanguage, raw)
+}
+
 // Preferences is what a user set up the way they like it, kept for every device.
 type Preferences struct {
 	Estimate      EstimatePreferences
 	AutoSnapshot  AutoSnapshot
 	DefaultView   StartView
 	HistoryPeriod HistoryPeriod
+	Language      Language
 }
 
 // DefaultPreferences is what a user who never changed anything gets.
@@ -148,6 +161,7 @@ func DefaultPreferences() Preferences {
 		AutoSnapshot:  AutoSnapshotOff,
 		DefaultView:   "dashboard",
 		HistoryPeriod: "1Y",
+		Language:      "auto",
 	}
 }
 

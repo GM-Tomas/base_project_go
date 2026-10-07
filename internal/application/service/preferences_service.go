@@ -56,8 +56,12 @@ func (s *PreferencesService) ReplacePreferences(
 	if err != nil {
 		return model.Preferences{}, err
 	}
+	language, err := model.ParseLanguage(cmd.Language)
+	if err != nil {
+		return model.Preferences{}, err
+	}
 
-	preferences := model.Preferences{Estimate: estimate, AutoSnapshot: autoSnapshot, DefaultView: view, HistoryPeriod: period}
+	preferences := model.Preferences{Estimate: estimate, AutoSnapshot: autoSnapshot, DefaultView: view, HistoryPeriod: period, Language: language}
 	if err := s.repo.Save(ctx, userId, preferences); err != nil {
 		return model.Preferences{}, err
 	}

@@ -26,7 +26,8 @@ func TestWealthQueryService_SummaryUsesTheUsersClassesAndPlatforms(t *testing.T)
 	equity := model.MustAssetClass("Equity")
 	classes.settings[classSettingsKey(user, equity)] = model.AssetClassSettings{UserId: user, Name: equity, Liquid: ptr(false)}
 	exchange := model.MustPlatformType("Exchange")
-	looks.settings[user.String()+"/balanz"] = model.PlatformSettings{UserId: user, Key: "balanz", Type: &exchange, AvatarText: ptr("BZ"), Color: &red}
+	white := model.MustColor("#ffffff")
+	looks.settings[user.String()+"/balanz"] = model.PlatformSettings{UserId: user, Key: "balanz", Type: &exchange, AvatarText: ptr("BZ"), Color: &red, TextColor: &white}
 
 	agg := &mockWealthAggregationPort{
 		assets: model.MustMoneyFromFloat(100),
@@ -60,9 +61,11 @@ func TestWealthQueryService_SummaryUsesTheUsersClassesAndPlatforms(t *testing.T)
 	assert.Equal(t, "Exchange", summary.ByPlatform[0].Type)
 	assert.Equal(t, "BZ", *summary.ByPlatform[0].AvatarText)
 	assert.Equal(t, "#ff0000", *summary.ByPlatform[0].Color)
+	assert.Equal(t, "#ffffff", *summary.ByPlatform[0].TextColor)
 	assert.Equal(t, "Other", summary.ByPlatform[1].Type)
 	assert.Nil(t, summary.ByPlatform[1].AvatarText)
 	assert.Nil(t, summary.ByPlatform[1].Color)
+	assert.Nil(t, summary.ByPlatform[1].TextColor)
 
 	// 30 × 5% / 100: Art's holding counts with its class's return.
 	assert.Equal(t, 1.5, *summary.ExpectedReturn.WeightedPct)

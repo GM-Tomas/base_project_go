@@ -35,6 +35,7 @@ type platformSettingsDoc struct {
 	Type       string    `bson:"type,omitempty"`
 	AvatarText string    `bson:"avatar_text,omitempty"`
 	Color      string    `bson:"color,omitempty"`
+	TextColor  string    `bson:"text_color,omitempty"`
 	UpdatedAt  time.Time `bson:"updated_at"`
 }
 
@@ -161,6 +162,7 @@ func (r *MongoPlatformSettingsRepository) Save(ctx context.Context, s model.Plat
 		UserID:    s.UserId.UUID().String(),
 		Key:       s.Key,
 		Color:     colorText(s.Color),
+		TextColor: colorText(s.TextColor),
 		UpdatedAt: s.UpdatedAt,
 	}
 	if s.Type != nil {
@@ -183,7 +185,7 @@ func (r *MongoPlatformSettingsRepository) Delete(ctx context.Context, userId mod
 
 // readPlatformSettings reads them as stored, a value the API wouldn't take being unset.
 func readPlatformSettings(userId model.UserId, doc platformSettingsDoc) model.PlatformSettings {
-	s := model.PlatformSettings{UserId: userId, Key: doc.Key, Color: readColor(doc.Color), UpdatedAt: doc.UpdatedAt}
+	s := model.PlatformSettings{UserId: userId, Key: doc.Key, Color: readColor(doc.Color), TextColor: readColor(doc.TextColor), UpdatedAt: doc.UpdatedAt}
 	if doc.Type != "" {
 		if pt, err := model.NewPlatformType(doc.Type); err == nil {
 			s.Type = &pt

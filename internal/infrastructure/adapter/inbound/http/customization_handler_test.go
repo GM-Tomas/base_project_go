@@ -157,15 +157,16 @@ func TestPlatformHandler_ListsAndCustomizes(t *testing.T) {
 	assert.Equal(t, 2, platforms[0].HoldingsCount)
 	assert.Equal(t, 1500.0, platforms[0].ValueUsd)
 	assert.Nil(t, platforms[0].AvatarText)
-	assert.Contains(t, do(t, r, "GET", "/api/v1/platforms", nil).Body.String(), `"avatarText":null,"color":null`)
+	assert.Contains(t, do(t, r, "GET", "/api/v1/platforms", nil).Body.String(), `"avatarText":null,"color":null,"textColor":null`)
 
-	rec := do(t, r, "PATCH", platformPath("Binance"), json.RawMessage(`{"name": "Binance", "type": "Exchange", "avatarText": "🟡", "color": "#F0B90B"}`))
+	rec := do(t, r, "PATCH", platformPath("Binance"), json.RawMessage(`{"name": "Binance", "type": "Exchange", "avatarText": "🟡", "color": "#F0B90B", "textColor": "#1A1A1A"}`))
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	p := decode[dto.PlatformResponse](t, rec)
 	assert.Equal(t, "Binance", p.Name)
 	assert.Equal(t, "Exchange", p.Type)
 	assert.Equal(t, "🟡", *p.AvatarText)
 	assert.Equal(t, "#f0b90b", *p.Color)
+	assert.Equal(t, "#1a1a1a", *p.TextColor)
 
 	// The summary shows them too.
 	r.wealthAgg.byPlatform = []outbound.PlatformAggregate{{Key: "binance", Name: model.MustPlatformName("Binance"), Type: model.PlatformTypeOther,
@@ -173,6 +174,7 @@ func TestPlatformHandler_ListsAndCustomizes(t *testing.T) {
 	summary := decode[dto.WealthSummaryResponse](t, do(t, r, "GET", "/api/v1/wealth/summary", nil))
 	assert.Equal(t, "Exchange", summary.ByPlatform[0].Type)
 	assert.Equal(t, "🟡", *summary.ByPlatform[0].AvatarText)
+	assert.Equal(t, "#1a1a1a", *summary.ByPlatform[0].TextColor)
 
 	rec = do(t, r, "PATCH", platformPath("Binance US"), json.RawMessage(`{"name": "BINANCE"}`))
 	require.Equal(t, http.StatusConflict, rec.Code)
@@ -183,12 +185,13 @@ func TestPlatformHandler_ListsAndCustomizes(t *testing.T) {
 	assert.Equal(t, 3, merged.HoldingsCount)
 	assert.Equal(t, "Binance", merged.Name)
 
-	rec = do(t, r, "PATCH", platformPath("Binance"), json.RawMessage(`{"type": null, "avatarText": null, "color": null}`))
+	rec = do(t, r, "PATCH", platformPath("Binance"), json.RawMessage(`{"type": null, "avatarText": null, "color": null, "textColor": null}`))
 	require.Equal(t, http.StatusOK, rec.Code)
 	reset := decode[dto.PlatformResponse](t, rec)
 	assert.Equal(t, "Other", reset.Type)
 	assert.Nil(t, reset.AvatarText)
 	assert.Nil(t, reset.Color)
+	assert.Nil(t, reset.TextColor)
 	assert.Empty(t, r.looks.settings)
 
 	assert.Equal(t, http.StatusNotFound, do(t, r, "PATCH", platformPath("Nexo"), json.RawMessage(`{"color": "#000000"}`)).Code)
@@ -197,13 +200,14 @@ func TestPlatformHandler_ListsAndCustomizes(t *testing.T) {
 func TestPlatformHandler_Validation(t *testing.T) {
 	r := newTestRouter(model.NewUserId(uuid.New()))
 	holdingOf(t, r, "BTC", "Crypto", "Binance", 1000)
-	rec := do(t, r, "PATCH", platformPath("Binance"), json.RawMessage(`{"name": null, "type": "`+strings.Repeat("x", 41)+`", "avatarText": "ABC", "color": "red"}`))
+	rec := do(t, r, "PATCH", platformPath("Binance"), json.RawMessage(`{"name": null, "type": "`+strings.Repeat("x", 41)+`", "avatarText": "ABC", "color": "red", "textColor": "#fff"}`))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, []middleware.FieldError{
 		{Field: "name", Message: "Name is required"},
 		{Field: "type", Message: "type must be at most 40 characters"},
 		{Field: "avatarText", Message: "avatarText must be 1 or 2 characters (an emoji counts as one)"},
 		{Field: "color", Message: "color must be a hex color like #1a2b3c"},
+		{Field: "textColor", Message: "textColor must be a hex color like #1a2b3c"},
 	}, problemOf(t, rec).Errors)
 	assert.Equal(t, http.StatusBadRequest, doRaw(r, "PATCH", platformPath("Binance"), `{`).Code)
 }

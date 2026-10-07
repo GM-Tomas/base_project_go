@@ -21,6 +21,7 @@ type preferencesDoc struct {
 	AutoSnapshot  string                 `bson:"auto_snapshot,omitempty"`
 	DefaultView   string                 `bson:"default_view,omitempty"`
 	HistoryPeriod string                 `bson:"history_period,omitempty"`
+	Language      string                 `bson:"language,omitempty"`
 	UpdatedAt     time.Time              `bson:"updated_at"`
 }
 
@@ -78,6 +79,7 @@ func (r *MongoPreferencesRepository) Save(ctx context.Context, userId model.User
 		AutoSnapshot:  string(preferences.AutoSnapshot),
 		DefaultView:   string(preferences.DefaultView),
 		HistoryPeriod: string(preferences.HistoryPeriod),
+		Language:      string(preferences.Language),
 		UpdatedAt:     r.clock(),
 	}
 	_, err := r.coll.ReplaceOne(ctx, bson.M{"_id": doc.UserID}, doc, options.Replace().SetUpsert(true))
@@ -98,6 +100,9 @@ func readPreferences(doc preferencesDoc) model.Preferences {
 	}
 	if period, err := model.ParseHistoryPeriod(doc.HistoryPeriod); err == nil {
 		preferences.HistoryPeriod = period
+	}
+	if language, err := model.ParseLanguage(doc.Language); err == nil {
+		preferences.Language = language
 	}
 	return preferences
 }

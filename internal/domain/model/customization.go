@@ -55,15 +55,17 @@ type PlatformSettings struct {
 	Key    string
 	// Type replaces the one it would have (stored by earlier versions, or Other).
 	Type *PlatformType
-	// AvatarText and Color are its thumbnail's; nil is the default (its initial, a color from its name).
+	// AvatarText, Color and TextColor are its thumbnail's; nil is the default (its initial, a color from its
+	// name, its letters in that color).
 	AvatarText *string
 	Color      *Color
+	TextColor  *Color
 	UpdatedAt  time.Time
 }
 
 // Customized is whether anything about the platform is set (a document worth keeping).
 func (s PlatformSettings) Customized() bool {
-	return s.Type != nil || s.AvatarText != nil || s.Color != nil
+	return s.Type != nil || s.AvatarText != nil || s.Color != nil || s.TextColor != nil
 }
 
 // ClassDefaults is what classes are like until a user changes them: the classes every account starts with,

@@ -15,9 +15,10 @@ type Platform struct {
 	// Count and Value are its holdings with a readable amount, and what they're worth.
 	Count int
 	Value Money
-	// AvatarText and Color are its thumbnail's, as the user set it; nil is the default.
+	// AvatarText, Color and TextColor are its thumbnail's, as the user set it; nil is the default.
 	AvatarText *string
 	Color      *Color
+	TextColor  *Color
 }
 
 // WithSettings is the platform as the user set it up.
@@ -25,7 +26,7 @@ func (p Platform) WithSettings(s PlatformSettings) Platform {
 	if s.Type != nil {
 		p.Type = *s.Type
 	}
-	p.AvatarText, p.Color = s.AvatarText, s.Color
+	p.AvatarText, p.Color, p.TextColor = s.AvatarText, s.Color, s.TextColor
 	return p
 }
 

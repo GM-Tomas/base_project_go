@@ -85,7 +85,8 @@ func TestPlatformSettingsRepository(t *testing.T) {
 	user, other := newUser(), newUser()
 
 	exchange, red := model.MustPlatformType("Exchange"), model.MustColor("#ff0000")
-	saved := model.PlatformSettings{UserId: user, Key: "binance", Type: &exchange, AvatarText: ptrOf("🟡"), Color: &red, UpdatedAt: at(2)}
+	black := model.MustColor("#000000")
+	saved := model.PlatformSettings{UserId: user, Key: "binance", Type: &exchange, AvatarText: ptrOf("🟡"), Color: &red, TextColor: &black, UpdatedAt: at(2)}
 	require.NoError(t, repo.Save(ctx, saved))
 	require.NoError(t, repo.Save(ctx, model.PlatformSettings{UserId: other, Key: "binance", AvatarText: ptrOf("B"), UpdatedAt: at(2)}))
 
@@ -110,7 +111,7 @@ func TestPlatformSettingsRepository(t *testing.T) {
 
 	insertRaw(t, db, "platform_settings", bson.M{"_id": user.String() + "/x", "user_id": user.String(), "key": ""})
 	insertRaw(t, db, "platform_settings", bson.M{"_id": user.String() + "/y", "user_id": user.String(), "key": "nexo",
-		"type": "a very long type that is certainly over forty characters", "avatar_text": "ABC", "color": "red"})
+		"type": "a very long type that is certainly over forty characters", "avatar_text": "ABC", "color": "red", "text_color": "black"})
 	all, err = repo.FindAll(ctx, user)
 	require.NoError(t, err)
 	require.Len(t, all, 1)
