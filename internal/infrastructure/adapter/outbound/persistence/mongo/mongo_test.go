@@ -22,8 +22,10 @@ import (
 )
 
 // Integration tests: they need a real MongoDB. `make test-coverage` starts a throwaway one.
+// Each test gets its own database, so they run in parallel: most of a test's time is waiting on Mongo.
 func testDB(t *testing.T) *MongoDB {
 	t.Helper()
+	t.Parallel()
 	uri := os.Getenv("MONGO_TEST_URI")
 	if uri == "" {
 		t.Skip("MONGO_TEST_URI not set (make test-coverage starts a throwaway Mongo)")

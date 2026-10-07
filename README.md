@@ -63,11 +63,13 @@ go test -v ./...
 ```
 
 Los tests de Mongo (`persistence/mongo`, `app`) se saltan si no hay `MONGO_TEST_URI`. Necesitan un replica set (las
-transacciones lo requieren). Para correrlos y medir coverage (mínimo 85%):
+transacciones lo requieren). Para correrlos y medir coverage (mínimo 85%), con los datos en RAM (`--tmpfs`: cada test
+crea y borra su base, y en disco eso es casi todo su tiempo) y el puerto en IPv4 (con Podman/WSL `localhost` puede
+resolver a `::1` y cortar las conexiones):
 ```powershell
-docker run -d --rm --name base-wealth-test-mongo -p 27018:27017 mongo:7 --replSet rs0 --bind_ip_all
+docker run -d --rm --name base-wealth-test-mongo --tmpfs /data/db -p 127.0.0.1:27018:27017 mongo:7 --replSet rs0 --bind_ip_all
 docker exec base-wealth-test-mongo mongosh --quiet --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]})"
-$env:MONGO_TEST_URI = "mongodb://localhost:27018/?directConnection=true"; go test ./... -coverprofile=coverage.out; go tool cover -func=coverage.out | Select-Object -Last 1
+$env:MONGO_TEST_URI = "mongodb://127.0.0.1:27018/?directConnection=true"; go test ./... -coverprofile=coverage.out; go tool cover -func=coverage.out | Select-Object -Last 1
 docker stop base-wealth-test-mongo
 ```
 (`make test-coverage` hace lo mismo y falla por debajo del 85%.)

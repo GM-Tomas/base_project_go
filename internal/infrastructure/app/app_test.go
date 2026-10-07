@@ -17,8 +17,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Each test gets its own database (see newE2E), so they run in parallel.
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
+	t.Parallel()
 	uri := os.Getenv("MONGO_TEST_URI")
 	if uri == "" {
 		t.Skip("MONGO_TEST_URI not set (make test-coverage starts a throwaway Mongo)")
