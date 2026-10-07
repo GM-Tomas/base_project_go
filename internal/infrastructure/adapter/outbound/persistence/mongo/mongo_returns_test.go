@@ -197,7 +197,7 @@ func TestPreferencesRepository(t *testing.T) {
 	require.NoError(t, repo.Save(ctx, user, preferences))
 	got, _ = repo.Find(ctx, user)
 	assert.Empty(t, got.Estimate.Milestones)
-	count, err := db.Preferences.CountDocuments(ctx, bson.M{})
+	count, err := db.Preferences.CountDocuments(ctx, bson.M{"_id": user.UUID().String()})
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, count)
 

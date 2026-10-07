@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -45,52 +44,82 @@ type e2e struct {
 	dbName  string
 }
 
+// The e2e tests share one database, one signing key (and the local JWKS serving it) and one app per
+// configuration, set up on first use and torn down in TestMain. Each test signs in users of its own
+// (uuid.New), so they never see each other's data, and none pays for a connection, indexes or a 2048-bit
+// key. Building the app is what TestBuildApp_* test.
+var shared struct {
+	sync.Mutex
+	dbName string
+	priv   *rsa.PrivateKey
+	jwks   *httptest.Server
+	client *mongo.Client
+	apps   map[string]*app.App // by DevUserID
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func TestMain(m *testing.M) {
+	m.Run()
+	shared.Lock()
+	defer shared.Unlock()
+	for _, a := range shared.apps {
+		a.Cleanup()
+	}
+	if shared.client != nil {
+		shared.cancel()
+		_ = shared.client.Database(shared.dbName).Drop(context.Background())
+		_ = shared.client.Disconnect(context.Background())
+		shared.jwks.Close()
+	}
+}
+
 func newE2E(t *testing.T, devUserID string) *e2e {
 	t.Helper()
 	cfg := testConfig(t)
-	cfg.MongoDBName = "test_e2e_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
-	cfg.DevUserID = devUserID
+	shared.Lock()
+	defer shared.Unlock()
+	if shared.client == nil {
+		priv, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		pub, err := jwk.FromRaw(priv.Public())
+		require.NoError(t, err)
+		require.NoError(t, pub.Set(jwk.KeyIDKey, e2eKid))
+		require.NoError(t, pub.Set(jwk.AlgorithmKey, jwa.RS256))
+		set := jwk.NewSet()
+		require.NoError(t, set.AddKey(pub))
+		client, err := mongo.Connect(options.Client().ApplyURI(cfg.MongoDBURI))
+		require.NoError(t, err)
 
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
-	pub, err := jwk.FromRaw(priv.Public())
-	require.NoError(t, err)
-	require.NoError(t, pub.Set(jwk.KeyIDKey, e2eKid))
-	require.NoError(t, pub.Set(jwk.AlgorithmKey, jwa.RS256))
-	set := jwk.NewSet()
-	require.NoError(t, set.AddKey(pub))
-	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(set)
-	}))
-	t.Cleanup(jwks.Close)
+		shared.priv = priv
+		shared.jwks = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(set)
+		}))
+		shared.client = client
+		shared.dbName = "test_e2e_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
+		shared.apps = map[string]*app.App{}
+		shared.ctx, shared.cancel = context.WithCancel(context.Background())
+	}
 
-	cfg.JWKSetURI = jwks.URL
-	cfg.AuthIssuer = e2eIssuer
-	cfg.AuthAudience = "authenticated"
-
-	ctx, cancel := context.WithCancel(context.Background())
-	a, err := app.BuildApp(ctx, cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		a.Cleanup()
-		cancel()
-		client, err := mongo.Connect(options.Client().ApplyURI(os.Getenv("MONGO_TEST_URI")))
-		if err == nil {
-			_ = client.Database(cfg.MongoDBName).Drop(context.Background())
-			_ = client.Disconnect(context.Background())
-		}
-	})
-	return &e2e{t: t, handler: a.Handler, priv: priv, dbName: cfg.MongoDBName}
+	a, ok := shared.apps[devUserID]
+	if !ok {
+		cfg.MongoDBName = shared.dbName
+		cfg.DevUserID = devUserID
+		cfg.JWKSetURI = shared.jwks.URL
+		cfg.AuthIssuer = e2eIssuer
+		cfg.AuthAudience = "authenticated"
+		var err error
+		a, err = app.BuildApp(shared.ctx, cfg)
+		require.NoError(t, err)
+		shared.apps[devUserID] = a
+	}
+	return &e2e{t: t, handler: a.Handler, priv: shared.priv, dbName: shared.dbName}
 }
 
 // collection gives direct access to the app's MongoDB, for setups too slow to do through the API.
 func (e *e2e) collection(name string) *mongo.Collection {
-	e.t.Helper()
-	client, err := mongo.Connect(options.Client().ApplyURI(os.Getenv("MONGO_TEST_URI")))
-	require.NoError(e.t, err)
-	e.t.Cleanup(func() { _ = client.Disconnect(context.Background()) })
-	return client.Database(e.dbName).Collection(name)
+	return shared.client.Database(e.dbName).Collection(name)
 }
 
 // token signs a Supabase-shaped access token; edit tweaks it to build invalid ones.

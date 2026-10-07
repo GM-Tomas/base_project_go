@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,10 +31,22 @@ const (
 	testKid      = "kid-1"
 )
 
+// A 2048-bit key takes 50-400ms to generate: the package's tests share these two, made once. The second
+// signs what must be rejected as signed by someone else.
+var testKeys = sync.OnceValue(func() [2]*rsa.PrivateKey {
+	var keys [2]*rsa.PrivateKey
+	for i := range keys {
+		var err error
+		if keys[i], err = rsa.GenerateKey(rand.Reader, 2048); err != nil {
+			panic(err)
+		}
+	}
+	return keys
+})
+
 func newKey(t *testing.T) (*rsa.PrivateKey, jwk.Set) {
 	t.Helper()
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	priv := testKeys()[0]
 	pub, err := jwk.FromRaw(priv.Public())
 	require.NoError(t, err)
 	require.NoError(t, pub.Set(jwk.KeyIDKey, testKid))
@@ -77,7 +90,7 @@ func TestValidateToken_AcceptsValidTokenAndReturnsSub(t *testing.T) {
 
 func TestValidateToken_Rejects(t *testing.T) {
 	priv, set := newKey(t)
-	otherPriv, _ := newKey(t)
+	otherPriv := testKeys()[1]
 
 	cases := map[string]string{
 		"wrong issuer": sign(t, priv, func(b *jwt.Builder) *jwt.Builder { return b.Issuer("https://evil.example.com") }),

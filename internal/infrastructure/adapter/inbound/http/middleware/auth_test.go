@@ -2,8 +2,6 @@ package middleware_test
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -21,8 +19,7 @@ import (
 )
 
 func TestAuthMiddleware_ValidToken(t *testing.T) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	privKey := testKeys()[0]
 
 	key, err := jwk.FromRaw(privKey.Public())
 	require.NoError(t, err)
@@ -87,8 +84,7 @@ func TestAuthMiddleware_MissingToken(t *testing.T) {
 }
 
 func TestAuthMiddleware_ExpiredToken(t *testing.T) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	privKey := testKeys()[0]
 
 	key, err := jwk.FromRaw(privKey.Public())
 	require.NoError(t, err)
@@ -124,8 +120,7 @@ func TestAuthMiddleware_ExpiredToken(t *testing.T) {
 }
 
 func TestSupabaseJWTValidator_RemoteJWKS(t *testing.T) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	require.NoError(t, err)
+	privKey := testKeys()[0]
 	pub, err := jwk.FromRaw(privKey.Public())
 	require.NoError(t, err)
 	_ = pub.Set(jwk.KeyIDKey, "kid-1")

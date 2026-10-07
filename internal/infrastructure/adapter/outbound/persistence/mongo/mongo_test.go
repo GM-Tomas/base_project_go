@@ -21,23 +21,39 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// Integration tests: they need a real MongoDB. `make test-coverage` starts a throwaway one.
-// Each test gets its own database, so they run in parallel: most of a test's time is waiting on Mongo.
-func testDB(t *testing.T) *MongoDB {
-	t.Helper()
-	t.Parallel()
+// sharedDB is the package's one test database: set up (connection, indexes) once and dropped at the end,
+// rather than per test. Each test works with users of its own (newUser), so they never see each other's
+// data and run in parallel.
+var sharedDB *MongoDB
+
+func TestMain(m *testing.M) {
 	uri := os.Getenv("MONGO_TEST_URI")
 	if uri == "" {
-		t.Skip("MONGO_TEST_URI not set (make test-coverage starts a throwaway Mongo)")
+		m.Run()
+		return
 	}
 	ctx := context.Background()
 	db, err := NewMongoDB(ctx, uri, "test_"+strings.ReplaceAll(uuid.NewString(), "-", "")[:20])
-	require.NoError(t, err)
-	t.Cleanup(func() {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "MONGO_TEST_URI:", err)
+		os.Exit(1)
+	}
+	sharedDB = db
+	defer func() {
 		_ = db.Database.Drop(ctx)
 		_ = db.Close(ctx)
-	})
-	return db
+	}()
+	m.Run()
+}
+
+// Integration tests: they need a real MongoDB. `make test-coverage` starts a throwaway one.
+func testDB(t *testing.T) *MongoDB {
+	t.Helper()
+	t.Parallel()
+	if sharedDB == nil {
+		t.Skip("MONGO_TEST_URI not set (make test-coverage starts a throwaway Mongo)")
+	}
+	return sharedDB
 }
 
 func cancelled() context.Context {
@@ -239,9 +255,9 @@ func TestHoldingRepository_SaveNeverOverwritesAnotherUsersHolding(t *testing.T) 
 func TestHoldingRepository_AssetClassesInUseSkipsInvalid(t *testing.T) {
 	db := testDB(t)
 	user := newUser()
-	insertRaw(t, db, "holdings", bson.M{"_id": "a", "user_id": user.String(), "asset_class": ""})
-	insertRaw(t, db, "holdings", bson.M{"_id": "b", "user_id": user.String(), "asset_class": strings.Repeat("x", model.MaxAssetClassLength+1)})
-	insertRaw(t, db, "holdings", bson.M{"_id": "c", "user_id": user.String(), "asset_class": "Equity"})
+	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": ""})
+	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": strings.Repeat("x", model.MaxAssetClassLength+1)})
+	insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": "Equity"})
 
 	classes, err := NewMongoHoldingRepository(db).AssetClassesInUse(context.Background(), user)
 
@@ -271,8 +287,8 @@ func TestHoldingRepository_AssetClassesInUseListsEachClassOnce(t *testing.T) {
 	db := testDB(t)
 	user := newUser()
 	// Written outside the API or by older versions: spellings the domain reads as one class.
-	for id, class := range map[string]string{"a": "Caf\u00e9", "b": "Cafe\u0301", "c": "Equity", "d": " Equity "} {
-		insertRaw(t, db, "holdings", bson.M{"_id": id, "user_id": user.String(), "asset_class": class})
+	for _, class := range []string{"Caf\u00e9", "Cafe\u0301", "Equity", " Equity "} {
+		insertRaw(t, db, "holdings", bson.M{"_id": uuid.NewString(), "user_id": user.String(), "asset_class": class})
 	}
 
 	classes, err := NewMongoHoldingRepository(db).AssetClassesInUse(context.Background(), user)
